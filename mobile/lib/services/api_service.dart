@@ -149,29 +149,101 @@ class ApiService {
     await prefs.remove('user_profile');
   }
 
+  // --- TOKEN REFRESH & AUTHENTICATED REQUEST HELPERS ---
+  Future<bool>? _refreshFuture;
+
+  Future<bool> _refreshTokenNow() async {
+    if (_refreshFuture != null) {
+      return _refreshFuture!;
+    }
+    _refreshFuture = _doRefreshToken();
+    try {
+      return await _refreshFuture!;
+    } finally {
+      _refreshFuture = null;
+    }
+  }
+
+  Future<bool> _doRefreshToken() async {
+    if (_refreshToken == null || _refreshToken!.isEmpty) return false;
+    try {
+      final res = await http.post(
+        Uri.parse('$_baseUrl/auth/refresh'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'refresh_token': _refreshToken}),
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        _accessToken = data['access_token'];
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('access_token', _accessToken!);
+        return true;
+      } else if (res.statusCode == 401 || res.statusCode == 403) {
+        await logout();
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<http.Response> _authenticatedGet(Uri uri) async {
+    var res = await http.get(uri, headers: _headers());
+    if (res.statusCode == 401 && _refreshToken != null) {
+      final refreshed = await _refreshTokenNow();
+      if (refreshed) {
+        res = await http.get(uri, headers: _headers());
+      }
+    }
+    return res;
+  }
+
+  Future<http.Response> _authenticatedPost(Uri uri, {Object? body}) async {
+    var res = await http.post(uri, headers: _headers(), body: body);
+    if (res.statusCode == 401 && _refreshToken != null) {
+      final refreshed = await _refreshTokenNow();
+      if (refreshed) {
+        res = await http.post(uri, headers: _headers(), body: body);
+      }
+    }
+    return res;
+  }
+
   // --- PRODUCTS & SHOPS ---
   Future<List<Product>> getProducts() async {
-    final res = await http.get(
+    final res = await _authenticatedGet(
       Uri.parse('$_baseUrl/products?active_only=true'),
-      headers: _headers(),
     );
     if (res.statusCode == 200) {
       final List list = jsonDecode(res.body);
       return list.map((p) => Product.fromJson(p)).toList();
     }
-    throw Exception('Failed to load products');
+    if (res.statusCode == 401) {
+      throw Exception('Session expired. Please log in again.');
+    }
+    String msg = 'Failed to load products';
+    try {
+      final err = jsonDecode(res.body);
+      msg = err['detail'] ?? msg;
+    } catch (_) {}
+    throw Exception(msg);
   }
 
   Future<List<Shop>> getShops() async {
-    final res = await http.get(
+    final res = await _authenticatedGet(
       Uri.parse('$_baseUrl/shops?active_only=true'),
-      headers: _headers(),
     );
     if (res.statusCode == 200) {
       final List list = jsonDecode(res.body);
       return list.map((s) => Shop.fromJson(s)).toList();
     }
-    throw Exception('Failed to load shops');
+    if (res.statusCode == 401) {
+      throw Exception('Session expired. Please log in again.');
+    }
+    String msg = 'Failed to load shops';
+    try {
+      final err = jsonDecode(res.body);
+      msg = err['detail'] ?? msg;
+    } catch (_) {}
+    throw Exception(msg);
   }
 
   // --- INWARD API ---
@@ -179,11 +251,10 @@ class ApiService {
     String productId,
     String serialNumber,
   ) async {
-    final res = await http.get(
+    final res = await _authenticatedGet(
       Uri.parse(
         '$_baseUrl/inward/validate-serial?product_id=$productId&serial_number=${Uri.encodeComponent(serialNumber.trim())}',
       ),
-      headers: _headers(),
     );
 
     if (res.statusCode == 200) {
@@ -203,11 +274,11 @@ class ApiService {
     required List<String> serialNumbers,
     String? remarks,
   }) async {
-    final res = await http.post(
+    final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/inward/batch'),
-      headers: _headers(),
       body: jsonEncode({
         'product_id': productId,
+        'serials': serialNumbers,
         'serial_numbers': serialNumbers,
         'remarks': remarks,
       }),
@@ -230,11 +301,10 @@ class ApiService {
     String productId,
     String serialNumber,
   ) async {
-    final res = await http.get(
+    final res = await _authenticatedGet(
       Uri.parse(
         '$_baseUrl/outward/check-serial?product_id=$productId&serial_number=${Uri.encodeComponent(serialNumber.trim())}',
       ),
-      headers: _headers(),
     );
 
     if (res.statusCode == 200) {
@@ -256,11 +326,10 @@ class ApiService {
     if (reference.trim().isEmpty) {
       return {'is_duplicate_today': false};
     }
-    final res = await http.get(
+    final res = await _authenticatedGet(
       Uri.parse(
         '$_baseUrl/outward/check-reference?shop_id=$shopId&reference=${Uri.encodeComponent(reference.trim())}',
       ),
-      headers: _headers(),
     );
 
     if (res.statusCode == 200) {
@@ -276,12 +345,12 @@ class ApiService {
     String? deliveryReference,
     String? remarks,
   }) async {
-    final res = await http.post(
+    final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/outward/batch'),
-      headers: _headers(),
       body: jsonEncode({
         'shop_id': shopId,
         'product_id': productId,
+        'serials': serialNumbers.map((s) => {'serial_number': s, 'confirmed_warning': true}).toList(),
         'serial_numbers': serialNumbers,
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks,
@@ -302,11 +371,10 @@ class ApiService {
 
   // --- SERIAL LOOKUP ---
   Future<SerialLookupDetail> lookupSerial(String serialNumber) async {
-    final res = await http.get(
+    final res = await _authenticatedGet(
       Uri.parse(
         '$_baseUrl/serials/lookup?serial_number=${Uri.encodeComponent(serialNumber.trim())}',
       ),
-      headers: _headers(),
     );
 
     if (res.statusCode == 200) {

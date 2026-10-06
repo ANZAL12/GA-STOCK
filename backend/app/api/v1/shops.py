@@ -5,11 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import json
 from app.api.deps import get_current_user, require_admin
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
+from app.models.return_ import Return
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.shop import ShopCreate, ShopDispatchedSerial, ShopResponse, ShopUpdate
@@ -200,6 +203,7 @@ async def create_shop(
 
     resp = ShopResponse.model_validate(shop_obj)
     resp.total_dispatched_count = 0
+    await ws_manager.broadcast("shop_created", json.loads(resp.model_dump_json()))
     return resp
 
 
@@ -211,7 +215,7 @@ async def update_shop(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ShopResponse:
     """
-    Admin only: edit shop details.
+    Admin only: edit shop details including active status.
     """
     result = await db.execute(select(Shop).where(Shop.id == shop_id))
     shop_obj = result.scalar_one_or_none()
@@ -244,24 +248,98 @@ async def update_shop(
     )
     resp = ShopResponse.model_validate(shop_obj)
     resp.total_dispatched_count = count_res.scalar() or 0
+    await ws_manager.broadcast("shop_updated", json.loads(resp.model_dump_json()))
     return resp
 
 
-@router.delete("/{shop_id}", response_model=ShopResponse)
-async def deactivate_shop(
+@router.patch("/{shop_id}/toggle-active", response_model=ShopResponse)
+async def toggle_shop_active(
     shop_id: uuid.UUID,
     admin: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ShopResponse:
     """
-    Admin only: deactivate shop.
-    Shops with dispatch history are never hard-deleted; soft deactivation preserves audit integrity.
+    Admin only: toggle shop active/deactivated status.
     """
     result = await db.execute(select(Shop).where(Shop.id == shop_id))
     shop_obj = result.scalar_one_or_none()
     if not shop_obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
 
+    shop_obj.is_active = not shop_obj.is_active
+
+    audit = AuditLog(
+        user_id=admin.id,
+        action="SHOP_STATUS_TOGGLED",
+        entity_type="shop",
+        entity_id=str(shop_obj.id),
+        details={"name": shop_obj.name, "is_active": shop_obj.is_active},
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(shop_obj)
+
+    count_res = await db.execute(
+        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
+    )
+    resp = ShopResponse.model_validate(shop_obj)
+    resp.total_dispatched_count = count_res.scalar() or 0
+    await ws_manager.broadcast("shop_updated", json.loads(resp.model_dump_json()))
+    return resp
+
+
+@router.delete("/{shop_id}", response_model=ShopResponse)
+async def delete_shop(
+    shop_id: uuid.UUID,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    permanent: bool = Query(False, description="Permanently delete from database if no dispatch records exist"),
+) -> ShopResponse:
+    """
+    Admin only: delete or deactivate shop.
+    If permanent=True and the shop has 0 outward dispatches or returns, completely deletes it.
+    If the shop has dispatch history, soft-deactivates it to protect historical records.
+    """
+    result = await db.execute(select(Shop).where(Shop.id == shop_id))
+    shop_obj = result.scalar_one_or_none()
+    if not shop_obj:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    count_res = await db.execute(
+        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
+    )
+    disp_count = count_res.scalar() or 0
+
+    return_res = await db.execute(
+        select(func.count(Return.id)).where(Return.shop_id == shop_id)
+    )
+    return_count = return_res.scalar() or 0
+
+    resp = ShopResponse.model_validate(shop_obj)
+    resp.total_dispatched_count = disp_count
+
+    if permanent:
+        if disp_count > 0 or return_count > 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot permanently delete '{shop_obj.name}': It has {disp_count} dispatch(es) and {return_count} return(s). Deactivate it instead to preserve transaction records.",
+            )
+
+        await db.delete(shop_obj)
+        audit = AuditLog(
+            user_id=admin.id,
+            action="SHOP_PERMANENTLY_DELETED",
+            entity_type="shop",
+            entity_id=str(shop_id),
+            details={"name": shop_obj.name, "city": shop_obj.city},
+        )
+        db.add(audit)
+        await db.commit()
+        await ws_manager.broadcast("shop_deleted", {"id": str(shop_id)})
+        return resp
+
+    # Soft deactivation
     shop_obj.is_active = False
 
     audit = AuditLog(
@@ -276,9 +354,47 @@ async def deactivate_shop(
     await db.commit()
     await db.refresh(shop_obj)
 
-    count_res = await db.execute(
-        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
-    )
     resp = ShopResponse.model_validate(shop_obj)
-    resp.total_dispatched_count = count_res.scalar() or 0
+    resp.total_dispatched_count = disp_count
+    await ws_manager.broadcast("shop_updated", json.loads(resp.model_dump_json()))
     return resp
+
+
+@router.delete("/cleanup/unused-deactivated", response_model=dict)
+async def cleanup_unused_deactivated_shops(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """
+    Admin only: Bulk delete all deactivated shops that have 0 dispatches and 0 returns.
+    Cleans up test or dummy shops in one click.
+    """
+    # Subquery for shops with outward dispatches
+    disp_subq = select(OutwardLine.shop_id).distinct()
+    return_subq = select(Return.shop_id).distinct()
+
+    query = select(Shop).where(
+        Shop.is_active == False,
+        ~Shop.id.in_(disp_subq),
+        ~Shop.id.in_(return_subq),
+    )
+    result = await db.execute(query)
+    unused_shops = result.scalars().all()
+
+    deleted_count = len(unused_shops)
+    for s in unused_shops:
+        await db.delete(s)
+
+    if deleted_count > 0:
+        audit = AuditLog(
+            user_id=admin.id,
+            action="BULK_UNUSED_SHOPS_CLEANED",
+            entity_type="shop",
+            entity_id="bulk",
+            details={"deleted_count": deleted_count},
+        )
+        db.add(audit)
+        await db.commit()
+        await ws_manager.broadcast("shop_deleted", {"bulk": True})
+
+    return {"message": f"Successfully deleted {deleted_count} unused deactivated shop(s)", "deleted_count": deleted_count}

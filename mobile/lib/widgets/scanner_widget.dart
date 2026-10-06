@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import '../services/sound_service.dart';
 
 class BarcodeScannerWidget extends StatefulWidget {
   final String title;
@@ -10,7 +12,7 @@ class BarcodeScannerWidget extends StatefulWidget {
   const BarcodeScannerWidget({
     super.key,
     required this.title,
-    this.prompt = 'Align barcode inside viewfinder',
+    this.prompt = 'Align barcode strictly inside viewfinder',
     required this.onScanned,
   });
 
@@ -18,42 +20,144 @@ class BarcodeScannerWidget extends StatefulWidget {
   State<BarcodeScannerWidget> createState() => _BarcodeScannerWidgetState();
 }
 
-class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
+class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
+    with SingleTickerProviderStateMixin {
   final MobileScannerController _controller = MobileScannerController(
-    detectionSpeed: DetectionSpeed.normal,
+    detectionSpeed: DetectionSpeed.unrestricted,
     facing: CameraFacing.back,
     torchEnabled: false,
+    returnImage: false,
   );
+
+  late AnimationController _animController;
+  late Animation<double> _scanLineAnimation;
 
   bool _isTorchOn = false;
   bool _isProcessing = false;
+  bool _holdToScanMode = true;
+  bool _isHoldingTrigger = false;
+  String? _lastScannedValue;
+  DateTime _lastScannedTime = DateTime.fromMillisecondsSinceEpoch(0);
   final TextEditingController _manualTextController = TextEditingController();
+
+  static const double _boxWidth = 290.0;
+  static const double _boxHeight = 190.0;
+
+  @override
+  void initState() {
+    super.initState();
+    SoundService().init();
+    _animController = AnimationController(
+      duration: const Duration(milliseconds: 1600),
+      vsync: this,
+    );
+    _scanLineAnimation = Tween<double>(begin: 8.0, end: _boxHeight - 12.0).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
+    );
+
+    if (!_holdToScanMode) {
+      _animController.repeat(reverse: true);
+    }
+  }
 
   @override
   void dispose() {
+    _animController.dispose();
     _controller.dispose();
     _manualTextController.dispose();
     super.dispose();
   }
 
+  bool _isBarcodeInsideBox(Barcode barcode, Size captureSize) {
+    // If corners not provided, allow detection
+    if (barcode.corners.isEmpty || captureSize.width <= 0 || captureSize.height <= 0) {
+      return true;
+    }
+
+    try {
+      final xs = barcode.corners.map((p) => p.dx);
+      final ys = barcode.corners.map((p) => p.dy);
+      final minX = xs.reduce(math.min);
+      final maxX = xs.reduce(math.max);
+      final minY = ys.reduce(math.min);
+      final maxY = ys.reduce(math.max);
+
+      final centerX = (minX + maxX) / 2.0;
+      final centerY = (minY + maxY) / 2.0;
+
+      final normX = centerX / captureSize.width;
+      final normY = centerY / captureSize.height;
+
+      // Normalize coordinates according to portrait phone orientation
+      final double horiz = captureSize.width < captureSize.height ? normX : normY;
+      final double vert = captureSize.width < captureSize.height ? normY : normX;
+
+      // Viewfinder zone: generous tolerances to ensure instant detection without lag
+      final bool inHoriz = horiz >= 0.05 && horiz <= 0.95;
+      final bool inVert = vert >= 0.18 && vert <= 0.82;
+
+      return inHoriz && inVert;
+    } catch (_) {
+      return true;
+    }
+  }
+
   void _handleBarcode(BarcodeCapture capture) {
+    // In hold-to-scan mode, reject scans unless the user is actively holding down the trigger
+    if (_holdToScanMode && !_isHoldingTrigger) {
+      return;
+    }
+
     if (_isProcessing) return;
 
     final barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
 
-    final String? rawValue = barcodes.first.rawValue;
-    if (rawValue == null || rawValue.trim().isEmpty) return;
+    for (final barcode in barcodes) {
+      final String? rawValue = barcode.rawValue;
+      if (rawValue == null || rawValue.trim().isEmpty) continue;
 
-    setState(() => _isProcessing = true);
-    HapticFeedback.mediumImpact();
+      // Strict constraint: Reject barcodes located outside the central box
+      if (!_isBarcodeInsideBox(barcode, capture.size)) {
+        continue;
+      }
 
-    widget.onScanned(rawValue.trim());
+      final String cleanVal = rawValue.trim();
+      final DateTime now = DateTime.now();
 
-    // Delay slightly to prevent rapid multi-triggers
-    Future.delayed(const Duration(milliseconds: 1200), () {
-      if (mounted) setState(() => _isProcessing = false);
-    });
+      // Prevent accidental repeat scanning of the EXACT same physical barcode
+      if (_lastScannedValue == cleanVal &&
+          now.difference(_lastScannedTime).inMilliseconds < 1500) {
+        continue;
+      }
+
+      _lastScannedValue = cleanVal;
+      _lastScannedTime = now;
+
+      setState(() => _isProcessing = true);
+      HapticFeedback.mediumImpact();
+      SoundService().playScannerBeep();
+
+      widget.onScanned(cleanVal);
+
+      // Super-fast cooldown (280ms) so moving to the next item scans instantly!
+      Future.delayed(const Duration(milliseconds: 280), () {
+        if (mounted) setState(() => _isProcessing = false);
+      });
+      break;
+    }
+  }
+
+  Color _getReticleBorderColor() {
+    if (_isProcessing) {
+      return const Color(0xFF10B981); // Emerald green on successful read
+    }
+    if (_holdToScanMode) {
+      return _isHoldingTrigger
+          ? const Color(0xFF38BDF8) // Bright Cyan when trigger active
+          : const Color(0xFF64748B); // Slate muted when idle
+    }
+    return const Color(0xFF818CF8); // Indigo in auto-scan mode
   }
 
   void _showManualInputDialog() {
@@ -114,6 +218,8 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isScanningActive = !_holdToScanMode || _isHoldingTrigger;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -144,7 +250,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
             onDetect: _handleBarcode,
           ),
 
-          // Overlay cutout
+          // Overlay cutout - darkens area outside the box
           ColorFiltered(
             colorFilter: ColorFilter.mode(
               Colors.black.withValues(alpha: 0.65),
@@ -162,8 +268,8 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
                 Align(
                   alignment: Alignment.center,
                   child: Container(
-                    width: 290,
-                    height: 190,
+                    width: _boxWidth,
+                    height: _boxHeight,
                     decoration: BoxDecoration(
                       color: Colors.red,
                       borderRadius: BorderRadius.circular(16),
@@ -174,50 +280,290 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
             ),
           ),
 
-          // Reticle border
+          // Reticle border with live scanning indicator
           Container(
-            width: 290,
-            height: 190,
+            width: _boxWidth,
+            height: _boxHeight,
             decoration: BoxDecoration(
               border: Border.all(
-                color: _isProcessing ? const Color(0xFF10B981) : const Color(0xFFC7D2FE),
-                width: 2.5,
+                color: _getReticleBorderColor(),
+                width: isScanningActive ? 3.0 : 2.0,
               ),
               borderRadius: BorderRadius.circular(16),
             ),
-          ),
-
-          // Top Prompt text
-          Positioned(
-            top: 40,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.75),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white24),
-              ),
-              child: Text(
-                widget.prompt,
-                style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
-              ),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (isScanningActive)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: AnimatedBuilder(
+                      animation: _scanLineAnimation,
+                      builder: (context, child) {
+                        return Stack(
+                          children: [
+                            Positioned(
+                              top: _scanLineAnimation.value,
+                              left: 10,
+                              right: 10,
+                              child: Container(
+                                height: 2.5,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      Colors.transparent,
+                                      _isProcessing
+                                          ? const Color(0xFF10B981)
+                                          : const Color(0xFF38BDF8),
+                                      Colors.transparent,
+                                    ],
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: (_isProcessing
+                                              ? const Color(0xFF10B981)
+                                              : const Color(0xFF38BDF8))
+                                          .withValues(alpha: 0.8),
+                                      blurRadius: 6,
+                                      spreadRadius: 1.5,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                if (_holdToScanMode && !_isHoldingTrigger)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.touch_app, size: 16, color: Colors.white70),
+                        SizedBox(width: 6),
+                        Text(
+                          'Hold button below to scan',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             ),
           ),
 
-          // Bottom Manual input button
+          // Top Header (Prompt & Mode Switch)
           Positioned(
-            bottom: 40,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: const Color(0xFF1E293B),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-                elevation: 4,
-              ),
-              icon: const Icon(Icons.keyboard, size: 20, color: Color(0xFF3C3489)),
-              label: const Text('Type Serial Manually', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-              onPressed: _showManualInputDialog,
+            top: 16,
+            left: 16,
+            right: 16,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.75),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: Text(
+                    widget.prompt,
+                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // Hold-to-scan Switch Toggle Pill
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: _holdToScanMode ? const Color(0xFF818CF8) : Colors.white24,
+                      width: 1.2,
+                    ),
+                    boxShadow: [
+                      if (_holdToScanMode)
+                        BoxShadow(
+                          color: const Color(0xFF818CF8).withValues(alpha: 0.25),
+                          blurRadius: 8,
+                          spreadRadius: 1,
+                        ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _holdToScanMode ? Icons.touch_app : Icons.bolt,
+                        size: 18,
+                        color: _holdToScanMode ? const Color(0xFF818CF8) : Colors.amberAccent,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _holdToScanMode ? 'Hold to Scan Mode' : 'Continuous Auto Scan',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        height: 28,
+                        child: Switch(
+                          value: _holdToScanMode,
+                          activeThumbColor: const Color(0xFF818CF8),
+                          activeTrackColor: const Color(0xFF312E81),
+                          inactiveThumbColor: Colors.white70,
+                          inactiveTrackColor: Colors.white24,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          onChanged: (val) {
+                            HapticFeedback.selectionClick();
+                            setState(() {
+                              _holdToScanMode = val;
+                              _isHoldingTrigger = false;
+                            });
+                            if (!val) {
+                              if (!_animController.isAnimating) {
+                                _animController.repeat(reverse: true);
+                              }
+                            } else {
+                              _animController.stop();
+                              _animController.reset();
+                            }
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Bottom Controls (Trigger + Manual Input)
+          Positioned(
+            bottom: 30,
+            left: 20,
+            right: 20,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_holdToScanMode) ...[
+                  Listener(
+                    behavior: HitTestBehavior.opaque,
+                    onPointerDown: (_) {
+                      HapticFeedback.lightImpact();
+                      setState(() => _isHoldingTrigger = true);
+                      if (!_animController.isAnimating) {
+                        _animController.repeat(reverse: true);
+                      }
+                    },
+                    onPointerUp: (_) {
+                      setState(() => _isHoldingTrigger = false);
+                      _animController.stop();
+                      _animController.reset();
+                    },
+                    onPointerCancel: (_) {
+                      setState(() => _isHoldingTrigger = false);
+                      _animController.stop();
+                      _animController.reset();
+                    },
+                    child: AnimatedScale(
+                      scale: _isHoldingTrigger ? 0.96 : 1.0,
+                      duration: const Duration(milliseconds: 100),
+                      child: Container(
+                        height: 58,
+                        constraints: const BoxConstraints(maxWidth: 320),
+                        decoration: BoxDecoration(
+                          gradient: _isHoldingTrigger
+                              ? const LinearGradient(
+                                  colors: [Color(0xFF10B981), Color(0xFF059669)],
+                                )
+                              : const LinearGradient(
+                                  colors: [Color(0xFF4F46E5), Color(0xFF3730A3)],
+                                ),
+                          borderRadius: BorderRadius.circular(29),
+                          boxShadow: [
+                            BoxShadow(
+                              color: (_isHoldingTrigger
+                                      ? const Color(0xFF10B981)
+                                      : const Color(0xFF4F46E5))
+                                  .withValues(alpha: _isHoldingTrigger ? 0.6 : 0.35),
+                              blurRadius: _isHoldingTrigger ? 18 : 10,
+                              spreadRadius: _isHoldingTrigger ? 2 : 0,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Center(
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                _isHoldingTrigger ? Icons.sensors : Icons.touch_app,
+                                color: Colors.white,
+                                size: 24,
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                _isHoldingTrigger ? 'SCANNING (HOLDING)...' : 'HOLD TO SCAN',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 1.2,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextButton.icon(
+                    onPressed: _showManualInputDialog,
+                    icon: const Icon(Icons.keyboard, color: Colors.white70, size: 18),
+                    label: const Text(
+                      'Type Serial Manually',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF1E293B),
+                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                      elevation: 4,
+                    ),
+                    icon: const Icon(Icons.keyboard, size: 20, color: Color(0xFF3C3489)),
+                    label: const Text('Type Serial Manually', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    onPressed: _showManualInputDialog,
+                  ),
+                ],
+              ],
             ),
           ),
         ],

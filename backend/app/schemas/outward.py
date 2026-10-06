@@ -12,12 +12,17 @@ class OutwardCheckSerialRequest(BaseModel):
 
 class OutwardCheckSerialResponse(BaseModel):
     serial_number: str
-    case: int  # 1: Matched, 2: Unmatched (old stock), 3: Status conflict, 4: Model mismatch
-    badge: str  # "matched" (green), "unmatched" (grey), "warning" (amber)
-    badge_label: str  # "Matched", "Not in system, will be recorded", "Status Warning", "Model Warning"
+    case: int  # 0: Blocked (Already Dispatched), 1: Matched, 2: Unmatched (old stock), 3: Status conflict, 4: Model mismatch
+    case_name: str = "matched"  # "blocked", "matched", "unmatched", "status_warning", "model_mismatch"
+    badge: str  # "blocked", "matched", "unmatched", "warning"
+    badge_label: str  # "Already Dispatched", "Matched", "Not in system, will be recorded", "Status Warning", "Model Warning"
     message: str
-    requires_confirmation: bool
+    requires_confirmation: bool = False
     warning_duplicate_dispatch: bool = False
+    is_dispatched: bool = False
+    can_dispatch: bool = True
+    is_blocked: bool = False
+    is_matched: bool = False
     registered_model_name: Optional[str] = None
     current_status: Optional[str] = None
     last_dispatched_date: Optional[date] = None
@@ -35,6 +40,10 @@ class OutwardCheckRefResponse(BaseModel):
     message: Optional[str] = None
 
 
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
 class OutwardSerialInput(BaseModel):
     serial_number: str = Field(..., min_length=1, max_length=100)
     confirmed_warning: bool = False  # Set to True by staff if confirming case 3 or 4
@@ -45,8 +54,23 @@ class OutwardBatchCreate(BaseModel):
     shop_id: uuid.UUID
     delivery_reference: Optional[str] = Field(None, max_length=100)
     transaction_date: date = Field(default_factory=date.today)
-    serials: list[OutwardSerialInput] = Field(..., min_length=1, description="List of scanned serials with confirmation flags")
+    serials: list[OutwardSerialInput] = Field(default_factory=list, description="List of scanned serials with confirmation flags")
     remarks: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def handle_serial_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "serials" not in data or not data["serials"]:
+                raw_list = data.get("serial_numbers") or []
+                converted = []
+                for item in raw_list:
+                    if isinstance(item, str):
+                        converted.append({"serial_number": item, "confirmed_warning": True})
+                    elif isinstance(item, dict):
+                        converted.append(item)
+                data["serials"] = converted
+        return data
 
 
 class OutwardLineResponse(BaseModel):

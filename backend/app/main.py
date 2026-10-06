@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
+from app.api.v1.websocket import router as websocket_router
 from app.config import settings
 
 app = FastAPI(
@@ -29,7 +30,8 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-# Mount API routers
+# Mount WebSocket directly at root /ws and also under /api/v1
+app.include_router(websocket_router)
 app.include_router(api_router, prefix="/api")
 
 # Serve built React frontend if dist folder exists (spec §9)

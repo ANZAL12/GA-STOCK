@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
+import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { Product, Category } from "../types";
 
@@ -10,7 +11,8 @@ import {
   Layers, 
   Edit2, 
   Archive, 
-  AlertCircle 
+  AlertCircle,
+  FolderPlus
 } from "lucide-react";
 
 export const StockPage: React.FC = () => {
@@ -38,6 +40,33 @@ export const StockPage: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Category Modal state
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [categorySubmitting, setCategorySubmitting] = useState(false);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  const handleCreateCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCategoryName.trim()) return;
+    setCategorySubmitting(true);
+    setCategoryError(null);
+    try {
+      const created = await apiRequest<Category>("/categories", {
+        method: "POST",
+        body: JSON.stringify({ name: newCategoryName.trim() }),
+      });
+      await fetchStock();
+      setFormData((prev) => ({ ...prev, category_id: created.id }));
+      setNewCategoryName("");
+      setIsCategoryModalOpen(false);
+    } catch (err: any) {
+      setCategoryError(err.message || "Failed to create category");
+    } finally {
+      setCategorySubmitting(false);
+    }
+  };
+
   const fetchStock = async () => {
     try {
       const [prods, cats] = await Promise.all([
@@ -56,6 +85,20 @@ export const StockPage: React.FC = () => {
   useEffect(() => {
     fetchStock();
   }, []);
+
+  useWebSocket((event) => {
+    if (
+      event === "product_created" ||
+      event === "product_updated" ||
+      event === "product_deleted" ||
+      event === "category_created" ||
+      event === "category_updated" ||
+      event === "category_deleted" ||
+      event === "stock_updated"
+    ) {
+      fetchStock();
+    }
+  });
 
   const openAddModal = () => {
     setEditingProduct(null);
@@ -96,31 +139,37 @@ export const StockPage: React.FC = () => {
     setSubmitting(true);
     setFormError(null);
 
+    const finalName = `${formData.brand.trim()} ${formData.model.trim()}`.trim();
+
     try {
       if (editingProduct) {
         await apiRequest(`/products/${editingProduct.id}`, {
           method: "PUT",
           body: JSON.stringify({
-            name: formData.name,
-            sku: formData.sku || null,
+            name: finalName,
+            sku: null,
             category_id: formData.category_id,
-            brand: formData.brand,
-            model: formData.model,
-            size_capacity: formData.size_capacity || null,
-            unit: formData.unit,
-            description: formData.description || null,
-            ...(editingProduct.has_had_inward ? {} : { opening_stock_qty: Number(formData.opening_stock_qty) }),
+            brand: formData.brand.trim(),
+            model: formData.model.trim(),
+            size_capacity: null,
+            unit: "piece",
+            description: formData.description?.trim() || null,
+            ...(editingProduct.has_had_inward ? {} : { opening_stock_qty: Number(formData.opening_stock_qty) || 0 }),
           }),
         });
       } else {
         await apiRequest("/products", {
           method: "POST",
           body: JSON.stringify({
-            ...formData,
-            sku: formData.sku || null,
-            size_capacity: formData.size_capacity || null,
-            description: formData.description || null,
-            opening_stock_qty: Number(formData.opening_stock_qty),
+            name: finalName,
+            category_id: formData.category_id,
+            brand: formData.brand.trim(),
+            model: formData.model.trim(),
+            sku: null,
+            size_capacity: null,
+            unit: "piece",
+            description: formData.description?.trim() || null,
+            opening_stock_qty: Number(formData.opening_stock_qty) || 0,
           }),
         });
       }
@@ -151,8 +200,7 @@ export const StockPage: React.FC = () => {
     const matchesSearch =
       p.name.toLowerCase().includes(q) ||
       p.brand.toLowerCase().includes(q) ||
-      p.model.toLowerCase().includes(q) ||
-      (p.sku && p.sku.toLowerCase().includes(q));
+      p.model.toLowerCase().includes(q);
     return matchesCategory && matchesSearch;
   });
 
@@ -171,13 +219,26 @@ export const StockPage: React.FC = () => {
         </div>
 
         {isAdmin && (
-          <button
-            onClick={openAddModal}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer self-start sm:self-auto"
-          >
-            <Plus size={16} />
-            <span>Add Product Model</span>
-          </button>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <button
+              onClick={() => {
+                setCategoryError(null);
+                setNewCategoryName("");
+                setIsCategoryModalOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 shadow-sm transition-all cursor-pointer"
+            >
+              <FolderPlus size={15} className="text-[#3C3489]" />
+              <span>Add Category</span>
+            </button>
+            <button
+              onClick={openAddModal}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer"
+            >
+              <Plus size={16} />
+              <span>Add Product Model</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -194,19 +255,22 @@ export const StockPage: React.FC = () => {
           >
             All Products ({products.length})
           </button>
-          {categories.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => setSelectedCategory(c.id)}
-              className={`px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                selectedCategory === c.id
-                  ? "bg-[#3C3489] text-white shadow-sm"
-                  : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-              }`}
-            >
-              {c.name} ({c.product_count})
-            </button>
-          ))}
+          {categories.map((c) => {
+            const count = products.filter((p) => p.category_id === c.id).length;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setSelectedCategory(c.id)}
+                className={`px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                  selectedCategory === c.id
+                    ? "bg-[#3C3489] text-white shadow-sm"
+                    : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+                }`}
+              >
+                {c.name} ({count})
+              </button>
+            );
+          })}
         </div>
 
         <div className="relative w-full md:w-72 shrink-0">
@@ -215,7 +279,7 @@ export const StockPage: React.FC = () => {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter models, brand, SKU..."
+            placeholder="Filter models, brand..."
             className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] transition-all text-slate-800 placeholder-slate-400"
           />
         </div>
@@ -234,23 +298,19 @@ export const StockPage: React.FC = () => {
                   {p.category_name}
                 </span>
 
-                {p.out_of_stock_reminder ? (
+                {p.out_of_stock_reminder && (
                   <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
                     No tracked stock left
-                  </span>
-                ) : (
-                  <span className="text-[11px] font-medium text-slate-500">
-                    {p.sku || "No SKU"}
                   </span>
                 )}
               </div>
 
               <div>
                 <h3 className="font-bold text-base text-slate-900 tracking-tight leading-snug">
-                  {p.name}
+                  {p.brand} {p.model}
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  {p.brand} • {p.model} {p.size_capacity ? `• ${p.size_capacity}` : ""}
+                  Model: <span className="font-medium text-slate-700">{p.model}</span>
                 </p>
               </div>
 
@@ -319,24 +379,39 @@ export const StockPage: React.FC = () => {
 
         <form onSubmit={handleSave} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="sm:col-span-2">
+            <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Product Name *
+                Brand Name *
               </label>
               <input
                 type="text"
                 required
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="e.g. Samsung 43 inch LED TV"
+                value={formData.brand}
+                onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
+                placeholder="e.g. Samsung, LG, IFB"
                 className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Category *
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                  Category *
+                </label>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCategoryError(null);
+                      setNewCategoryName("");
+                      setIsCategoryModalOpen(true);
+                    }}
+                    className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
+                  >
+                    <Plus size={11} /> New Category
+                  </button>
+                )}
+              </div>
               <select
                 required
                 value={formData.category_id}
@@ -347,20 +422,6 @@ export const StockPage: React.FC = () => {
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Brand *
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.brand}
-                onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
-                placeholder="e.g. Samsung"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-              />
             </div>
 
             <div>
@@ -379,33 +440,7 @@ export const StockPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Size / Capacity
-              </label>
-              <input
-                type="text"
-                value={formData.size_capacity}
-                onChange={(e) => setFormData({ ...formData, size_capacity: e.target.value })}
-                placeholder="43 inch / 260 L / 7 kg / 1.5 Ton"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                SKU / Code
-              </label>
-              <input
-                type="text"
-                value={formData.sku}
-                onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-                placeholder="e.g. SAM-TV-43-01"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Opening Stock Qty
+                Old Stock Number (Opening Qty)
               </label>
               <input
                 type="number"
@@ -413,6 +448,7 @@ export const StockPage: React.FC = () => {
                 disabled={editingProduct?.has_had_inward}
                 value={formData.opening_stock_qty}
                 onChange={(e) => setFormData({ ...formData, opening_stock_qty: parseInt(e.target.value) || 0 })}
+                placeholder="0"
                 className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] disabled:bg-slate-50 disabled:text-slate-400"
               />
               {editingProduct?.has_had_inward && (
@@ -425,7 +461,7 @@ export const StockPage: React.FC = () => {
                 Description / Remarks
               </label>
               <textarea
-                rows={2}
+                rows={3}
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 placeholder="Optional notes or warranty details..."
@@ -448,6 +484,55 @@ export const StockPage: React.FC = () => {
               className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50"
             >
               {submitting ? "Saving..." : "Save Product"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Add Category Modal */}
+      <Modal
+        isOpen={isCategoryModalOpen}
+        onClose={() => setIsCategoryModalOpen(false)}
+        title="Add Appliance Category"
+        subtitle="Global Agencies Master Product Catalog"
+      >
+        {categoryError && (
+          <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+            <AlertCircle size={15} />
+            <span>{categoryError}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleCreateCategory} className="space-y-4">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+              Category Name *
+            </label>
+            <input
+              type="text"
+              required
+              autoFocus
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder="e.g. Microwave Oven, Dishwasher, Water Purifier"
+              className="w-full px-3 py-2.5 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+            />
+          </div>
+
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setIsCategoryModalOpen(false)}
+              className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={categorySubmitting}
+              className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {categorySubmitting ? "Creating..." : "Create Category"}
             </button>
           </div>
         </form>

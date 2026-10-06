@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
+import { useWebSocket } from "../api/useWebSocket";
 import type { 
   OverviewSummary, 
   StockByModelItem, 
@@ -31,7 +32,7 @@ export const OverviewPage: React.FC = () => {
   const [searchResult, setSearchResult] = useState<SerialDetail | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const fetchOverviewData = () => {
     Promise.all([
       apiRequest<OverviewSummary>("/reports/overview"),
       apiRequest<StockByModelItem[]>("/reports/stock-by-model"),
@@ -44,7 +45,22 @@ export const OverviewPage: React.FC = () => {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchOverviewData();
   }, []);
+
+  useWebSocket((event) => {
+    if (
+      event === "stock_updated" ||
+      event === "product_created" ||
+      event === "product_updated" ||
+      event === "product_deleted"
+    ) {
+      fetchOverviewData();
+    }
+  });
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();

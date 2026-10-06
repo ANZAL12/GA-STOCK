@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
 
 class OutwardScreen extends StatefulWidget {
@@ -16,6 +18,7 @@ class OutwardScreen extends StatefulWidget {
 class _OutwardScreenState extends State<OutwardScreen> {
   final ApiService _api = ApiService();
   final OfflineQueueService _queue = OfflineQueueService();
+  StreamSubscription? _wsSubscription;
 
   // Wizard steps: 1 = Shop, 2 = Model & Ref, 3 = Scanning & Review
   int _currentStep = 1;
@@ -43,10 +46,125 @@ class _OutwardScreenState extends State<OutwardScreen> {
   void initState() {
     super.initState();
     _loadMetadata();
+    _initWebSocket();
+  }
+
+  void _initWebSocket() {
+    WebSocketService().connect();
+    _wsSubscription = WebSocketService().stream.listen((event) {
+      if (!mounted) return;
+      final type = event['event'];
+      final data = event['data'];
+
+      if (type == 'product_created' && data is Map<String, dynamic>) {
+        try {
+          final newProd = Product.fromJson(data);
+          setState(() {
+            _products.removeWhere((p) => p.id == newProd.id);
+            _products.insert(0, newProd);
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.bolt, color: Colors.amber, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '⚡ Instant Update: Added ${newProd.brand} ${newProd.model}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              duration: const Duration(seconds: 3),
+              backgroundColor: const Color(0xFF1E1B4B),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        } catch (_) {}
+      } else if (type == 'product_updated' && data is Map<String, dynamic>) {
+        try {
+          final updatedProd = Product.fromJson(data);
+          setState(() {
+            final idx = _products.indexWhere((p) => p.id == updatedProd.id);
+            if (idx != -1) {
+              _products[idx] = updatedProd;
+              if (_selectedProduct?.id == updatedProd.id) {
+                _selectedProduct = updatedProd;
+              }
+            }
+          });
+        } catch (_) {}
+      } else if (type == 'product_deleted' && data is Map<String, dynamic>) {
+        final id = data['id']?.toString();
+        if (id != null) {
+          setState(() {
+            _products.removeWhere((p) => p.id == id);
+            if (_selectedProduct?.id == id) {
+              _selectedProduct = null;
+            }
+          });
+        }
+      } else if (type == 'stock_updated') {
+        _loadMetadata();
+      } else if (type == 'shop_created' && data is Map<String, dynamic>) {
+        try {
+          final newShop = Shop.fromJson(data);
+          if (newShop.isActive) {
+            setState(() {
+              _shops.removeWhere((s) => s.id == newShop.id);
+              _shops.add(newShop);
+              _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+            });
+          }
+        } catch (_) {}
+      } else if (type == 'shop_updated' && data is Map<String, dynamic>) {
+        try {
+          final updatedShop = Shop.fromJson(data);
+          setState(() {
+            _shops.removeWhere((s) => s.id == updatedShop.id);
+            if (updatedShop.isActive) {
+              _shops.add(updatedShop);
+              _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+              if (_selectedShop?.id == updatedShop.id) {
+                _selectedShop = updatedShop;
+              }
+            } else {
+              // Shop deactivated
+              if (_selectedShop?.id == updatedShop.id) {
+                _selectedShop = null;
+                if (_currentStep > 1) {
+                  _currentStep = 1;
+                }
+              }
+            }
+          });
+        } catch (_) {}
+      } else if (type == 'shop_deleted' && data is Map<String, dynamic>) {
+        if (data['bulk'] == true) {
+          _loadMetadata();
+        } else {
+          final id = data['id']?.toString();
+          if (id != null) {
+            setState(() {
+              _shops.removeWhere((s) => s.id == id);
+              if (_selectedShop?.id == id) {
+                _selectedShop = null;
+                if (_currentStep > 1) {
+                  _currentStep = 1;
+                }
+              }
+            });
+          }
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
+    _wsSubscription?.cancel();
     _deliveryRefController.dispose();
     _remarksController.dispose();
     super.dispose();
@@ -124,13 +242,30 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     try {
       final res = await _api.checkOutwardSerial(_selectedProduct!.id, cleanSerial);
-      final String caseName = res['case'] ?? 'unmatched';
-      final bool isMatched = res['is_matched'] ?? false;
+      final bool isBlocked = res['is_blocked'] == true ||
+          res['is_dispatched'] == true ||
+          res['can_dispatch'] == false ||
+          res['case'] == 0 ||
+          res['badge'] == 'blocked';
       final String? msg = res['message'];
+
+      // --- CRITICAL BLOCK: ALREADY DISPATCHED CAN NEVER BE SCANNED ---
+      if (isBlocked) {
+        HapticFeedback.heavyImpact();
+        await _showAlreadyDispatchedDialog(
+          cleanSerial,
+          msg ?? 'Serial "$cleanSerial" has already been dispatched. Dispatched serials can NEVER be scanned or dispatched again.',
+        );
+        return; // NEVER ADD TO LIST!
+      }
+
+      final dynamic caseVal = res['case'];
+      final String caseName = (res['case_name'] ?? '').toString();
+      final bool isMatched = res['is_matched'] == true || caseVal == 1 || caseName == 'matched';
       final serialDetail = res['serial'];
 
       // --- CASE 1: MATCHED (Tracked & Available) ---
-      if (caseName == 'matched' || (isMatched && res['can_dispatch'] == true)) {
+      if (caseVal == 1 || caseName == 'matched') {
         HapticFeedback.lightImpact();
         setState(() {
           _scannedItems.insert(
@@ -147,7 +282,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       }
 
       // --- CASE 2: RECORDED ONLY (Unmatched pre-go-live stock) ---
-      else if (caseName == 'unmatched' || (!isMatched && res['can_dispatch'] == true)) {
+      else if (caseVal == 2 || caseName == 'unmatched') {
         HapticFeedback.mediumImpact();
         setState(() {
           _scannedItems.insert(
@@ -163,8 +298,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _showToast('Recorded only: $cleanSerial', const Color(0xFF475569));
       }
 
-      // --- CASE 3: STATUS WARNING (Already dispatched, damaged, etc.) ---
-      else if (caseName == 'status_warning') {
+      // --- CASE 3: STATUS WARNING (Damaged, reserved, etc. NOT dispatched!) ---
+      else if (caseVal == 3 || caseName == 'status_warning') {
         HapticFeedback.heavyImpact();
         final proceed = await _showCase3StatusWarningDialog(cleanSerial, msg ?? 'Unit is not currently marked available.');
         if (proceed == true) {
@@ -184,26 +319,70 @@ class _OutwardScreenState extends State<OutwardScreen> {
       }
 
       // --- CASE 4: MODEL MISMATCH (Belongs to different appliance model) ---
-      else if (caseName == 'model_mismatch') {
+      else if (caseVal == 4 || caseName == 'model_mismatch') {
         HapticFeedback.heavyImpact();
-        final existingModel = serialDetail?['product_name'] ?? 'another model';
+        final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
         await _showCase4ModelMismatchDialog(cleanSerial, existingModel, msg);
       }
     } catch (e) {
-      // Offline fallback: add as unverified item
-      setState(() {
-        _scannedItems.insert(
-          0,
-          OutwardScanResult(
-            serialNumber: cleanSerial,
-            caseType: OutwardCase.recordedOnly,
-            isMatched: false,
-            warningMessage: 'Scanned offline (unverified)',
-          ),
-        );
-      });
-      _showToast('Added offline: $cleanSerial', const Color(0xFF2563EB));
+      HapticFeedback.heavyImpact();
+      _showSimpleAlert('Validation Error', 'Could not verify serial "$cleanSerial": $e');
     }
+  }
+
+  Future<void> _showAlreadyDispatchedDialog(String serial, String message) {
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.block_rounded, color: Color(0xFFDC2626), size: 28),
+            SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Already Dispatched',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Color(0xFFDC2626)),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFFECACA)),
+              ),
+              child: Text(
+                message,
+                style: const TextStyle(fontSize: 13, color: Color(0xFF991B1B), fontWeight: FontWeight.w600, height: 1.4),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'A barcode that has already been dispatched can NEVER be scanned or dispatched again to any shop or under any model.',
+              style: TextStyle(fontSize: 12, color: Color(0xFF64748B), height: 1.3),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showToast(String message, Color bgColor) {

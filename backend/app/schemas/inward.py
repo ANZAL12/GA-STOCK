@@ -17,12 +17,25 @@ class InwardValidateSerialResponse(BaseModel):
     message: Optional[str] = None
 
 
+from typing import Any, Optional
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
 class InwardBatchCreate(BaseModel):
     product_id: uuid.UUID
     transaction_date: date = Field(default_factory=date.today)
     invoice_reference: Optional[str] = Field(None, max_length=100)
-    serials: list[str] = Field(..., min_length=1, description="List of scanned serial numbers")
+    serials: list[str] = Field(default_factory=list, description="List of scanned serial numbers")
     remarks: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def handle_serial_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "serials" not in data or not data["serials"]:
+                if "serial_numbers" in data:
+                    data["serials"] = data["serial_numbers"]
+        return data
 
 
 class InwardLineResponse(BaseModel):

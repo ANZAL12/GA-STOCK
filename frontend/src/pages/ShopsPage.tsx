@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
+import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { Shop, ShopDispatchedSerial } from "../types";
 import { Badge } from "../components/Badge";
@@ -11,20 +12,24 @@ import {
   Phone, 
   Edit2, 
   Archive, 
+  Trash2,
+  RotateCcw,
   AlertCircle,
-  ChevronRight
+  ChevronRight,
+  Sparkles
 } from "lucide-react";
 
 export const ShopsPage: React.FC = () => {
   const { isAdmin } = useAuth();
   const [shops, setShops] = useState<Shop[]>([]);
   const [search, setSearch] = useState("");
-  
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
+  const [cleaningUp, setCleaningUp] = useState(false);
 
   // Shop Add / Edit Modal
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<Shop | null>(null);
-  const [shopForm, setShopForm] = useState({ name: "", city: "", phone: "" });
+  const [shopForm, setShopForm] = useState({ name: "", city: "", phone: "", is_active: true });
   const [shopFormError, setShopFormError] = useState<string | null>(null);
   const [shopSubmitting, setShopSubmitting] = useState(false);
 
@@ -39,8 +44,6 @@ export const ShopsPage: React.FC = () => {
       setShops(data);
     } catch (e) {
       console.error(e);
-    } finally {
-      
     }
   };
 
@@ -48,9 +51,15 @@ export const ShopsPage: React.FC = () => {
     fetchShops();
   }, []);
 
+  useWebSocket((event) => {
+    if (event === "shop_created" || event === "shop_updated" || event === "shop_deleted") {
+      fetchShops();
+    }
+  });
+
   const openAddShop = () => {
     setEditingShop(null);
-    setShopForm({ name: "", city: "", phone: "" });
+    setShopForm({ name: "", city: "", phone: "", is_active: true });
     setShopFormError(null);
     setIsShopModalOpen(true);
   };
@@ -58,7 +67,7 @@ export const ShopsPage: React.FC = () => {
   const openEditShop = (s: Shop, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingShop(s);
-    setShopForm({ name: s.name, city: s.city, phone: s.phone || "" });
+    setShopForm({ name: s.name, city: s.city, phone: s.phone || "", is_active: s.is_active });
     setShopFormError(null);
     setIsShopModalOpen(true);
   };
@@ -77,7 +86,11 @@ export const ShopsPage: React.FC = () => {
       } else {
         await apiRequest("/shops", {
           method: "POST",
-          body: JSON.stringify(shopForm),
+          body: JSON.stringify({
+            name: shopForm.name,
+            city: shopForm.city,
+            phone: shopForm.phone,
+          }),
         });
       }
       setIsShopModalOpen(false);
@@ -89,16 +102,64 @@ export const ShopsPage: React.FC = () => {
     }
   };
 
-  const handleDeactivate = async (s: Shop, e: React.MouseEvent) => {
+  // Toggle Activate / Deactivate
+  const handleToggleActive = async (s: Shop, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm(`Deactivate '${s.name}'? Shops with dispatch history are soft-deactivated to preserve reports.`)) {
-      return;
-    }
+    const actionLabel = s.is_active ? "Deactivate" : "Reactivate";
+    const confirmMsg = s.is_active
+      ? `Deactivate '${s.name}'? Staff will not see it on mobile scanner dispatch lists.`
+      : `Reactivate '${s.name}'? It will immediately appear on mobile scanner dispatch lists.`;
+
+    if (!window.confirm(confirmMsg)) return;
+
     try {
-      await apiRequest(`/shops/${s.id}`, { method: "DELETE" });
+      await apiRequest(`/shops/${s.id}/toggle-active`, { method: "PATCH" });
       fetchShops();
     } catch (err: any) {
-      alert(err.message || "Failed to deactivate shop.");
+      alert(err.message || `Failed to ${actionLabel.toLowerCase()} shop.`);
+    }
+  };
+
+  // Permanent Delete
+  const handleDelete = async (s: Shop, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (s.total_dispatched_count > 0) {
+      alert(
+        `Cannot permanently delete '${s.name}' because it has ${s.total_dispatched_count} recorded dispatch(es) in transaction history.\n\nPlease use the Deactivate button instead to hide it.`
+      );
+      return;
+    }
+
+    if (!window.confirm(`Permanently delete '${s.name}'? This cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      await apiRequest(`/shops/${s.id}?permanent=true`, { method: "DELETE" });
+      fetchShops();
+    } catch (err: any) {
+      alert(err.message || "Failed to delete shop.");
+    }
+  };
+
+  // Bulk Clean Unused Deactivated Shops
+  const handleCleanupUnused = async () => {
+    const unusedCount = shops.filter((s) => !s.is_active && s.total_dispatched_count === 0).length;
+    if (unusedCount === 0) return;
+
+    if (!window.confirm(`Clean up all ${unusedCount} deactivated test shop(s) with 0 dispatches?`)) {
+      return;
+    }
+
+    setCleaningUp(true);
+    try {
+      const res: any = await apiRequest("/shops/cleanup/unused-deactivated", { method: "DELETE" });
+      alert(res.message || "Cleanup completed successfully.");
+      fetchShops();
+    } catch (err: any) {
+      alert(err.message || "Failed to clean up test shops.");
+    } finally {
+      setCleaningUp(false);
     }
   };
 
@@ -115,11 +176,21 @@ export const ShopsPage: React.FC = () => {
     }
   };
 
-  const filtered = shops.filter(
-    (s) =>
-      s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.city.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = shops
+    .filter((s) => {
+      if (filterStatus === "active") return s.is_active;
+      if (filterStatus === "deactivated") return !s.is_active;
+      return true;
+    })
+    .filter(
+      (s) =>
+        s.name.toLowerCase().includes(search.toLowerCase()) ||
+        s.city.toLowerCase().includes(search.toLowerCase())
+    );
+
+  const activeCount = shops.filter((s) => s.is_active).length;
+  const deactivatedCount = shops.filter((s) => !s.is_active).length;
+  const unusedDeactivatedCount = shops.filter((s) => !s.is_active && s.total_dispatched_count === 0).length;
 
   return (
     <div className="space-y-6 animate-fade-in pb-12">
@@ -131,31 +202,84 @@ export const ShopsPage: React.FC = () => {
             Destination Shops
           </h1>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Registered retail shops for outward stock dispatch • View full delivery logs
+            Registered retail shops for outward stock dispatch • Real-time status & delivery logs
           </p>
         </div>
 
-        {isAdmin && (
-          <button
-            onClick={openAddShop}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer self-start sm:self-auto"
-          >
-            <Plus size={16} />
-            <span>Add Destination Shop</span>
-          </button>
-        )}
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {isAdmin && unusedDeactivatedCount > 0 && (
+            <button
+              onClick={handleCleanupUnused}
+              disabled={cleaningUp}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold hover:bg-rose-100 transition-all cursor-pointer disabled:opacity-50"
+              title="Delete all deactivated test shops that have 0 dispatches"
+            >
+              <Sparkles size={14} className="text-rose-500" />
+              <span>{cleaningUp ? "Cleaning..." : `Clean ${unusedDeactivatedCount} Test Shop${unusedDeactivatedCount > 1 ? "s" : ""}`}</span>
+            </button>
+          )}
+
+          {isAdmin && (
+            <button
+              onClick={openAddShop}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer"
+            >
+              <Plus size={16} />
+              <span>Add Destination Shop</span>
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Search Input */}
-      <div className="relative max-w-sm">
-        <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by shop name or city..."
-          className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] text-slate-800 placeholder-slate-400"
-        />
+      {/* Filter Tabs & Search */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        {/* Status Pills */}
+        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit text-xs font-medium">
+          <button
+            onClick={() => setFilterStatus("all")}
+            className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+              filterStatus === "all"
+                ? "bg-white text-slate-900 font-semibold shadow-sm"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            All Shops ({shops.length})
+          </button>
+          <button
+            onClick={() => setFilterStatus("active")}
+            className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+              filterStatus === "active"
+                ? "bg-white text-emerald-700 font-semibold shadow-sm"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+            Active ({activeCount})
+          </button>
+          <button
+            onClick={() => setFilterStatus("deactivated")}
+            className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+              filterStatus === "deactivated"
+                ? "bg-white text-rose-700 font-semibold shadow-sm"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-rose-400 inline-block" />
+            Deactivated ({deactivatedCount})
+          </button>
+        </div>
+
+        {/* Search Input */}
+        <div className="relative max-w-sm w-full sm:w-72">
+          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by shop name or city..."
+            className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] text-slate-800 placeholder-slate-400"
+          />
+        </div>
       </div>
 
       {/* Shops Grid */}
@@ -164,7 +288,9 @@ export const ShopsPage: React.FC = () => {
           <div
             key={shop.id}
             onClick={() => openDispatchedSerials(shop)}
-            className="bg-white border border-slate-200 hover:border-slate-300 rounded-2xl p-5 shadow-sm space-y-4 cursor-pointer transition-all hover:shadow-md flex flex-col justify-between group"
+            className={`bg-white border rounded-2xl p-5 shadow-sm space-y-4 cursor-pointer transition-all hover:shadow-md flex flex-col justify-between group ${
+              shop.is_active ? "border-slate-200 hover:border-slate-300" : "border-slate-200/80 bg-slate-50/50 opacity-90"
+            }`}
           >
             <div className="space-y-2">
               <div className="flex items-start justify-between gap-3">
@@ -173,7 +299,12 @@ export const ShopsPage: React.FC = () => {
                   {shop.city}
                 </span>
 
-                {!shop.is_active && (
+                {shop.is_active ? (
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    Active
+                  </span>
+                ) : (
                   <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
                     Deactivated
                   </span>
@@ -208,22 +339,42 @@ export const ShopsPage: React.FC = () => {
               <div className="flex items-center gap-1">
                 {isAdmin && (
                   <>
+                    {/* Edit */}
                     <button
                       onClick={(e) => openEditShop(shop, e)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-                      title="Edit Shop"
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                      title="Edit Shop Details"
                     >
                       <Edit2 size={14} />
                     </button>
-                    {shop.is_active && (
+
+                    {/* Toggle Active / Deactivate */}
+                    {shop.is_active ? (
                       <button
-                        onClick={(e) => handleDeactivate(shop, e)}
-                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                        title="Deactivate Shop"
+                        onClick={(e) => handleToggleActive(shop, e)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
+                        title="Deactivate Shop (hide from scanner)"
                       >
                         <Archive size={14} />
                       </button>
+                    ) : (
+                      <button
+                        onClick={(e) => handleToggleActive(shop, e)}
+                        className="p-1.5 rounded-lg text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
+                        title="Reactivate Shop"
+                      >
+                        <RotateCcw size={14} />
+                      </button>
                     )}
+
+                    {/* Permanent Delete */}
+                    <button
+                      onClick={(e) => handleDelete(shop, e)}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                      title={shop.total_dispatched_count === 0 ? "Permanently Delete Shop" : "Cannot delete shop with dispatch history"}
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </>
                 )}
                 <div className="p-1.5 text-slate-400 group-hover:text-[#3C3489] transition-colors">
@@ -233,6 +384,12 @@ export const ShopsPage: React.FC = () => {
             </div>
           </div>
         ))}
+
+        {filtered.length === 0 && (
+          <div className="col-span-full py-12 text-center text-xs text-slate-400 bg-white border border-slate-200 rounded-2xl">
+            No shops found matching your filter or search query.
+          </div>
+        )}
       </div>
 
       {/* Dispatched Serials Drawer / Modal (§11) */}
@@ -335,6 +492,27 @@ export const ShopsPage: React.FC = () => {
               className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
             />
           </div>
+
+          {editingShop && (
+            <div className="pt-2">
+              <label className="flex items-center gap-2.5 cursor-pointer p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={shopForm.is_active}
+                  onChange={(e) => setShopForm({ ...shopForm, is_active: e.target.checked })}
+                  className="rounded text-[#3C3489] focus:ring-[#3C3489] h-4 w-4 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-semibold text-slate-800 block">
+                    Shop is Active
+                  </span>
+                  <span className="text-[11px] text-slate-500 block">
+                    Active shops appear on mobile scanners for outward dispatches.
+                  </span>
+                </div>
+              </label>
+            </div>
+          )}
 
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
             <button

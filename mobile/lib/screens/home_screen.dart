@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/websocket_service.dart';
 import 'login_screen.dart';
 import 'inward_screen.dart';
 import 'outward_screen.dart';
@@ -23,6 +24,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _refreshQueueCount();
+    WebSocketService().connect();
   }
 
   Future<void> _refreshQueueCount() async {

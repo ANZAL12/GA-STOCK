@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'screens/splash_screen.dart';
+import 'services/sound_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SoundService().init();
   runApp(const GodownScannerApp());
 }
 

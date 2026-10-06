@@ -6,7 +6,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+import json
 from app.api.deps import get_current_user, require_admin
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.category import Category
@@ -151,6 +153,8 @@ async def create_product(
 
     resp = ProductResponse.model_validate(product)
     resp.category_name = cat.name
+
+    await ws_manager.broadcast("product_created", json.loads(resp.model_dump_json()))
     return resp
 
 
@@ -239,6 +243,8 @@ async def update_product(
 
     resp = ProductResponse.model_validate(product)
     resp.category_name = cat_name
+
+    await ws_manager.broadcast("product_updated", json.loads(resp.model_dump_json()))
     return resp
 
 
@@ -276,4 +282,6 @@ async def deactivate_product(
 
     resp = ProductResponse.model_validate(product)
     resp.category_name = cat_name
+
+    await ws_manager.broadcast("product_deleted", {"id": str(product_id)})
     return resp

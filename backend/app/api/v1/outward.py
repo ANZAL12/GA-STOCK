@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_device_optional, get_current_user
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.enums import HistoryAction, SerialStatus
@@ -59,43 +60,82 @@ async def check_serial(
     result = await db.execute(query)
     row = result.first()
 
-    # Case 2: Not in system at all (old pre-go-live stock) -> NOT AN ERROR
-    if not row:
-        # Check if this unmatched serial was already dispatched previously (soft warning)
-        prev_disp_res = await db.execute(
-            select(OutwardLine, Shop.name.label("shop_name"))
-            .join(Shop, OutwardLine.shop_id == Shop.id)
-            .where(OutwardLine.serial_text == clean_serial)
-            .order_by(OutwardLine.transaction_date.desc())
+    # 2. Query previous outward dispatch lines (any batch, any shop)
+    prev_disp_res = await db.execute(
+        select(OutwardLine, Shop.name.label("shop_name"))
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(OutwardLine.serial_text == clean_serial)
+        .order_by(OutwardLine.transaction_date.desc())
+    )
+    prev_disp = prev_disp_res.first()
+
+    is_already_dispatched = False
+    disp_shop_name = None
+    disp_date = None
+    registered_model_display = None
+
+    if row:
+        sn, prod_name, prod_model, last_shop_name = row
+        registered_model_display = f"{prod_name} ({prod_model})"
+        if sn.status == SerialStatus.dispatched:
+            is_already_dispatched = True
+            disp_shop_name = last_shop_name
+
+    if prev_disp:
+        is_already_dispatched = True
+        disp_line, s_name = prev_disp
+        disp_shop_name = s_name or disp_shop_name
+        disp_date = disp_line.transaction_date
+
+    # --- STRICT RULE: ONCE DISPATCHED, NEVER SCANNED OR DISPATCHED AGAIN ---
+    if is_already_dispatched:
+        shop_info = f" to shop '{disp_shop_name}'" if disp_shop_name else ""
+        date_info = f" on {disp_date}" if disp_date else ""
+        return OutwardCheckSerialResponse(
+            serial_number=clean_serial,
+            case=0,
+            case_name="blocked",
+            badge="blocked",
+            badge_label="Already Dispatched",
+            message=f"Serial '{clean_serial}' has ALREADY been dispatched{shop_info}{date_info}. It cannot be scanned or dispatched again.",
+            requires_confirmation=False,
+            warning_duplicate_dispatch=True,
+            is_dispatched=True,
+            can_dispatch=False,
+            is_blocked=True,
+            is_matched=row is not None,
+            registered_model_name=registered_model_display,
+            current_status="dispatched",
+            last_dispatched_date=disp_date,
+            last_dispatched_shop_name=disp_shop_name,
         )
-        prev_disp = prev_disp_res.first()
-        is_dup = prev_disp is not None
 
-        msg = "Not in system (pre-go-live stock). Will be recorded without error."
-        if is_dup:
-            line_obj, s_name = prev_disp
-            msg += f" Note: Previously dispatched on {line_obj.transaction_date} to {s_name}."
-
+    # Case 2: Not in system at all (old pre-go-live stock, not yet dispatched)
+    if not row:
         return OutwardCheckSerialResponse(
             serial_number=clean_serial,
             case=2,
+            case_name="unmatched",
             badge="unmatched",
             badge_label="Not in system, will be recorded",
-            message=msg,
+            message="Not in system (pre-go-live stock). Will be recorded without error.",
             requires_confirmation=False,
-            warning_duplicate_dispatch=is_dup,
-            last_dispatched_date=prev_disp[0].transaction_date if is_dup else None,
-            last_dispatched_shop_name=prev_disp[1] if is_dup else None,
+            warning_duplicate_dispatch=False,
+            is_dispatched=False,
+            can_dispatch=True,
+            is_blocked=False,
+            is_matched=False,
         )
 
     sn, prod_name, prod_model, last_shop_name = row
     registered_model_display = f"{prod_name} ({prod_model})"
 
-    # Case 4: Known but belongs to a different model than the one selected
+    # Case 4: Known, not dispatched, but belongs to a different model than the one selected
     if sn.product_id != req.product_id:
         return OutwardCheckSerialResponse(
             serial_number=clean_serial,
             case=4,
+            case_name="model_mismatch",
             badge="warning",
             badge_label="Model Warning",
             message=(
@@ -103,25 +143,33 @@ async def check_serial(
                 "Confirm to dispatch anyway (will be flagged for admin review)."
             ),
             requires_confirmation=True,
+            warning_duplicate_dispatch=False,
+            is_dispatched=False,
+            can_dispatch=True,
+            is_blocked=False,
+            is_matched=False,
             registered_model_name=registered_model_display,
             current_status=sn.status.value,
         )
 
-    # Case 3: Known, same model, but status is NOT Available
+    # Case 3: Known, same model, not dispatched, but status is NOT Available
     if sn.status != SerialStatus.available:
-        msg = f"Serial is currently in status '{sn.status.value}'"
-        if sn.status == SerialStatus.dispatched and last_shop_name:
-            msg += f" (previously dispatched to {last_shop_name})"
-        msg += ". Confirm to dispatch anyway (will be flagged for admin review)."
-
         return OutwardCheckSerialResponse(
             serial_number=clean_serial,
             case=3,
+            case_name="status_warning",
             badge="warning",
             badge_label="Status Warning",
-            message=msg,
+            message=(
+                f"Serial is currently in status '{sn.status.value}'. "
+                "Confirm to dispatch anyway (will be flagged for admin review)."
+            ),
             requires_confirmation=True,
-            warning_duplicate_dispatch=(sn.status == SerialStatus.dispatched),
+            warning_duplicate_dispatch=False,
+            is_dispatched=False,
+            can_dispatch=True,
+            is_blocked=False,
+            is_matched=True,
             registered_model_name=registered_model_display,
             current_status=sn.status.value,
             last_dispatched_shop_name=last_shop_name,
@@ -131,10 +179,16 @@ async def check_serial(
     return OutwardCheckSerialResponse(
         serial_number=clean_serial,
         case=1,
+        case_name="matched",
         badge="matched",
         badge_label="Matched",
         message="Available and matched to selected model.",
         requires_confirmation=False,
+        warning_duplicate_dispatch=False,
+        is_dispatched=False,
+        can_dispatch=True,
+        is_blocked=False,
+        is_matched=True,
         registered_model_name=registered_model_display,
         current_status="available",
     )
@@ -173,6 +227,31 @@ async def check_reference(
     return OutwardCheckRefResponse(has_warning=False)
 
 
+@router.get("/check-serial", response_model=OutwardCheckSerialResponse)
+async def check_serial_get(
+    product_id: uuid.UUID,
+    serial_number: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    shop_id: Optional[uuid.UUID] = None,
+) -> OutwardCheckSerialResponse:
+    dummy_shop_id = shop_id or uuid.uuid4()
+    req = OutwardCheckSerialRequest(product_id=product_id, shop_id=dummy_shop_id, serial_number=serial_number)
+    return await check_serial(req=req, current_user=current_user, db=db)
+
+
+@router.get("/check-reference", response_model=OutwardCheckRefResponse)
+async def check_reference_get(
+    shop_id: uuid.UUID,
+    reference: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> OutwardCheckRefResponse:
+    req = OutwardCheckRefRequest(shop_id=shop_id, delivery_reference=reference)
+    return await check_reference(req=req, current_user=current_user, db=db)
+
+
+@router.post("/batch", response_model=OutwardBatchResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/batches", response_model=OutwardBatchResponse, status_code=status.HTTP_201_CREATED)
 async def create_outward_batch(
     req: OutwardBatchCreate,
@@ -242,7 +321,28 @@ async def create_outward_batch(
     sn_res = await db.execute(sn_query)
     sn_map: dict[str, SerialNumber] = {sn.serial_number: sn for sn in sn_res.scalars().all()}
 
-    # 6. Pre-validate: ensure any case 3 or case 4 serial has confirmation
+    # 6. STRICT BLOCK: Check if any serial was already dispatched
+    for s_text, _ in cleaned_items:
+        if s_text in sn_map and sn_map[s_text].status == SerialStatus.dispatched:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Serial '{s_text}' has already been dispatched. Dispatched serials cannot be dispatched again under any circumstances.",
+            )
+
+    existing_outward_res = await db.execute(
+        select(OutwardLine.serial_text, Shop.name.label("shop_name"))
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(OutwardLine.serial_text.in_(serial_texts))
+    )
+    already_disp_lines = existing_outward_res.all()
+    if already_disp_lines:
+        first_bad = already_disp_lines[0]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Serial '{first_bad.serial_text}' was already dispatched (to shop '{first_bad.shop_name}') and cannot be dispatched again under any circumstances.",
+        )
+
+    # 7. Pre-validate: ensure any case 3 or case 4 serial has confirmation
     for s_text, is_confirmed in cleaned_items:
         if s_text in sn_map:
             sn = sn_map[s_text]
@@ -509,7 +609,7 @@ async def create_outward_batch(
     await db.commit()
     await db.refresh(batch)
 
-    return OutwardBatchResponse(
+    resp = OutwardBatchResponse(
         id=batch.id,
         product_id=product.id,
         product_name=product.name,
@@ -531,6 +631,16 @@ async def create_outward_batch(
         created_at=batch.created_at,
         lines=line_responses,
     )
+
+    await ws_manager.broadcast("stock_updated", {
+        "type": "outward",
+        "product_id": str(product.id),
+        "current_stock_qty": product.current_stock_qty,
+        "quantity": len(cleaned_items),
+        "delivery_reference": batch.delivery_reference,
+    })
+
+    return resp
 
 
 @router.get("/batches", response_model=list[OutwardBatchResponse])

@@ -12,6 +12,7 @@ from app.api.v1.returns import router as returns_router
 from app.api.v1.serials import router as serials_router
 from app.api.v1.shops import router as shops_router
 from app.api.v1.users import router as users_router
+from app.api.v1.websocket import router as websocket_router
 
 api_router = APIRouter(prefix="/v1")
 api_router.include_router(auth_router)
@@ -26,3 +27,4 @@ api_router.include_router(returns_router)
 api_router.include_router(serials_router)
 api_router.include_router(reports_router)
 api_router.include_router(audit_router)
+api_router.include_router(websocket_router)

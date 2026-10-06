@@ -143,11 +143,35 @@ export interface SerialDetail {
   product_name?: string | null;
   brand?: string | null;
   model?: string | null;
+  category_name?: string | null;
   last_shop_id?: string | null;
   last_shop_name?: string | null;
   last_shop_city?: string | null;
   status_label: string;
   history: SerialHistoryItem[];
+}
+
+export interface SerialListItem {
+  serial_number: string;
+  serial_number_id?: string | null;
+  brand: string;
+  model: string;
+  product_name: string;
+  category_name?: string | null;
+  status: string;
+  status_label: string;
+  flow_type: "inward" | "outward";
+  transaction_date?: string | null;
+  created_at: string;
+  shop_name?: string | null;
+  shop_city?: string | null;
+  reference?: string | null;
+  is_matched: boolean;
+}
+
+export interface SerialListResponse {
+  total: number;
+  items: SerialListItem[];
 }
 
 export interface AuditLogItem {

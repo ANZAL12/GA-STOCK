@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
 
 class InwardScreen extends StatefulWidget {
@@ -16,6 +18,7 @@ class InwardScreen extends StatefulWidget {
 class _InwardScreenState extends State<InwardScreen> {
   final ApiService _api = ApiService();
   final OfflineQueueService _queue = OfflineQueueService();
+  StreamSubscription? _wsSubscription;
 
   List<Product> _products = [];
   Product? _selectedProduct;
@@ -30,10 +33,75 @@ class _InwardScreenState extends State<InwardScreen> {
   void initState() {
     super.initState();
     _loadProducts();
+    _initWebSocket();
+  }
+
+  void _initWebSocket() {
+    WebSocketService().connect();
+    _wsSubscription = WebSocketService().stream.listen((event) {
+      if (!mounted) return;
+      final type = event['event'];
+      final data = event['data'];
+
+      if (type == 'product_created' && data is Map<String, dynamic>) {
+        try {
+          final newProd = Product.fromJson(data);
+          setState(() {
+            _products.removeWhere((p) => p.id == newProd.id);
+            _products.insert(0, newProd);
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.bolt, color: Colors.amber, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '⚡ Instant Update: Added ${newProd.brand} ${newProd.model}',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+              duration: const Duration(seconds: 3),
+              backgroundColor: const Color(0xFF1E1B4B),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        } catch (_) {}
+      } else if (type == 'product_updated' && data is Map<String, dynamic>) {
+        try {
+          final updatedProd = Product.fromJson(data);
+          setState(() {
+            final idx = _products.indexWhere((p) => p.id == updatedProd.id);
+            if (idx != -1) {
+              _products[idx] = updatedProd;
+              if (_selectedProduct?.id == updatedProd.id) {
+                _selectedProduct = updatedProd;
+              }
+            }
+          });
+        } catch (_) {}
+      } else if (type == 'product_deleted' && data is Map<String, dynamic>) {
+        final id = data['id']?.toString();
+        if (id != null) {
+          setState(() {
+            _products.removeWhere((p) => p.id == id);
+            if (_selectedProduct?.id == id) {
+              _selectedProduct = null;
+            }
+          });
+        }
+      } else if (type == 'stock_updated') {
+        _loadProducts();
+      }
+    });
   }
 
   @override
   void dispose() {
+    _wsSubscription?.cancel();
     _remarksController.dispose();
     super.dispose();
   }
@@ -118,16 +186,8 @@ class _InwardScreenState extends State<InwardScreen> {
         );
       }
     } catch (e) {
-      // If validation fails due to network, add with local prompt
-      setState(() {
-        _scannedSerials.insert(0, cleanSerial);
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Added offline: $cleanSerial'),
-          duration: const Duration(seconds: 1),
-        ),
-      );
+      HapticFeedback.heavyImpact();
+      _showWarningDialog('Validation Error', 'Failed to validate serial "$cleanSerial": $e');
     }
   }
 

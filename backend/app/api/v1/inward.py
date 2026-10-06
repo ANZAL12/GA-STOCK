@@ -8,13 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_device_optional, get_current_user
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.enums import HistoryAction, SerialStatus
 from app.models.history import SerialHistory
 from app.models.inward import InwardBatch, InwardLine
+from app.models.outward import OutwardLine
 from app.models.product import Product
 from app.models.serial import SerialNumber
+from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.inward import (
     InwardBatchCreate,
@@ -59,6 +62,15 @@ async def validate_serial(
     if row:
         sn, prod_name, prod_model = row
         model_display = f"{prod_name} ({prod_model})"
+        if sn.status == SerialStatus.dispatched:
+            return InwardValidateSerialResponse(
+                serial_number=clean_serial,
+                is_valid=False,
+                already_exists=True,
+                registered_model_name=model_display,
+                registered_model_id=sn.product_id,
+                message=f"Serial '{clean_serial}' was previously dispatched to a customer/shop. Cannot be inwarded again.",
+            )
         return InwardValidateSerialResponse(
             serial_number=clean_serial,
             is_valid=False,
@@ -66,6 +78,21 @@ async def validate_serial(
             registered_model_name=model_display,
             registered_model_id=sn.product_id,
             message=f"Serial '{clean_serial}' is already registered under {model_display}.",
+        )
+
+    # Check if this serial was previously dispatched in an outward batch
+    out_res = await db.execute(
+        select(OutwardLine, Shop.name.label("shop_name"))
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(OutwardLine.serial_text == clean_serial)
+    )
+    out_row = out_res.first()
+    if out_row:
+        return InwardValidateSerialResponse(
+            serial_number=clean_serial,
+            is_valid=False,
+            already_exists=True,
+            message=f"Serial '{clean_serial}' was previously dispatched to shop '{out_row[1]}'. Cannot be inwarded again.",
         )
 
     return InwardValidateSerialResponse(
@@ -76,6 +103,18 @@ async def validate_serial(
     )
 
 
+@router.get("/validate-serial", response_model=InwardValidateSerialResponse)
+async def validate_serial_get(
+    serial_number: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    product_id: Optional[uuid.UUID] = None,
+) -> InwardValidateSerialResponse:
+    req = InwardValidateSerialRequest(serial_number=serial_number)
+    return await validate_serial(req=req, current_user=current_user, db=db)
+
+
+@router.post("/batch", response_model=InwardBatchResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/batches", response_model=InwardBatchResponse, status_code=status.HTTP_201_CREATED)
 async def create_inward_batch(
     req: InwardBatchCreate,
@@ -139,6 +178,23 @@ async def create_inward_batch(
             detail=(
                 f"Cannot submit inward: Serial '{clash_sn.serial_number}' is already "
                 f"registered under '{clash_pname} ({clash_pmodel})'."
+            ),
+        )
+
+    # Check if any serial was previously dispatched in OutwardLine
+    existing_outward_res = await db.execute(
+        select(OutwardLine.serial_text, Shop.name.label("shop_name"))
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(OutwardLine.serial_text.in_(raw_serials))
+    )
+    already_disp_lines = existing_outward_res.all()
+    if already_disp_lines:
+        first_bad = already_disp_lines[0]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Cannot submit inward: Serial '{first_bad.serial_text}' was previously "
+                f"dispatched (to shop '{first_bad.shop_name}') and cannot be inwarded."
             ),
         )
 
@@ -211,7 +267,7 @@ async def create_inward_batch(
     await db.commit()
     await db.refresh(batch)
 
-    return InwardBatchResponse(
+    resp = InwardBatchResponse(
         id=batch.id,
         product_id=product.id,
         product_name=product.name,
@@ -227,6 +283,16 @@ async def create_inward_batch(
         created_at=batch.created_at,
         serials=created_serials,
     )
+
+    await ws_manager.broadcast("stock_updated", {
+        "type": "inward",
+        "product_id": str(product.id),
+        "current_stock_qty": product.current_stock_qty,
+        "quantity": len(raw_serials),
+        "invoice_reference": batch.invoice_reference,
+    })
+
+    return resp
 
 
 @router.get("/batches", response_model=list[InwardBatchResponse])

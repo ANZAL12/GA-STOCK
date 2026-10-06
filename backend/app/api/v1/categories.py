@@ -5,7 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import json
 from app.api.deps import get_current_user, require_admin
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.category import Category
@@ -26,9 +28,10 @@ async def list_categories(
     List categories. Accessible by both admin and staff.
     Includes count of products associated with each category.
     """
-    # Subquery for product count
+    # Subquery for active product count only (exclude deactivated/deleted products)
     count_subq = (
         select(Product.category_id, func.count(Product.id).label("prod_count"))
+        .where(Product.is_active == True)
         .group_by(Product.category_id)
         .subquery()
     )
@@ -88,6 +91,7 @@ async def create_category(
     await db.refresh(category)
     resp = CategoryResponse.model_validate(category)
     resp.product_count = 0
+    await ws_manager.broadcast("category_created", json.loads(resp.model_dump_json()))
     return resp
 
 
@@ -136,6 +140,7 @@ async def update_category(
     await db.commit()
     await db.refresh(category)
     resp = CategoryResponse.model_validate(category)
+    await ws_manager.broadcast("category_updated", json.loads(resp.model_dump_json()))
     return resp
 
 
@@ -166,4 +171,6 @@ async def deactivate_category(
 
     await db.commit()
     await db.refresh(category)
-    return CategoryResponse.model_validate(category)
+    resp = CategoryResponse.model_validate(category)
+    await ws_manager.broadcast("category_deleted", {"id": str(category_id)})
+    return resp
