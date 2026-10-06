@@ -65,6 +65,7 @@ flutter:
 
   assets:
     - assets/sounds/
+    - assets/sounds/scanner_beep.wav
     - assets/sounds/scanner_beep.mp3
     - assets/sounds/beep.mp3
     - assets/sounds/freesound_community-store-scanner-beep-90395 (2).mp3

@@ -7,16 +7,14 @@ class SoundService {
   factory SoundService() => _instance;
   SoundService._internal();
 
-  AudioPlayer? _player;
-  Uint8List? _beepBytes;
+  AudioPool? _pool;
+  AudioPlayer? _fallbackPlayer;
   bool _initialized = false;
 
   Future<void> init() async {
     if (_initialized) return;
     try {
-      _player = AudioPlayer();
-      await _player!.setPlayerMode(PlayerMode.lowLatency);
-      await _player!.setAudioContext(AudioContext(
+      await AudioPlayer.global.setAudioContext(AudioContext(
         android: const AudioContextAndroid(
           isSpeakerphoneOn: true,
           stayAwake: false,
@@ -25,44 +23,49 @@ class SoundService {
           audioFocus: AndroidAudioFocus.none,
         ),
       ));
-      await _player!.setVolume(1.0);
 
-      // Preload bytes from asset bundle for instant playback
-      try {
-        final data = await rootBundle.load('assets/sounds/scanner_beep.mp3');
-        _beepBytes = data.buffer.asUint8List();
-        debugPrint('[SoundService] Preloaded custom barcode sound: ${_beepBytes!.length} bytes');
-      } catch (e) {
-        debugPrint('[SoundService] Preload error: $e');
-      }
-
+      // 1. Initialize AudioPool with trimmed, 0-latency WAV asset
+      _pool = await AudioPool.createFromAsset(
+        path: 'sounds/scanner_beep.wav',
+        minPlayers: 2,
+        maxPlayers: 4,
+        playerMode: PlayerMode.lowLatency,
+      );
+      debugPrint('[SoundService] AudioPool initialized with zero-latency scanner_beep.wav');
       _initialized = true;
     } catch (e) {
-      debugPrint('[SoundService] init failed: $e');
+      debugPrint('[SoundService] AudioPool init failed: $e, setting up fallback player');
+      try {
+        _fallbackPlayer = AudioPlayer();
+        await _fallbackPlayer!.setPlayerMode(PlayerMode.lowLatency);
+        await _fallbackPlayer!.setSource(AssetSource('sounds/scanner_beep.wav'));
+        _initialized = true;
+      } catch (err) {
+        debugPrint('[SoundService] Fallback player error: $err');
+      }
     }
   }
 
-  Future<void> playScannerBeep() async {
-    // 1. Play immediate system feedback as guarantee
+  void playScannerBeep() {
+    // 1. Immediate hardware system click (0ms response guarantee)
     try {
       SystemSound.play(SystemSoundType.click);
     } catch (_) {}
 
-    // 2. Play custom store scanner beep sound
+    // 2. Instant preloaded sound playback from pool
     try {
-      debugPrint('[SoundService] Playing barcode beep sound (bytes: ${_beepBytes?.length})...');
-      final player = _player ?? AudioPlayer();
-      if (_beepBytes != null) {
-        await player.play(BytesSource(_beepBytes!), volume: 1.0);
+      if (_pool != null) {
+        _pool!.start(volume: 1.0);
+      } else if (_fallbackPlayer != null) {
+        _fallbackPlayer!.seek(Duration.zero).then((_) {
+          _fallbackPlayer!.resume();
+        });
       } else {
-        await player.play(AssetSource('sounds/scanner_beep.mp3'), volume: 1.0);
+        // Emergency uninitialized playback
+        AudioPlayer().play(AssetSource('sounds/scanner_beep.wav'), volume: 1.0);
       }
     } catch (e) {
-      debugPrint('[SoundService] play error: $e');
-      try {
-        final fallback = AudioPlayer();
-        await fallback.play(AssetSource('sounds/scanner_beep.mp3'), volume: 1.0);
-      } catch (_) {}
+      debugPrint('[SoundService] playScannerBeep error: $e');
     }
   }
 }

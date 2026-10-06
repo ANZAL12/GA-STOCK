@@ -134,9 +134,10 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
       _lastScannedValue = cleanVal;
       _lastScannedTime = now;
 
-      setState(() => _isProcessing = true);
-      HapticFeedback.mediumImpact();
+      // Fire beep sound and haptic first for absolute zero-delay audio feedback
       SoundService().playScannerBeep();
+      HapticFeedback.mediumImpact();
+      setState(() => _isProcessing = true);
 
       widget.onScanned(cleanVal);
 
