@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_admin
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.category import Category
@@ -13,6 +14,7 @@ from app.models.enums import HistoryAction, SerialStatus
 from app.models.history import SerialHistory
 from app.models.inward import InwardBatch, InwardLine
 from app.models.outward import OutwardBatch, OutwardLine
+from app.models.return_ import Return
 from app.models.product import Product
 from app.models.serial import SerialNumber
 from app.models.shop import Shop
@@ -46,6 +48,7 @@ async def list_serials(
         select(
             OutwardLine.serial_number_id,
             OutwardLine.transaction_date.label("outward_date"),
+            OutwardBatch.bill_number.label("outward_bill_no"),
             OutwardBatch.delivery_reference.label("outward_ref"),
             OutwardLine.created_at.label("outward_created_at"),
             OutwardLine.unit_type.label("outward_unit_type"),
@@ -76,6 +79,7 @@ async def list_serials(
             InwardBatch.transaction_date.label("inward_date"),
             InwardBatch.invoice_reference.label("inward_ref"),
             outward_subq.c.outward_date,
+            outward_subq.c.outward_bill_no,
             outward_subq.c.outward_ref,
             outward_subq.c.outward_created_at,
             outward_subq.c.outward_unit_type,
@@ -104,13 +108,18 @@ async def list_serials(
             s_label = "Dispatched"
             t_date = r.outward_date or (r.sn_created_at.date() if r.sn_created_at else None)
             ts = r.outward_created_at or r.sn_created_at
-            ref = r.outward_ref
+            bill_no = (r.outward_bill_no or "").strip() or None
+            deliv_ref = (r.outward_ref or "").strip() or None
+            # Prioritize bill number as the reference for dispatched, otherwise delivery/vehicle ref
+            ref = bill_no if bill_no else deliv_ref
             s_name = r.outward_shop_name or r.shop_name
             s_city = r.outward_shop_city or r.shop_city
         else:
             s_label = r.sn_status.value.replace("_", " ").title()
             t_date = r.inward_date or (r.sn_created_at.date() if r.sn_created_at else None)
             ts = r.sn_created_at
+            bill_no = None
+            deliv_ref = None
             ref = r.inward_ref
             s_name = r.shop_name if r.sn_status != SerialStatus.available else None
             s_city = r.shop_city if r.sn_status != SerialStatus.available else None
@@ -131,6 +140,8 @@ async def list_serials(
                 shop_name=s_name,
                 shop_city=s_city,
                 reference=ref,
+                bill_number=bill_no,
+                delivery_reference=deliv_ref,
                 is_matched=True,
                 unit_type=r.sn_unit_type or r.outward_unit_type,
             )
@@ -149,6 +160,7 @@ async def list_serials(
             Category.name.label("cat_name"),
             Shop.name.label("shop_name"),
             Shop.city.label("shop_city"),
+            OutwardBatch.bill_number.label("outward_bill_no"),
             OutwardBatch.delivery_reference.label("outward_ref"),
         )
         .join(Product, OutwardLine.product_id == Product.id)
@@ -163,6 +175,9 @@ async def list_serials(
     for r in unm_rows:
         if r.serial_text.lower() in seen_serials:
             continue
+        bill_no = (r.outward_bill_no or "").strip() or None
+        deliv_ref = (r.outward_ref or "").strip() or None
+        ref = bill_no if bill_no else deliv_ref
         items.append(
             SerialListItem(
                 serial_number=r.serial_text,
@@ -178,7 +193,9 @@ async def list_serials(
                 created_at=r.created_at,
                 shop_name=r.shop_name,
                 shop_city=r.shop_city,
-                reference=r.outward_ref,
+                reference=ref,
+                bill_number=bill_no,
+                delivery_reference=deliv_ref,
                 is_matched=False,
                 unit_type=r.unit_type,
             )
@@ -206,6 +223,8 @@ async def list_serials(
             or (i.shop_name and term in i.shop_name.lower())
             or (i.shop_city and term in i.shop_city.lower())
             or (i.reference and term in i.reference.lower())
+            or (i.bill_number and term in i.bill_number.lower())
+            or (i.delivery_reference and term in i.delivery_reference.lower())
         ]
 
     # Sort newest first
@@ -465,3 +484,145 @@ async def update_serial_status(
 
     # Re-fetch for response
     return await lookup_serial(serial_number=sn.serial_number, current_user=current_user, db=db)
+
+
+@router.delete("/{serial_id}")
+async def delete_serial(
+    serial_id: str,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """
+    Admin only: permanently delete a scanned serial number.
+    Reconciles product stock count, removes inward references, and audits the deletion.
+    """
+    if serial_id.startswith("outward_"):
+        outward_uuid = uuid.UUID(serial_id.replace("outward_", ""))
+        line_res = await db.execute(
+            select(OutwardLine).where(OutwardLine.id == outward_uuid).with_for_update()
+        )
+        outward_line = line_res.scalar_one_or_none()
+        if not outward_line:
+            raise HTTPException(status_code=404, detail="Outward serial record not found.")
+
+        prod_res = await db.execute(
+            select(Product).where(Product.id == outward_line.product_id).with_for_update()
+        )
+        product = prod_res.scalar_one_or_none()
+
+        deleted_text = outward_line.serial_text
+        product_id_str = str(outward_line.product_id)
+
+        # Restore stock if this outward was deducted
+        if product:
+            product.current_stock_qty += 1
+
+        await db.delete(outward_line)
+
+        audit = AuditLog(
+            user_id=admin.id,
+            action="SERIAL_DELETED",
+            entity_type="outward_line",
+            entity_id=str(outward_uuid),
+            details={"serial": deleted_text, "product_id": product_id_str},
+        )
+        db.add(audit)
+        await db.commit()
+
+        await ws_manager.broadcast("stock_updated", {"product_id": product_id_str})
+        await ws_manager.broadcast("serial_deleted", {"serial_id": serial_id, "serial": deleted_text})
+
+        return {
+            "success": True,
+            "message": f"Serial '{deleted_text}' deleted successfully.",
+            "product_id": product_id_str,
+            "current_stock_qty": product.current_stock_qty if product else 0,
+        }
+
+    # Standard tracked serial number
+    try:
+        sn_uuid = uuid.UUID(serial_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid serial ID format.")
+
+    sn_res = await db.execute(
+        select(SerialNumber).where(SerialNumber.id == sn_uuid).with_for_update()
+    )
+    sn = sn_res.scalar_one_or_none()
+    if not sn:
+        raise HTTPException(status_code=404, detail="Serial number not found.")
+
+    prod_res = await db.execute(
+        select(Product).where(Product.id == sn.product_id).with_for_update()
+    )
+    product = prod_res.scalar_one_or_none()
+
+    deleted_text = sn.serial_number
+    product_id_str = str(sn.product_id)
+    was_available = (sn.status == SerialStatus.available)
+
+    # 1. Delete inward lines referencing this serial
+    inward_lines_res = await db.execute(
+        select(InwardLine).where(InwardLine.serial_number_id == sn.id)
+    )
+    for inl in inward_lines_res.scalars().all():
+        batch_res = await db.execute(select(InwardBatch).where(InwardBatch.id == inl.batch_id))
+        batch = batch_res.scalar_one_or_none()
+        if batch:
+            batch.quantity = max(0, batch.quantity - 1)
+        await db.delete(inl)
+
+    # 2. Nullify outward lines referencing this serial
+    outward_lines_res = await db.execute(
+        select(OutwardLine).where(OutwardLine.serial_number_id == sn.id)
+    )
+    for outl in outward_lines_res.scalars().all():
+        outl.serial_number_id = None
+        outl.is_matched = False
+
+    # 3. Delete serial history entries
+    history_res = await db.execute(
+        select(SerialHistory).where(SerialHistory.serial_number_id == sn.id)
+    )
+    for h in history_res.scalars().all():
+        await db.delete(h)
+
+    # 4. Nullify returns referencing this serial
+    returns_res = await db.execute(
+        select(Return).where(Return.serial_number_id == sn.id)
+    )
+    for ret in returns_res.scalars().all():
+        ret.serial_number_id = None
+
+    # 5. Decrement current stock if this serial was available
+    if product and was_available:
+        product.current_stock_qty = max(0, product.current_stock_qty - 1)
+
+    # 6. Delete the serial number record
+    await db.delete(sn)
+
+    # 7. Audit log
+    audit = AuditLog(
+        user_id=admin.id,
+        action="SERIAL_DELETED",
+        entity_type="serial_number",
+        entity_id=str(sn_uuid),
+        details={
+            "serial": deleted_text,
+            "product_id": product_id_str,
+            "product_name": product.name if product else None,
+            "was_status": sn.status.value,
+        },
+    )
+    db.add(audit)
+    await db.commit()
+
+    await ws_manager.broadcast("stock_updated", {"product_id": product_id_str})
+    await ws_manager.broadcast("serial_deleted", {"serial_id": str(sn_uuid), "serial": deleted_text})
+
+    return {
+        "success": True,
+        "message": f"Serial number '{deleted_text}' deleted successfully.",
+        "product_id": product_id_str,
+        "current_stock_qty": product.current_stock_qty if product else 0,
+    }

@@ -12,9 +12,14 @@ from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.category import Category
+from app.models.enums import SerialStatus
+from app.models.inward import InwardBatch, InwardLine
+from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
+from app.models.serial import SerialNumber
+from app.models.shop import Shop
 from app.models.user import User
-from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate
+from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate, ProductSerialItem
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -297,3 +302,139 @@ async def deactivate_product(
 
     await ws_manager.broadcast("product_deleted", {"id": str(product_id)})
     return resp
+
+
+@router.get("/{product_id}/serials", response_model=list[ProductSerialItem])
+async def list_product_serials(
+    product_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[ProductSerialItem]:
+    """
+    Get all scanned serial numbers for a specific product.
+    Includes both in-stock available serials and dispatched serials with full details.
+    """
+    prod_res = await db.execute(select(Product).where(Product.id == product_id))
+    product = prod_res.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # 1. Outward subquery per serial
+    outward_subq = (
+        select(
+            OutwardLine.serial_number_id,
+            OutwardLine.transaction_date.label("outward_date"),
+            OutwardBatch.delivery_reference.label("outward_ref"),
+            Shop.name.label("shop_name"),
+            Shop.city.label("shop_city"),
+        )
+        .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .distinct(OutwardLine.serial_number_id)
+        .order_by(OutwardLine.serial_number_id, OutwardLine.created_at.desc())
+        .subquery()
+    )
+
+    # 2. Tracked serials
+    query = (
+        select(
+            SerialNumber.id,
+            SerialNumber.serial_number,
+            SerialNumber.status,
+            SerialNumber.unit_type,
+            SerialNumber.created_at,
+            InwardBatch.transaction_date.label("inward_date"),
+            InwardBatch.invoice_reference.label("inward_ref"),
+            InwardBatch.inward_type.label("inward_type"),
+            outward_subq.c.shop_name,
+            outward_subq.c.shop_city,
+            outward_subq.c.outward_date,
+            outward_subq.c.outward_ref,
+        )
+        .outerjoin(InwardLine, InwardLine.serial_number_id == SerialNumber.id)
+        .outerjoin(InwardBatch, InwardLine.batch_id == InwardBatch.id)
+        .outerjoin(outward_subq, outward_subq.c.serial_number_id == SerialNumber.id)
+        .where(SerialNumber.product_id == product_id)
+        .order_by(SerialNumber.created_at.desc())
+    )
+    rows = (await db.execute(query)).all()
+
+    items: list[ProductSerialItem] = []
+    seen_ids = set()
+
+    for r in rows:
+        if r.id in seen_ids:
+            continue
+        seen_ids.add(r.id)
+
+        status_label = {
+            SerialStatus.available: "Available",
+            SerialStatus.dispatched: "Dispatched",
+            SerialStatus.damaged: "Damaged",
+            SerialStatus.lost: "Lost",
+            SerialStatus.under_repair: "Under Repair",
+            SerialStatus.returned: "Returned",
+        }.get(r.status, r.status.value.capitalize())
+
+        items.append(
+            ProductSerialItem(
+                id=str(r.id),
+                serial_number=r.serial_number,
+                status=r.status.value,
+                status_label=status_label,
+                unit_type=r.unit_type,
+                inward_date=r.inward_date,
+                inward_ref=r.inward_ref,
+                inward_type=r.inward_type,
+                shop_name=r.shop_name,
+                shop_city=r.shop_city,
+                outward_date=r.outward_date,
+                delivery_ref=r.outward_ref,
+                scanned_at=r.created_at,
+                is_tracked=True,
+            )
+        )
+
+    # 3. Unmatched outward lines for this product (recorded only)
+    unmatched_query = (
+        select(
+            OutwardLine.id,
+            OutwardLine.serial_text,
+            OutwardLine.unit_type,
+            OutwardLine.transaction_date,
+            OutwardLine.created_at,
+            OutwardBatch.delivery_reference,
+            Shop.name.label("shop_name"),
+            Shop.city.label("shop_city"),
+        )
+        .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(
+            OutwardLine.product_id == product_id,
+            OutwardLine.serial_number_id == None,
+        )
+        .order_by(OutwardLine.created_at.desc())
+    )
+    unmatched_rows = (await db.execute(unmatched_query)).all()
+
+    for u in unmatched_rows:
+        items.append(
+            ProductSerialItem(
+                id=f"outward_{u.id}",
+                serial_number=u.serial_text,
+                status="dispatched",
+                status_label="Recorded only",
+                unit_type=u.unit_type,
+                inward_date=None,
+                inward_ref=None,
+                inward_type=None,
+                shop_name=u.shop_name,
+                shop_city=u.shop_city,
+                outward_date=u.transaction_date,
+                delivery_ref=u.delivery_reference,
+                scanned_at=u.created_at,
+                is_tracked=False,
+            )
+        )
+
+    return items

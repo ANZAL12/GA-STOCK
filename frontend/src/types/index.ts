@@ -51,6 +51,23 @@ export interface Product {
   updated_at: string;
 }
 
+export interface ProductSerialItem {
+  id: string;
+  serial_number: string;
+  status: string;
+  status_label: string;
+  unit_type?: string | null;
+  inward_date?: string | null;
+  inward_ref?: string | null;
+  inward_type?: string | null;
+  shop_name?: string | null;
+  shop_city?: string | null;
+  outward_date?: string | null;
+  delivery_ref?: string | null;
+  scanned_at: string;
+  is_tracked: boolean;
+}
+
 export interface Shop {
   id: string;
   name: string;
@@ -169,6 +186,8 @@ export interface SerialListItem {
   shop_name?: string | null;
   shop_city?: string | null;
   reference?: string | null;
+  bill_number?: string | null;
+  delivery_reference?: string | null;
   is_matched: boolean;
   unit_type?: string | null;
 }

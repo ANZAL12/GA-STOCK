@@ -272,6 +272,22 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       // --- CASE 1: MATCHED (Tracked & Available for current model) ---
       if (caseVal == 1 || caseName == 'matched') {
+        // Enforce dual serial unit type match for matched serial numbers
+        if (_selectedProduct?.hasDualSerial == true) {
+          final String? registeredUnitType = (res['unit_type'] as String?)?.toLowerCase();
+          if (registeredUnitType != null &&
+              registeredUnitType.isNotEmpty &&
+              registeredUnitType != _outwardUnitType.toLowerCase()) {
+            HapticFeedback.heavyImpact();
+            await _showUnitTypeMismatchDialog(
+              cleanSerial: cleanSerial,
+              actualUnitType: registeredUnitType,
+              selectedUnitType: _outwardUnitType,
+            );
+            return; // DO NOT ADD TO LIST!
+          }
+        }
+
         HapticFeedback.lightImpact();
         final unitType = (res['unit_type'] as String?) ?? (_selectedProduct?.hasDualSerial == true ? _outwardUnitType : null);
         setState(() {
@@ -312,6 +328,22 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       // --- CASE 3: STATUS WARNING (Damaged, reserved, etc. NOT dispatched!) ---
       else if (caseVal == 3 || caseName == 'status_warning') {
+        // Enforce dual serial unit type match for matched serial numbers
+        if (_selectedProduct?.hasDualSerial == true) {
+          final String? registeredUnitType = (res['unit_type'] as String?)?.toLowerCase();
+          if (registeredUnitType != null &&
+              registeredUnitType.isNotEmpty &&
+              registeredUnitType != _outwardUnitType.toLowerCase()) {
+            HapticFeedback.heavyImpact();
+            await _showUnitTypeMismatchDialog(
+              cleanSerial: cleanSerial,
+              actualUnitType: registeredUnitType,
+              selectedUnitType: _outwardUnitType,
+            );
+            return; // DO NOT ADD TO LIST!
+          }
+        }
+
         HapticFeedback.heavyImpact();
         final proceed = await _showCase3StatusWarningDialog(cleanSerial, msg ?? 'Unit is not currently marked available.');
         if (proceed == true) {
@@ -759,6 +791,115 @@ class _OutwardScreenState extends State<OutwardScreen> {
           },
         );
       },
+    );
+  }
+
+  Future<void> _showUnitTypeMismatchDialog({
+    required String cleanSerial,
+    required String actualUnitType,
+    required String selectedUnitType,
+  }) {
+    final isActualIndoor = actualUnitType.toLowerCase() == 'indoor';
+    final actualTitle = isActualIndoor ? 'Indoor Unit' : 'Outdoor Unit';
+    final selectedTitle = selectedUnitType.toLowerCase() == 'indoor' ? 'Indoor Unit' : 'Outdoor Unit';
+
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(
+              isActualIndoor ? Icons.home_outlined : Icons.wb_sunny_outlined,
+              color: const Color(0xFFDC2626),
+              size: 26,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'It is an $actualTitle!',
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFDC2626),
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFFECACA)),
+              ),
+              child: RichText(
+                text: TextSpan(
+                  style: const TextStyle(fontSize: 13, color: Color(0xFF1E293B), height: 1.4),
+                  children: [
+                    const TextSpan(text: 'Serial '),
+                    TextSpan(
+                      text: cleanSerial,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace'),
+                    ),
+                    const TextSpan(text: ' is registered in the system as an '),
+                    TextSpan(
+                      text: actualTitle.toUpperCase(),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isActualIndoor ? const Color(0xFF1D4ED8) : const Color(0xFF0D9488),
+                      ),
+                    ),
+                    const TextSpan(text: '.\n\nYou have '),
+                    TextSpan(
+                      text: selectedTitle.toUpperCase(),
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFDC2626)),
+                    ),
+                    const TextSpan(text: ' selected.\n\n'),
+                    const TextSpan(
+                      text: 'It was NOT added to dispatch!',
+                      style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFFDC2626)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Please select $actualTitle in the scanner header if you wish to scan this unit.',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK', style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF64748B))),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3C3489),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            icon: Icon(isActualIndoor ? Icons.home_outlined : Icons.wb_sunny_outlined, size: 16),
+            label: Text('Switch to $actualTitle'),
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {
+                _outwardUnitType = isActualIndoor ? 'indoor' : 'outdoor';
+              });
+              _showToast('Switched unit to $actualTitle.', const Color(0xFF3C3489));
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -1740,9 +1881,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
               separatorBuilder: (_, _) => const SizedBox(height: 8),
               itemBuilder: (ctx, idx) {
                 final p = filtered[idx];
-                final isAC = p.name.toLowerCase().contains('ac') ||
-                    p.name.toLowerCase().contains('conditioner') ||
-                    (p.categoryName?.toLowerCase().contains('ac') ?? false);
 
                 return Material(
                   color: Colors.white,
@@ -1776,7 +1914,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   '${p.brand} • ${p.model}',
                                   style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
                                 ),
-                                if (isAC) ...[
+                                if (p.hasDualSerial) ...[
                                   const SizedBox(height: 4),
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

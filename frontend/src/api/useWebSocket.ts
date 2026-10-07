@@ -14,8 +14,13 @@ class WebSocketManager {
     }
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/v1/ws`;
+    let wsHost = window.location.host;
+    // In local development under Vite (port 5173), connect directly to backend port 8000
+    // to avoid Vite's internal HMR WebSocket intercepting the upgrade request
+    if (window.location.port === "5173") {
+      wsHost = `${window.location.hostname}:8000`;
+    }
+    const wsUrl = `${protocol}//${wsHost}/api/v1/ws`;
 
     try {
       this.socket = new WebSocket(wsUrl);

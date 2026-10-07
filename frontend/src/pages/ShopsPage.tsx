@@ -79,12 +79,13 @@ export const ShopsPage: React.FC = () => {
 
     try {
       if (editingShop) {
-        await apiRequest(`/shops/${editingShop.id}`, {
+        const updated = await apiRequest<Shop>(`/shops/${editingShop.id}`, {
           method: "PUT",
           body: JSON.stringify(shopForm),
         });
+        setShops((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
       } else {
-        await apiRequest("/shops", {
+        const created = await apiRequest<Shop>("/shops", {
           method: "POST",
           body: JSON.stringify({
             name: shopForm.name,
@@ -92,9 +93,10 @@ export const ShopsPage: React.FC = () => {
             phone: shopForm.phone,
           }),
         });
+        setShops((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);
       }
       setIsShopModalOpen(false);
-      fetchShops();
+      await fetchShops();
     } catch (err: any) {
       setShopFormError(err.message || "Failed to save shop.");
     } finally {
@@ -114,7 +116,7 @@ export const ShopsPage: React.FC = () => {
 
     try {
       await apiRequest(`/shops/${s.id}/toggle-active`, { method: "PATCH" });
-      fetchShops();
+      await fetchShops();
     } catch (err: any) {
       alert(err.message || `Failed to ${actionLabel.toLowerCase()} shop.`);
     }
@@ -136,7 +138,8 @@ export const ShopsPage: React.FC = () => {
 
     try {
       await apiRequest(`/shops/${s.id}?permanent=true`, { method: "DELETE" });
-      fetchShops();
+      setShops((prev) => prev.filter((x) => x.id !== s.id));
+      await fetchShops();
     } catch (err: any) {
       alert(err.message || "Failed to delete shop.");
     }

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 import uuid
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, computed_field
@@ -71,3 +71,22 @@ class ProductResponse(BaseModel):
         if self.current_stock_qty == 0 and not self.has_had_inward:
             return "0 units (untracked)"
         return f"{self.current_stock_qty} in stock"
+
+
+class ProductSerialItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    serial_number: str
+    status: str
+    status_label: str
+    unit_type: Optional[str] = None
+    inward_date: Optional[date] = None
+    inward_ref: Optional[str] = None
+    inward_type: Optional[str] = None
+    shop_name: Optional[str] = None
+    shop_city: Optional[str] = None
+    outward_date: Optional[date] = None
+    delivery_ref: Optional[str] = None
+    scanned_at: datetime
+    is_tracked: bool = True

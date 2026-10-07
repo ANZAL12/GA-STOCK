@@ -14,8 +14,11 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   ChevronRight,
-  Layers
+  Layers,
+  FileDown,
+  Printer
 } from "lucide-react";
+import { generateSerialListPdf, generateSerialTracePdf } from "../utils/generateSerialReportPdf";
 
 export const SerialsPage: React.FC = () => {
   const [serials, setSerials] = useState<SerialListItem[]>([]);
@@ -127,13 +130,37 @@ export const SerialsPage: React.FC = () => {
         s.product_name.toLowerCase().includes(q) ||
         (s.shop_name && s.shop_name.toLowerCase().includes(q)) ||
         (s.shop_city && s.shop_city.toLowerCase().includes(q)) ||
-        (s.reference && s.reference.toLowerCase().includes(q))
+        (s.reference && s.reference.toLowerCase().includes(q)) ||
+        (s.bill_number && s.bill_number.toLowerCase().includes(q)) ||
+        (s.delivery_reference && s.delivery_reference.toLowerCase().includes(q))
       );
     });
 
   const inwardCount = serials.filter((s) => s.flow_type === "inward").length;
   const outwardCount = serials.filter((s) => s.flow_type === "outward").length;
   const attentionCount = serials.filter((s) => ["damaged", "under_repair", "lost"].includes(s.status)).length;
+
+  const getFilterLabel = () => {
+    switch (flowFilter) {
+      case "inward":
+        return "Inward / In Stock";
+      case "outward":
+        return "Outward / Dispatched";
+      case "damaged":
+        return "Attention (Damaged / Repair / Lost)";
+      default:
+        return "All Serials";
+    }
+  };
+
+  const handleExportList = (isPrint: boolean) => {
+    generateSerialListPdf({
+      items: filteredSerials,
+      filterLabel: getFilterLabel(),
+      searchQuery: searchQuery.trim() || undefined,
+      isPrint,
+    });
+  };
 
   return (
     <div className="space-y-6 animate-fade-in pb-12">
@@ -149,8 +176,30 @@ export const SerialsPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Quick summary badges */}
-        <div className="flex items-center gap-3">
+        {/* Action Buttons & Quick summary badges */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => handleExportList(false)}
+            disabled={filteredSerials.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:text-[#3C3489] hover:border-[#3C3489]/40 hover:bg-slate-50 transition-all shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Download PDF report of current serials"
+          >
+            <FileDown size={14} className="text-[#3C3489]" />
+            <span>Export PDF</span>
+          </button>
+
+          <button
+            onClick={() => handleExportList(true)}
+            disabled={filteredSerials.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] transition-all shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Print current serials registry table"
+          >
+            <Printer size={14} />
+            <span>Print</span>
+          </button>
+
+          <div className="h-6 w-[1px] bg-slate-200 mx-1 hidden sm:block" />
+
           <div className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs shadow-sm flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
             <span className="text-slate-500 font-medium">In Stock:</span>
@@ -348,7 +397,18 @@ export const SerialsPage: React.FC = () => {
 
                     {/* Reference */}
                     <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500">
-                      {item.reference ? item.reference : "—"}
+                      {item.bill_number ? (
+                        <div>
+                          <span className="font-semibold text-slate-800">{item.bill_number}</span>
+                          {item.delivery_reference && item.delivery_reference !== item.bill_number && (
+                            <span className="text-[10px] text-slate-400 block font-normal font-sans">
+                              Veh: {item.delivery_reference}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span>{item.reference ? item.reference : "—"}</span>
+                      )}
                     </td>
 
                     {/* Action */}
@@ -440,6 +500,32 @@ export const SerialsPage: React.FC = () => {
                     ? `${selectedSerial.last_shop_name} (${selectedSerial.last_shop_city})` 
                     : "In Godown"}
                 </span>
+              </div>
+            </div>
+
+            {/* Serial Trace PDF & Print Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200">
+              <div>
+                <span className="text-xs font-semibold text-slate-800 block">Serial Lifecycle Audit Report</span>
+                <span className="text-[11px] text-slate-500">Download or print full movement trace for #{selectedSerial.serial_number}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => generateSerialTracePdf({ serial: selectedSerial, isPrint: false })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:text-[#3C3489] hover:border-[#3C3489]/40 hover:bg-slate-50 transition-all shadow-sm cursor-pointer"
+                >
+                  <FileDown size={13} className="text-[#3C3489]" />
+                  <span>Download Trace PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => generateSerialTracePdf({ serial: selectedSerial, isPrint: true })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] transition-all shadow-sm cursor-pointer"
+                >
+                  <Printer size={13} />
+                  <span>Print Trace</span>
+                </button>
               </div>
             </div>
 

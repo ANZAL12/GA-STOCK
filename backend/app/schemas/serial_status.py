@@ -64,6 +64,8 @@ class SerialListItem(BaseModel):
     shop_name: Optional[str] = None
     shop_city: Optional[str] = None
     reference: Optional[str] = None
+    bill_number: Optional[str] = None
+    delivery_reference: Optional[str] = None
     is_matched: bool = True
     unit_type: Optional[str] = None
 
