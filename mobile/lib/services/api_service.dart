@@ -249,11 +249,12 @@ class ApiService {
   // --- INWARD API ---
   Future<Map<String, dynamic>> validateInwardSerial(
     String productId,
-    String serialNumber,
-  ) async {
+    String serialNumber, {
+    String inwardType = 'stock_in',
+  }) async {
     final res = await _authenticatedGet(
       Uri.parse(
-        '$_baseUrl/inward/validate-serial?product_id=$productId&serial_number=${Uri.encodeComponent(serialNumber.trim())}',
+        '$_baseUrl/inward/validate-serial?product_id=$productId&serial_number=${Uri.encodeComponent(serialNumber.trim())}&inward_type=$inwardType',
       ),
     );
 
@@ -272,6 +273,7 @@ class ApiService {
   Future<Map<String, dynamic>> submitInwardBatch({
     required String productId,
     required List<String> serialNumbers,
+    String inwardType = 'stock_in',
     Map<String, String>? unitTypes,
     String? remarks,
   }) async {
@@ -279,6 +281,7 @@ class ApiService {
       Uri.parse('$_baseUrl/inward/batch'),
       body: jsonEncode({
         'product_id': productId,
+        'inward_type': inwardType,
         'serials': serialNumbers,
         'serial_numbers': serialNumbers,
         'unit_types': unitTypes,

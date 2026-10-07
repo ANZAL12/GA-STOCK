@@ -318,15 +318,7 @@ export const StockPage: React.FC = () => {
                   )}
                 </div>
 
-                {p.current_stock_qty < 0 ? (
-                  <span className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
-                    Negative ({p.current_stock_qty})
-                  </span>
-                ) : p.out_of_stock_reminder ? (
-                  <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
-                    No tracked stock left
-                  </span>
-                ) : null}
+               
               </div>
 
               <div>

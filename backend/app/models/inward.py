@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import date
 from typing import Optional
 
@@ -31,10 +31,11 @@ class InwardBatch(Base, PrimaryKeyMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("devices.id", ondelete="SET NULL"), nullable=True
     )
     quantity: Mapped[int]           = mapped_column(Integer, nullable=False)
+    inward_type: Mapped[str]        = mapped_column(String(50), nullable=False, default="stock_in")
     remarks:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:
-        return f"<InwardBatch product={self.product_id} qty={self.quantity}>"
+        return f"<InwardBatch product={self.product_id} qty={self.quantity} type={self.inward_type}>"
 
 
 class InwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):

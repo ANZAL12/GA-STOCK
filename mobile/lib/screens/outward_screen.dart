@@ -332,21 +332,28 @@ class _OutwardScreenState extends State<OutwardScreen> {
       }
 
       // --- CASE 4: MODEL MISMATCH (Serial is registered under another model in this godown) ---
+      // --- CASE 4: MODEL MISMATCH (Serial is registered under another model in this godown) ---
       else if (caseVal == 4 || caseName == 'model_mismatch') {
         HapticFeedback.heavyImpact();
         final regProdId = res['registered_product_id']?.toString();
         Product? matchedProd;
         if (regProdId != null) {
           try {
-            matchedProd = _products.firstWhere((p) => p.id == regProdId);
+            matchedProd = _products.firstWhere(
+              (p) => p.id.toLowerCase() == regProdId.toLowerCase(),
+            );
           } catch (_) {}
         }
         final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
 
         if (matchedProd != null) {
-          final choice = await _showDifferentModelDialog(cleanSerial, matchedProd);
-          if (choice == 'add') {
-            final unitType = (res['unit_type'] as String?) ?? (matchedProd.hasDualSerial ? _outwardUnitType : null);
+          final dialogResult = await _showDifferentModelDialog(
+            cleanSerial,
+            matchedProd,
+            initialUnitType: res['unit_type']?.toString(),
+          );
+          if (dialogResult != null && dialogResult['action'] == 'add') {
+            final String? chosenUnitType = dialogResult['unit_type'];
             setState(() {
               _scannedItems.insert(
                 0,
@@ -355,11 +362,21 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   product: matchedProd,
                   caseType: OutwardCase.matched,
                   isMatched: true,
-                  unitType: unitType,
+                  unitType: chosenUnitType,
                 ),
               );
+              // Switch active model to matchedProd so staff can see and scan the matching unit!
+              _selectedProduct = matchedProd;
+              _activeFilterModelId = matchedProd!.id;
+              if (matchedProd.hasDualSerial && chosenUnitType != null) {
+                // Auto-toggle to the companion unit so the next scan is ready for the other unit!
+                _outwardUnitType = (chosenUnitType == 'indoor') ? 'outdoor' : 'indoor';
+              }
             });
-            _showToast('Added $cleanSerial (${matchedProd.model})', const Color(0xFF059669));
+            _showToast(
+              'Added $cleanSerial (${matchedProd.model})${matchedProd.hasDualSerial ? " • Next unit: ${_outwardUnitType.toUpperCase()}" : ""}',
+              const Color(0xFF059669),
+            );
           }
         } else {
           await _showCase4ModelMismatchDialog(cleanSerial, existingModel, msg);
@@ -371,83 +388,229 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
-  Future<String?> _showDifferentModelDialog(String serial, Product targetProd) {
-    return showDialog<String>(
+  Future<Map<String, dynamic>?> _showDifferentModelDialog(
+    String serial,
+    Product targetProd, {
+    String? initialUnitType,
+  }) {
+    String selectedUnitType = initialUnitType ?? 'indoor';
+
+    return showDialog<Map<String, dynamic>>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-        actionsPadding: const EdgeInsets.all(16),
-        title: const Row(
-          children: [
-            Icon(Icons.inventory_2_outlined, color: Color(0xFF4F46E5), size: 22),
-            SizedBox(width: 8),
-            Text(
-              'Model Mismatch',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final isDual = targetProd.hasDualSerial;
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+            actionsPadding: const EdgeInsets.all(16),
+            title: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEF2FF),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.swap_horiz, color: Color(0xFF4F46E5), size: 20),
+                ),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Model Mismatch Detected',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SelectableText(
-              serial,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF0F172A),
-              ),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFE2E8F0)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.devices, size: 16, color: Color(0xFF64748B)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '${targetProd.brand} • ${targetProd.model}',
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
-                      overflow: TextOverflow.ellipsis,
-                    ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Scanned Serial:',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[500]),
+                ),
+                const SizedBox(height: 2),
+                SelectableText(
+                  serial,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF0F172A),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Registered Under Model:',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[500]),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.devices, size: 16, color: Color(0xFF4F46E5)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '${targetProd.brand} • ${targetProd.model}',
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF334155)),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (isDual)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF3E8FF),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text(
+                                'Dual Serial',
+                                style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Color(0xFF7C3AED)),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        targetProd.name,
+                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isDual) ...[
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Select Unit Type for this barcode:',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => setDialogState(() => selectedUnitType = 'indoor'),
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            decoration: BoxDecoration(
+                              color: selectedUnitType == 'indoor' ? const Color(0xFFEEF2FF) : Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: selectedUnitType == 'indoor' ? const Color(0xFF6366F1) : const Color(0xFFCBD5E1),
+                                width: selectedUnitType == 'indoor' ? 1.5 : 1.0,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.home_outlined,
+                                  size: 15,
+                                  color: selectedUnitType == 'indoor' ? const Color(0xFF4338CA) : const Color(0xFF64748B),
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  'Indoor Unit',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: selectedUnitType == 'indoor' ? FontWeight.bold : FontWeight.w500,
+                                    color: selectedUnitType == 'indoor' ? const Color(0xFF4338CA) : const Color(0xFF64748B),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: InkWell(
+                          onTap: () => setDialogState(() => selectedUnitType = 'outdoor'),
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            decoration: BoxDecoration(
+                              color: selectedUnitType == 'outdoor' ? const Color(0xFFF0FDFA) : Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: selectedUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFFCBD5E1),
+                                width: selectedUnitType == 'outdoor' ? 1.5 : 1.0,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.wb_sunny_outlined,
+                                  size: 15,
+                                  color: selectedUnitType == 'outdoor' ? const Color(0xFF0F766E) : const Color(0xFF64748B),
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  'Outdoor Unit',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: selectedUnitType == 'outdoor' ? FontWeight.bold : FontWeight.w500,
+                                    color: selectedUnitType == 'outdoor' ? const Color(0xFF0F766E) : const Color(0xFF64748B),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Add this unit under this model to current dispatch?',
+                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                   ),
                 ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, {'action': 'cancel'}),
+                child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
               ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Add this unit under this model to current dispatch?',
-              style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'cancel'),
-            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF1E1B4B),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            ),
-            onPressed: () => Navigator.pop(ctx, 'add'),
-            child: const Text('Add to Dispatch', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1E1B4B),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                ),
+                onPressed: () => Navigator.pop(ctx, {
+                  'action': 'add',
+                  'unit_type': isDual ? selectedUnitType : null,
+                  'switch_model': true,
+                }),
+                child: Text(
+                  isDual ? 'Add & Switch Model' : 'Add to Dispatch',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -2124,27 +2287,59 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                     ),
                                   if (item.unitType != null) ...[
                                     const SizedBox(width: 5),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                      decoration: BoxDecoration(
-                                        color: item.unitType == 'indoor'
-                                            ? const Color(0xFFEEF2FF)
-                                            : const Color(0xFFF0FDFA),
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(
+                                    InkWell(
+                                      borderRadius: BorderRadius.circular(4),
+                                      onTap: () {
+                                        setState(() {
+                                          item.unitType = (item.unitType == 'indoor') ? 'outdoor' : 'indoor';
+                                        });
+                                        ScaffoldMessenger.of(context).removeCurrentSnackBar();
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              '${item.serialNumber} toggled to ${item.unitType!.toUpperCase()}',
+                                              style: const TextStyle(fontWeight: FontWeight.w600),
+                                            ),
+                                            duration: const Duration(seconds: 1),
+                                            behavior: SnackBarBehavior.floating,
+                                          ),
+                                        );
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
                                           color: item.unitType == 'indoor'
-                                              ? const Color(0xFFC7D2FE)
-                                              : const Color(0xFF99F6E4),
+                                              ? const Color(0xFFEEF2FF)
+                                              : const Color(0xFFF0FDFA),
+                                          borderRadius: BorderRadius.circular(4),
+                                          border: Border.all(
+                                            color: item.unitType == 'indoor'
+                                                ? const Color(0xFFC7D2FE)
+                                                : const Color(0xFF99F6E4),
+                                          ),
                                         ),
-                                      ),
-                                      child: Text(
-                                        item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
-                                        style: TextStyle(
-                                          fontSize: 9.5,
-                                          fontWeight: FontWeight.bold,
-                                          color: item.unitType == 'indoor'
-                                              ? const Color(0xFF3C3489)
-                                              : const Color(0xFF0D9488),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                                              style: TextStyle(
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.bold,
+                                                color: item.unitType == 'indoor'
+                                                    ? const Color(0xFF3C3489)
+                                                    : const Color(0xFF0D9488),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 3),
+                                            Icon(
+                                              Icons.swap_vert,
+                                              size: 11,
+                                              color: item.unitType == 'indoor'
+                                                  ? const Color(0xFF3C3489)
+                                                  : const Color(0xFF0D9488),
+                                            ),
+                                          ],
                                         ),
                                       ),
                                     ),

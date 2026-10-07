@@ -94,6 +94,7 @@ class OfflineQueueService {
             unitTypes: item.payload['unit_types'] != null
                 ? Map<String, String>.from(item.payload['unit_types'])
                 : null,
+            inwardType: item.payload['inward_type'] ?? 'stock_in',
             remarks: item.payload['remarks'],
           );
         } else {

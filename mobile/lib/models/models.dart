@@ -117,7 +117,7 @@ class OutwardScanResult {
   final String? existingModelName;
   final String? lastShopName;
   final String? currentStatus;
-  final String? unitType; // 'indoor', 'outdoor', or null
+  String? unitType; // 'indoor', 'outdoor', or null
 
   OutwardScanResult({
     required this.serialNumber,

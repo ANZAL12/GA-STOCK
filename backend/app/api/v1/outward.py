@@ -79,14 +79,22 @@ async def check_serial(
     if row:
         sn, prod_name, prod_model, last_shop_name = row
         registered_model_display = f"{prod_name} ({prod_model})"
+        # If the serial exists in our tracked inventory:
+        # Check if its CURRENT status is 'dispatched'.
+        # If it was returned via Inward Return, its status is now 'available', so it is in stock and free to dispatch!
         if sn.status == SerialStatus.dispatched:
             is_already_dispatched = True
             disp_shop_name = last_shop_name
-
-    if prev_disp:
+            if prev_disp:
+                disp_line, s_name = prev_disp
+                disp_shop_name = s_name or disp_shop_name
+                disp_date = disp_line.transaction_date
+    elif prev_disp:
+        # Untracked pre-go-live serial (never recorded in serial_numbers):
+        # Was previously dispatched and never returned through Inward Return
         is_already_dispatched = True
         disp_line, s_name = prev_disp
-        disp_shop_name = s_name or disp_shop_name
+        disp_shop_name = s_name
         disp_date = disp_line.transaction_date
 
     # --- STRICT RULE: ONCE DISPATCHED, NEVER SCANNED OR DISPATCHED AGAIN ---
@@ -358,26 +366,29 @@ async def create_outward_batch(
                 ),
             )
 
-    # 6. STRICT BLOCK: Check if any serial was already dispatched
+    # 6. STRICT BLOCK: Check if any serial is currently dispatched
     for s_text, _, _ in cleaned_items:
         if s_text in sn_map and sn_map[s_text].status == SerialStatus.dispatched:
             raise HTTPException(
                 status_code=400,
-                detail=f"Serial '{s_text}' has already been dispatched. Dispatched serials cannot be dispatched again under any circumstances.",
+                detail=f"Serial '{s_text}' is currently marked as Dispatched. It cannot be dispatched again until returned.",
             )
 
-    existing_outward_res = await db.execute(
-        select(OutwardLine.serial_text, Shop.name.label("shop_name"))
-        .join(Shop, OutwardLine.shop_id == Shop.id)
-        .where(OutwardLine.serial_text.in_(serial_texts))
-    )
-    already_disp_lines = existing_outward_res.all()
-    if already_disp_lines:
-        first_bad = already_disp_lines[0]
-        raise HTTPException(
-            status_code=400,
-            detail=f"Serial '{first_bad.serial_text}' was already dispatched (to shop '{first_bad.shop_name}') and cannot be dispatched again under any circumstances.",
+    # For untracked serials (not in serial_numbers), check if previously dispatched and never returned
+    untracked_serials = [s for s, _, _ in cleaned_items if s not in sn_map]
+    if untracked_serials:
+        existing_outward_res = await db.execute(
+            select(OutwardLine.serial_text, Shop.name.label("shop_name"))
+            .join(Shop, OutwardLine.shop_id == Shop.id)
+            .where(OutwardLine.serial_text.in_(untracked_serials))
         )
+        already_disp_lines = existing_outward_res.all()
+        if already_disp_lines:
+            first_bad = already_disp_lines[0]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Serial '{first_bad.serial_text}' was already dispatched (to shop '{first_bad.shop_name}') and cannot be dispatched again under any circumstances.",
+            )
 
     # 7. Pre-validate: ensure any case 3 or case 4 serial has confirmation
     for s_text, is_confirmed, _ in cleaned_items:
