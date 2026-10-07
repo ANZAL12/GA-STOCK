@@ -7,12 +7,16 @@ import '../services/sound_service.dart';
 class BarcodeScannerWidget extends StatefulWidget {
   final String title;
   final String prompt;
+  final String? initialLastScanned;
+  final int initialCount;
   final Function(String barcode) onScanned;
 
   const BarcodeScannerWidget({
     super.key,
     required this.title,
     this.prompt = 'Align barcode strictly inside viewfinder',
+    this.initialLastScanned,
+    this.initialCount = 0,
     required this.onScanned,
   });
 
@@ -37,6 +41,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   bool _holdToScanMode = true;
   bool _isHoldingTrigger = false;
   String? _lastScannedValue;
+  int _scannedCount = 0;
   DateTime _lastScannedTime = DateTime.fromMillisecondsSinceEpoch(0);
   final TextEditingController _manualTextController = TextEditingController();
 
@@ -47,6 +52,8 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   void initState() {
     super.initState();
     SoundService().init();
+    _lastScannedValue = widget.initialLastScanned;
+    _scannedCount = widget.initialCount;
     _animController = AnimationController(
       duration: const Duration(milliseconds: 1600),
       vsync: this,
@@ -68,10 +75,15 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     super.dispose();
   }
 
-  bool _isBarcodeInsideBox(Barcode barcode, Size captureSize) {
-    // If corners not provided, allow detection
+  bool _isBarcodeInsideBox(
+    Barcode barcode,
+    Size captureSize,
+    Rect scanWindow,
+    Size screenSize,
+  ) {
+    // Strict constraint: Reject immediately if corner points are missing or dimensions invalid
     if (barcode.corners.isEmpty || captureSize.width <= 0 || captureSize.height <= 0) {
-      return true;
+      return false;
     }
 
     try {
@@ -89,20 +101,33 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
       final normY = centerY / captureSize.height;
 
       // Normalize coordinates according to portrait phone orientation
+      // When camera buffer is landscape (width > height), buffer X maps to portrait Y and buffer Y to portrait X
       final double horiz = captureSize.width < captureSize.height ? normX : normY;
       final double vert = captureSize.width < captureSize.height ? normY : normX;
 
-      // Viewfinder zone: generous tolerances to ensure instant detection without lag
-      final bool inHoriz = horiz >= 0.05 && horiz <= 0.95;
-      final bool inVert = vert >= 0.18 && vert <= 0.82;
+      // Exact normalized boundary ratios from the on-screen viewfinder box
+      final double winLeftRatio = (scanWindow.left / screenSize.width).clamp(0.0, 1.0);
+      final double winRightRatio = (scanWindow.right / screenSize.width).clamp(0.0, 1.0);
+      final double winTopRatio = (scanWindow.top / screenSize.height).clamp(0.0, 1.0);
+      final double winBottomRatio = (scanWindow.bottom / screenSize.height).clamp(0.0, 1.0);
+
+      // Tight grace margin (+/- 3.5% padding) around the visual frame
+      const double margin = 0.035;
+      final double minHoriz = math.max(0.0, winLeftRatio - margin);
+      final double maxHoriz = math.min(1.0, winRightRatio + margin);
+      final double minVert = math.max(0.0, winTopRatio - margin);
+      final double maxVert = math.min(1.0, winBottomRatio + margin);
+
+      final bool inHoriz = horiz >= minHoriz && horiz <= maxHoriz;
+      final bool inVert = vert >= minVert && vert <= maxVert;
 
       return inHoriz && inVert;
     } catch (_) {
-      return true;
+      return false;
     }
   }
 
-  void _handleBarcode(BarcodeCapture capture) {
+  void _handleBarcode(BarcodeCapture capture, Rect scanWindow, Size screenSize) {
     // In hold-to-scan mode, reject scans unless the user is actively holding down the trigger
     if (_holdToScanMode && !_isHoldingTrigger) {
       return;
@@ -113,40 +138,68 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     final barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
 
+    // Filter to candidates strictly inside the preferred viewfinder area
+    final List<({Barcode barcode, double distFromCenter, String cleanVal})> candidates = [];
+
     for (final barcode in barcodes) {
       final String? rawValue = barcode.rawValue;
       if (rawValue == null || rawValue.trim().isEmpty) continue;
 
-      // Strict constraint: Reject barcodes located outside the central box
-      if (!_isBarcodeInsideBox(barcode, capture.size)) {
+      // Strict constraint: Reject barcodes located outside the preferred viewfinder area
+      if (!_isBarcodeInsideBox(barcode, capture.size, scanWindow, screenSize)) {
         continue;
       }
 
-      final String cleanVal = rawValue.trim();
-      final DateTime now = DateTime.now();
+      final xs = barcode.corners.map((p) => p.dx);
+      final ys = barcode.corners.map((p) => p.dy);
+      final centerX = (xs.reduce(math.min) + xs.reduce(math.max)) / 2.0;
+      final centerY = (ys.reduce(math.min) + ys.reduce(math.max)) / 2.0;
+      final normX = centerX / capture.size.width;
+      final normY = centerY / capture.size.height;
+      final horiz = capture.size.width < capture.size.height ? normX : normY;
+      final vert = capture.size.width < capture.size.height ? normY : normX;
 
-      // Prevent accidental repeat scanning of the EXACT same physical barcode
-      if (_lastScannedValue == cleanVal &&
-          now.difference(_lastScannedTime).inMilliseconds < 1500) {
-        continue;
-      }
+      // Distance from reticle center (0.5, 0.5)
+      final dist = (horiz - 0.5) * (horiz - 0.5) + (vert - 0.5) * (vert - 0.5);
 
-      _lastScannedValue = cleanVal;
-      _lastScannedTime = now;
-
-      // Fire beep sound and haptic first for absolute zero-delay audio feedback
-      SoundService().playScannerBeep();
-      HapticFeedback.mediumImpact();
-      setState(() => _isProcessing = true);
-
-      widget.onScanned(cleanVal);
-
-      // Super-fast cooldown (280ms) so moving to the next item scans instantly!
-      Future.delayed(const Duration(milliseconds: 280), () {
-        if (mounted) setState(() => _isProcessing = false);
-      });
-      break;
+      candidates.add((
+        barcode: barcode,
+        distFromCenter: dist,
+        cleanVal: rawValue.trim(),
+      ));
     }
+
+    if (candidates.isEmpty) return;
+
+    // Prioritize the barcode closest to the viewfinder center
+    candidates.sort((a, b) => a.distFromCenter.compareTo(b.distFromCenter));
+
+    final String cleanVal = candidates.first.cleanVal;
+    final DateTime now = DateTime.now();
+
+    // Prevent accidental repeat scanning of the EXACT same physical barcode
+    if (_lastScannedValue == cleanVal &&
+        now.difference(_lastScannedTime).inMilliseconds < 1500) {
+      return;
+    }
+
+    _lastScannedTime = now;
+
+    // Fire beep sound and haptic first for absolute zero-delay audio feedback
+    SoundService().playScannerBeep();
+    HapticFeedback.mediumImpact();
+    setState(() {
+      _lastScannedValue = cleanVal;
+      _scannedCount++;
+      _isProcessing = true;
+    });
+
+    widget.onScanned(cleanVal);
+
+    // Super-fast cooldown (280ms) so moving to the next item scans instantly!
+    Future.delayed(const Duration(milliseconds: 280), () {
+      if (mounted) setState(() => _isProcessing = false);
+    });
   }
 
   Color _getReticleBorderColor() {
@@ -207,6 +260,10 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
               if (val.isNotEmpty) {
                 Navigator.pop(ctx);
                 HapticFeedback.lightImpact();
+                setState(() {
+                  _lastScannedValue = val;
+                  _scannedCount++;
+                });
                 widget.onScanned(val);
               }
             },
@@ -242,65 +299,86 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
           ),
         ],
       ),
-      body: Stack(
-        alignment: Alignment.center,
-        children: [
-          // Camera stream
-          MobileScanner(
-            controller: _controller,
-            onDetect: _handleBarcode,
-          ),
-
-          // Overlay cutout - darkens area outside the box
-          ColorFiltered(
-            colorFilter: ColorFilter.mode(
-              Colors.black.withValues(alpha: 0.65),
-              BlendMode.srcOut,
-            ),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Container(
-                  decoration: const BoxDecoration(
-                    color: Colors.black,
-                    backgroundBlendMode: BlendMode.dstOut,
-                  ),
-                ),
-                Align(
-                  alignment: Alignment.center,
-                  child: Container(
-                    width: _boxWidth,
-                    height: _boxHeight,
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Reticle border with live scanning indicator
-          Container(
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final screenSize = constraints.biggest;
+          final scanWindow = Rect.fromCenter(
+            center: Offset(screenSize.width / 2, screenSize.height / 2),
             width: _boxWidth,
             height: _boxHeight,
-            decoration: BoxDecoration(
-              border: Border.all(
-                color: _getReticleBorderColor(),
-                width: isScanningActive ? 3.0 : 2.0,
+          );
+
+          return Stack(
+            alignment: Alignment.center,
+            children: [
+              // Camera stream with strict native scanWindow constraint
+              MobileScanner(
+                controller: _controller,
+                scanWindow: scanWindow,
+                fit: BoxFit.cover,
+                onDetect: (capture) => _handleBarcode(capture, scanWindow, screenSize),
               ),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                if (isScanningActive)
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: AnimatedBuilder(
-                      animation: _scanLineAnimation,
-                      builder: (context, child) {
+
+              // Overlay cutout - darkens area outside the preferred box
+              ColorFiltered(
+                colorFilter: ColorFilter.mode(
+                  Colors.black.withValues(alpha: 0.72),
+                  BlendMode.srcOut,
+                ),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Container(
+                      decoration: const BoxDecoration(
+                        color: Colors.black,
+                        backgroundBlendMode: BlendMode.dstOut,
+                      ),
+                    ),
+                    Align(
+                      alignment: Alignment.center,
+                      child: Container(
+                        width: _boxWidth,
+                        height: _boxHeight,
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Reticle border with corner accents and live scanning indicator
+              Container(
+                width: _boxWidth,
+                height: _boxHeight,
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: _getReticleBorderColor().withValues(alpha: 0.35),
+                    width: 1.5,
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Precision corner brackets
+                    CustomPaint(
+                      size: const Size(_boxWidth, _boxHeight),
+                      painter: _CornerBracketsPainter(
+                        color: _getReticleBorderColor(),
+                        cornerLength: 26.0,
+                        strokeWidth: isScanningActive ? 3.5 : 2.5,
+                      ),
+                    ),
+
+                    if (isScanningActive)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(14),
+                        child: AnimatedBuilder(
+                          animation: _scanLineAnimation,
+                          builder: (context, child) {
                         return Stack(
                           children: [
                             Positioned(
@@ -456,14 +534,18 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             ),
           ),
 
-          // Bottom Controls (Trigger + Manual Input)
+          // Bottom Controls (Trigger + Manual Input + Last Scanned)
           Positioned(
-            bottom: 30,
+            bottom: 24,
             left: 20,
             right: 20,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Prominently display the last scanned serial number
+                _buildLastScannedCard(),
+                const SizedBox(height: 12),
+
                 if (_holdToScanMode) ...[
                   Listener(
                     behavior: HitTestBehavior.opaque,
@@ -568,7 +650,185 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             ),
           ),
         ],
+      );
+    },
+  ),
+);
+  }
+
+  Widget _buildLastScannedCard() {
+    if (_lastScannedValue == null || _lastScannedValue!.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.65),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.qr_code_scanner, size: 14, color: Colors.white54),
+            SizedBox(width: 8),
+            Text(
+              'No serial scanned yet',
+              style: TextStyle(
+                color: Colors.white60,
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 360),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFF10B981),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF10B981).withValues(alpha: 0.35),
+            blurRadius: 14,
+            spreadRadius: 1,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: const BoxDecoration(
+              color: Color(0xFF10B981),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.check, size: 14, color: Colors.white),
+          ),
+          const SizedBox(width: 12),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'LAST SCANNED SERIAL',
+                      style: TextStyle(
+                        color: Color(0xFF34D399),
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                    if (_scannedCount > 0) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: Colors.white12,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '#$_scannedCount',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 2),
+                SelectableText(
+                  _lastScannedValue!,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.6,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
+  }
+}
+
+class _CornerBracketsPainter extends CustomPainter {
+  final Color color;
+  final double cornerLength;
+  final double strokeWidth;
+
+  const _CornerBracketsPainter({
+    required this.color,
+    this.cornerLength = 26.0,
+    this.strokeWidth = 3.5,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke;
+
+    const double r = 16.0;
+
+    // Top-Left
+    final pathTL = Path()
+      ..moveTo(0, cornerLength)
+      ..lineTo(0, r)
+      ..arcToPoint(const Offset(r, 0), radius: const Radius.circular(r))
+      ..lineTo(cornerLength, 0);
+    canvas.drawPath(pathTL, paint);
+
+    // Top-Right
+    final pathTR = Path()
+      ..moveTo(size.width - cornerLength, 0)
+      ..lineTo(size.width - r, 0)
+      ..arcToPoint(Offset(size.width, r), radius: const Radius.circular(r))
+      ..lineTo(size.width, cornerLength);
+    canvas.drawPath(pathTR, paint);
+
+    // Bottom-Left
+    final pathBL = Path()
+      ..moveTo(0, size.height - cornerLength)
+      ..lineTo(0, size.height - r)
+      ..arcToPoint(Offset(r, size.height), radius: const Radius.circular(r))
+      ..lineTo(cornerLength, size.height);
+    canvas.drawPath(pathBL, paint);
+
+    // Bottom-Right
+    final pathBR = Path()
+      ..moveTo(size.width - cornerLength, size.height)
+      ..lineTo(size.width - r, size.height)
+      ..arcToPoint(Offset(size.width, size.height - r), radius: const Radius.circular(r))
+      ..lineTo(size.width, size.height - cornerLength);
+    canvas.drawPath(pathBR, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CornerBracketsPainter oldDelegate) {
+    return oldDelegate.color != color ||
+        oldDelegate.strokeWidth != strokeWidth ||
+        oldDelegate.cornerLength != cornerLength;
   }
 }

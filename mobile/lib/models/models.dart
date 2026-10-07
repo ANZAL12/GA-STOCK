@@ -37,6 +37,7 @@ class Product {
   final bool serialNumberRequired;
   final int currentStockQty;
   final bool outOfStockReminder;
+  final bool hasDualSerial;
 
   Product({
     required this.id,
@@ -51,6 +52,7 @@ class Product {
     required this.serialNumberRequired,
     required this.currentStockQty,
     required this.outOfStockReminder,
+    this.hasDualSerial = false,
   });
 
   factory Product.fromJson(Map<String, dynamic> json) {
@@ -67,6 +69,7 @@ class Product {
       serialNumberRequired: json['serial_number_required'] ?? true,
       currentStockQty: json['current_stock_qty'] ?? 0,
       outOfStockReminder: json['out_of_stock_reminder'] ?? false,
+      hasDualSerial: json['has_dual_serial'] ?? false,
     );
   }
 }
@@ -106,6 +109,7 @@ enum OutwardCase {
 
 class OutwardScanResult {
   final String serialNumber;
+  final Product? product;
   final OutwardCase caseType;
   final bool isMatched;
   final bool isFlaggedForReview;
@@ -113,9 +117,11 @@ class OutwardScanResult {
   final String? existingModelName;
   final String? lastShopName;
   final String? currentStatus;
+  final String? unitType; // 'indoor', 'outdoor', or null
 
   OutwardScanResult({
     required this.serialNumber,
+    this.product,
     required this.caseType,
     required this.isMatched,
     this.isFlaggedForReview = false,
@@ -123,6 +129,7 @@ class OutwardScanResult {
     this.existingModelName,
     this.lastShopName,
     this.currentStatus,
+    this.unitType,
   });
 }
 

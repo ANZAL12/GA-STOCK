@@ -12,6 +12,7 @@ from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.enums import HistoryAction, SerialStatus
+from app.models.category import Category
 from app.models.history import SerialHistory
 from app.models.inward import InwardBatch, InwardLine
 from app.models.outward import OutwardLine
@@ -163,6 +164,22 @@ async def create_inward_batch(
     if not product.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Product is deactivated.")
 
+    # 4b. If category has dual serials, ensure equal numbers of indoor and outdoor units
+    cat_res = await db.execute(select(Category).where(Category.id == product.category_id))
+    cat = cat_res.scalar_one_or_none()
+    if cat and cat.has_dual_serial:
+        indoor_count = sum(1 for s in raw_serials if (req.unit_types or {}).get(s) == "indoor")
+        outdoor_count = sum(1 for s in raw_serials if (req.unit_types or {}).get(s) == "outdoor")
+        if indoor_count != outdoor_count:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Indoor and Outdoor unit counts must match for dual-serial model '{product.name}'. "
+                    f"Scanned: {indoor_count} Indoor unit(s), {outdoor_count} Outdoor unit(s). "
+                    "Equal numbers of indoor and outdoor units are required to store."
+                ),
+            )
+
     # 5. Check if ANY scanned serial already exists anywhere in the database
     existing_res = await db.execute(
         select(SerialNumber, Product.name.label("product_name"), Product.model.label("product_model"))
@@ -214,11 +231,16 @@ async def create_inward_batch(
     # 7. Create SerialNumber, InwardLine, and SerialHistory for each serial
     created_serials: list[str] = []
     for sn_text in raw_serials:
+        u_type = None
+        if req.unit_types and sn_text in req.unit_types:
+            u_type = req.unit_types[sn_text]
+
         sn_record = SerialNumber(
             serial_number=sn_text,
             product_id=product.id,
             status=SerialStatus.available,
             last_shop_id=None,
+            unit_type=u_type,
         )
         db.add(sn_record)
         await db.flush()
@@ -244,7 +266,8 @@ async def create_inward_batch(
         created_serials.append(sn_text)
 
     # 8. Update product running stock & flip has_had_inward
-    product.current_stock_qty += len(raw_serials)
+    inward_units_count = (len(raw_serials) // 2) if (cat and cat.has_dual_serial) else len(raw_serials)
+    product.current_stock_qty += inward_units_count
     product.has_had_inward = True
 
     # 9. Audit log

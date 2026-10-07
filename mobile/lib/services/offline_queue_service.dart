@@ -91,6 +91,9 @@ class OfflineQueueService {
           await api.submitInwardBatch(
             productId: item.payload['product_id'],
             serialNumbers: List<String>.from(item.payload['serial_numbers']),
+            unitTypes: item.payload['unit_types'] != null
+                ? Map<String, String>.from(item.payload['unit_types'])
+                : null,
             remarks: item.payload['remarks'],
           );
         } else {
@@ -98,6 +101,9 @@ class OfflineQueueService {
             shopId: item.payload['shop_id'],
             productId: item.payload['product_id'],
             serialNumbers: List<String>.from(item.payload['serial_numbers']),
+            unitTypes: item.payload['unit_types'] != null
+                ? Map<String, String>.from(item.payload['unit_types'])
+                : null,
             deliveryReference: item.payload['delivery_reference'],
             remarks: item.payload['remarks'],
           );

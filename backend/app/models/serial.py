@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from typing import Optional
 
 from sqlalchemy import Enum, ForeignKey, String
@@ -35,6 +35,8 @@ class SerialNumber(Base, PrimaryKeyMixin, TimestampMixin):
     last_shop_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("shops.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Unit type for dual-serial models (e.g. "indoor" or "outdoor")
+    unit_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     def __repr__(self) -> str:
         return f"<SerialNumber {self.serial_number!r} status={self.status}>"

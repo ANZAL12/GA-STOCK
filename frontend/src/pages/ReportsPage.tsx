@@ -503,7 +503,7 @@ export const ReportsPage: React.FC = () => {
                           </div>
                         </td>
                         <td className="py-3 px-4 text-slate-600">{item.category_name}</td>
-                        <td className="py-3 px-4 text-right font-bold text-slate-900">
+                        <td className={`py-3 px-4 text-right font-bold ${item.current_stock_qty < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
                           {item.current_stock_qty}
                         </td>
                         <td className="py-3 px-4 text-right text-emerald-700 font-bold">
@@ -566,9 +566,18 @@ export const ReportsPage: React.FC = () => {
                             {line.transaction_date}
                           </td>
                           <td className="py-3 px-4">
-                            <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                              {line.serial_number}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                {line.serial_number}
+                              </span>
+                              {line.unit_type && (
+                                <span className={`text-[11px] font-semibold ${
+                                  line.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
+                                }`}>
+                                  ({line.unit_type.charAt(0).toUpperCase() + line.unit_type.slice(1).toLowerCase()})
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 px-4">
                             <div className="font-semibold text-slate-800">{line.product_name}</div>
@@ -630,9 +639,18 @@ export const ReportsPage: React.FC = () => {
                             {line.transaction_date}
                           </td>
                           <td className="py-3 px-4">
-                            <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                              {line.serial_number}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                {line.serial_number}
+                              </span>
+                              {line.unit_type && (
+                                <span className={`text-[11px] font-semibold ${
+                                  line.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
+                                }`}>
+                                  ({line.unit_type.charAt(0).toUpperCase() + line.unit_type.slice(1).toLowerCase()})
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 px-4">
                             <div className="font-semibold text-slate-800">{line.product_name}</div>
@@ -686,9 +704,18 @@ export const ReportsPage: React.FC = () => {
                       damagedData.map((d) => (
                         <tr key={d.id} className="hover:bg-slate-50/80 transition-colors">
                           <td className="py-3 px-4">
-                            <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                              {d.serial_number}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                {d.serial_number}
+                              </span>
+                              {d.unit_type && (
+                                <span className={`text-[11px] font-semibold ${
+                                  d.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
+                                }`}>
+                                  ({d.unit_type.charAt(0).toUpperCase() + d.unit_type.slice(1).toLowerCase()})
+                                </span>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 px-4 font-semibold text-slate-900">{d.product_name}</td>
                           <td className="py-3 px-4 text-slate-500 font-mono">

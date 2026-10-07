@@ -74,7 +74,11 @@ async def create_category(
             detail=f"Category '{clean_name}' already exists",
         )
 
-    category = Category(name=clean_name, is_active=True)
+    category = Category(
+        name=clean_name,
+        has_dual_serial=req.has_dual_serial,
+        is_active=True,
+    )
     db.add(category)
     await db.flush()
 
@@ -83,7 +87,7 @@ async def create_category(
         action="CATEGORY_CREATED",
         entity_type="category",
         entity_id=str(category.id),
-        details={"name": category.name},
+        details={"name": category.name, "has_dual_serial": category.has_dual_serial},
     )
     db.add(audit)
 
@@ -103,7 +107,7 @@ async def update_category(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CategoryResponse:
     """
-    Admin only: edit category name or active status.
+    Admin only: edit category name, dual serial flag, or active status.
     """
     result = await db.execute(select(Category).where(Category.id == category_id))
     category = result.scalar_one_or_none()
@@ -124,6 +128,9 @@ async def update_category(
                 detail=f"Another category with name '{clean_name}' already exists",
             )
         category.name = clean_name
+
+    if req.has_dual_serial is not None:
+        category.has_dual_serial = req.has_dual_serial
 
     if req.is_active is not None:
         category.is_active = req.is_active

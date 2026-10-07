@@ -272,6 +272,7 @@ class ApiService {
   Future<Map<String, dynamic>> submitInwardBatch({
     required String productId,
     required List<String> serialNumbers,
+    Map<String, String>? unitTypes,
     String? remarks,
   }) async {
     final res = await _authenticatedPost(
@@ -280,6 +281,7 @@ class ApiService {
         'product_id': productId,
         'serials': serialNumbers,
         'serial_numbers': serialNumbers,
+        'unit_types': unitTypes,
         'remarks': remarks,
       }),
     );
@@ -342,6 +344,7 @@ class ApiService {
     required String shopId,
     required String productId,
     required List<String> serialNumbers,
+    Map<String, String>? unitTypes,
     String? deliveryReference,
     String? remarks,
   }) async {
@@ -350,8 +353,13 @@ class ApiService {
       body: jsonEncode({
         'shop_id': shopId,
         'product_id': productId,
-        'serials': serialNumbers.map((s) => {'serial_number': s, 'confirmed_warning': true}).toList(),
+        'serials': serialNumbers.map((s) => {
+          'serial_number': s,
+          'confirmed_warning': true,
+          if (unitTypes != null && unitTypes.containsKey(s)) 'unit_type': unitTypes[s],
+        }).toList(),
         'serial_numbers': serialNumbers,
+        'unit_types': unitTypes,
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks,
       }),

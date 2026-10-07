@@ -22,6 +22,7 @@ export interface Device {
 export interface Category {
   id: string;
   name: string;
+  has_dual_serial?: boolean;
   is_active: boolean;
   created_at: string;
   product_count: number;
@@ -33,6 +34,7 @@ export interface Product {
   sku?: string | null;
   category_id: string;
   category_name?: string | null;
+  has_dual_serial?: boolean;
   brand: string;
   model: string;
   size_capacity?: string | null;
@@ -144,6 +146,7 @@ export interface SerialDetail {
   brand?: string | null;
   model?: string | null;
   category_name?: string | null;
+  unit_type?: string | null;
   last_shop_id?: string | null;
   last_shop_name?: string | null;
   last_shop_city?: string | null;
@@ -167,6 +170,7 @@ export interface SerialListItem {
   shop_city?: string | null;
   reference?: string | null;
   is_matched: boolean;
+  unit_type?: string | null;
 }
 
 export interface SerialListResponse {
@@ -192,6 +196,7 @@ export interface StockOutReportItem {
   id: string;
   transaction_date: string;
   serial_number: string;
+  unit_type?: string | null;
   product_name: string;
   brand: string;
   model: string;
@@ -206,6 +211,7 @@ export interface StockOutReportItem {
 export interface DamagedReportItem {
   id: string;
   serial_number: string;
+  unit_type?: string | null;
   product_name: string;
   brand: string;
   model: string;

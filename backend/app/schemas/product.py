@@ -40,6 +40,7 @@ class ProductResponse(BaseModel):
     sku: Optional[str] = None
     category_id: uuid.UUID
     category_name: Optional[str] = None
+    has_dual_serial: bool = False
     brand: str
     model: str
     size_capacity: Optional[str] = None
@@ -56,13 +57,15 @@ class ProductResponse(BaseModel):
     @computed_field
     def out_of_stock_reminder(self) -> bool:
         """
-        True only when tracked count is 0 AND the product has had
+        True when tracked count is <= 0 AND the product has had
         at least one inward since go-live.
         """
-        return self.current_stock_qty == 0 and self.has_had_inward
+        return self.current_stock_qty <= 0 and self.has_had_inward
 
     @computed_field
     def stock_status_label(self) -> str:
+        if self.current_stock_qty < 0:
+            return f"{self.current_stock_qty} in stock (Negative)"
         if self.current_stock_qty == 0 and self.has_had_inward:
             return "No tracked stock left"
         if self.current_stock_qty == 0 and not self.has_had_inward:

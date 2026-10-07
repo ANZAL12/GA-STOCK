@@ -39,6 +39,7 @@ class SerialDetailResponse(BaseModel):
     brand: Optional[str] = None
     model: Optional[str] = None
     category_name: Optional[str] = None
+    unit_type: Optional[str] = None
     last_shop_id: Optional[uuid.UUID] = None
     last_shop_name: Optional[str] = None
     last_shop_city: Optional[str] = None
@@ -64,6 +65,7 @@ class SerialListItem(BaseModel):
     shop_city: Optional[str] = None
     reference: Optional[str] = None
     is_matched: bool = True
+    unit_type: Optional[str] = None
 
 
 class SerialListResponse(BaseModel):

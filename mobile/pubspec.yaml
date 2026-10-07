@@ -69,6 +69,8 @@ flutter:
     - assets/sounds/scanner_beep.mp3
     - assets/sounds/beep.mp3
     - assets/sounds/freesound_community-store-scanner-beep-90395 (2).mp3
+    - assets/images/
+    - assets/images/shop_icon.png
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

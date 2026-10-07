@@ -11,6 +11,7 @@ from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.enums import HistoryAction, SerialStatus
+from app.models.category import Category
 from app.models.history import SerialHistory
 from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
@@ -69,6 +70,7 @@ async def check_serial(
     )
     prev_disp = prev_disp_res.first()
 
+    sn = None
     is_already_dispatched = False
     disp_shop_name = None
     disp_date = None
@@ -91,6 +93,7 @@ async def check_serial(
     if is_already_dispatched:
         shop_info = f" to shop '{disp_shop_name}'" if disp_shop_name else ""
         date_info = f" on {disp_date}" if disp_date else ""
+        disp_unit_type = sn.unit_type if sn else (prev_disp[0].unit_type if prev_disp else None)
         return OutwardCheckSerialResponse(
             serial_number=clean_serial,
             case=0,
@@ -106,6 +109,7 @@ async def check_serial(
             is_matched=row is not None,
             registered_model_name=registered_model_display,
             current_status="dispatched",
+            unit_type=disp_unit_type,
             last_dispatched_date=disp_date,
             last_dispatched_shop_name=disp_shop_name,
         )
@@ -149,7 +153,9 @@ async def check_serial(
             is_blocked=False,
             is_matched=False,
             registered_model_name=registered_model_display,
+            registered_product_id=sn.product_id,
             current_status=sn.status.value,
+            unit_type=sn.unit_type,
         )
 
     # Case 3: Known, same model, not dispatched, but status is NOT Available
@@ -171,7 +177,9 @@ async def check_serial(
             is_blocked=False,
             is_matched=True,
             registered_model_name=registered_model_display,
+            registered_product_id=sn.product_id,
             current_status=sn.status.value,
+            unit_type=sn.unit_type,
             last_dispatched_shop_name=last_shop_name,
         )
 
@@ -190,7 +198,9 @@ async def check_serial(
         is_blocked=False,
         is_matched=True,
         registered_model_name=registered_model_display,
+        registered_product_id=sn.product_id,
         current_status="available",
+        unit_type=sn.unit_type,
     )
 
 
@@ -273,7 +283,8 @@ async def create_outward_batch(
         raise HTTPException(status_code=400, detail="At least one serial number is required.")
 
     seen_serials = set()
-    cleaned_items: list[tuple[str, bool]] = []
+    unit_map = req.unit_types or {}
+    cleaned_items: list[tuple[str, bool, Optional[str]]] = []
     for item in req.serials:
         s_clean = item.serial_number.strip()
         if not s_clean:
@@ -284,7 +295,8 @@ async def create_outward_batch(
                 detail=f"Duplicate serial number in this batch: '{s_clean}'. Each serial must be unique.",
             )
         seen_serials.add(s_clean)
-        cleaned_items.append((s_clean, item.confirmed_warning))
+        u_type = item.unit_type or unit_map.get(s_clean)
+        cleaned_items.append((s_clean, item.confirmed_warning, u_type))
 
     if not cleaned_items:
         raise HTTPException(status_code=400, detail="No valid serial numbers provided.")
@@ -312,7 +324,7 @@ async def create_outward_batch(
         raise HTTPException(status_code=400, detail="Selected product is deactivated.")
 
     # 5. Lock and query all matching SerialNumber rows
-    serial_texts = [s for s, _ in cleaned_items]
+    serial_texts = [s for s, _, _ in cleaned_items]
     sn_query = (
         select(SerialNumber)
         .where(SerialNumber.serial_number.in_(serial_texts))
@@ -321,8 +333,33 @@ async def create_outward_batch(
     sn_res = await db.execute(sn_query)
     sn_map: dict[str, SerialNumber] = {sn.serial_number: sn for sn in sn_res.scalars().all()}
 
+    # 5b. If category has dual serials, ensure equal numbers of indoor and outdoor units
+    cat_res = await db.execute(select(Category).where(Category.id == product.category_id))
+    cat = cat_res.scalar_one_or_none()
+    if cat and cat.has_dual_serial:
+        def get_item_unit_type(s_text: str, u_type: Optional[str]) -> Optional[str]:
+            if u_type:
+                return u_type
+            if req.unit_types and s_text in req.unit_types:
+                return req.unit_types[s_text]
+            if s_text in sn_map and sn_map[s_text].unit_type:
+                return sn_map[s_text].unit_type
+            return None
+
+        indoor_count = sum(1 for s_text, _, u_type in cleaned_items if get_item_unit_type(s_text, u_type) == "indoor")
+        outdoor_count = sum(1 for s_text, _, u_type in cleaned_items if get_item_unit_type(s_text, u_type) == "outdoor")
+        if indoor_count != outdoor_count:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Indoor and Outdoor unit counts must match for dual-serial model '{product.name}'. "
+                    f"Scanned: {indoor_count} Indoor unit(s), {outdoor_count} Outdoor unit(s). "
+                    "Equal numbers of indoor and outdoor units are required to dispatch."
+                ),
+            )
+
     # 6. STRICT BLOCK: Check if any serial was already dispatched
-    for s_text, _ in cleaned_items:
+    for s_text, _, _ in cleaned_items:
         if s_text in sn_map and sn_map[s_text].status == SerialStatus.dispatched:
             raise HTTPException(
                 status_code=400,
@@ -343,7 +380,7 @@ async def create_outward_batch(
         )
 
     # 7. Pre-validate: ensure any case 3 or case 4 serial has confirmation
-    for s_text, is_confirmed in cleaned_items:
+    for s_text, is_confirmed, _ in cleaned_items:
         if s_text in sn_map:
             sn = sn_map[s_text]
             if sn.product_id != product.id:
@@ -388,7 +425,7 @@ async def create_outward_batch(
     flagged_cnt = 0
 
     # 8. Process each serial
-    for s_text, is_confirmed in cleaned_items:
+    for s_text, is_confirmed, u_type in cleaned_items:
         if s_text not in sn_map:
             # Case 2: Unmatched (old stock pre-go-live) -> NOT AN ERROR
             unmatched_cnt += 1
@@ -402,6 +439,7 @@ async def create_outward_batch(
                 is_matched=False,
                 is_flagged_for_review=False,
                 flag_reason="Not matched to an inward record (pre-go-live stock)",
+                unit_type=u_type,
             )
             db.add(line)
             await db.flush()
@@ -417,7 +455,7 @@ async def create_outward_batch(
                 is_matched=False,
                 user_id=current_user.id,
                 device_id=device_id,
-                remarks="Dispatched (recorded only)",
+                remarks=f"Dispatched (recorded only){f' [{u_type.capitalize()}]' if u_type else ''}",
             )
             db.add(history)
 
@@ -429,6 +467,7 @@ async def create_outward_batch(
                     is_matched=False,
                     is_flagged_for_review=False,
                     flag_reason=line.flag_reason,
+                    unit_type=u_type,
                     status_label="Recorded only",
                 )
             )
@@ -453,6 +492,7 @@ async def create_outward_batch(
                     is_matched=False,
                     is_flagged_for_review=True,
                     flag_reason=f"Registered under model ID {sn.product_id}",
+                    unit_type=u_type or sn.unit_type,
                 )
                 db.add(line)
                 await db.flush()
@@ -480,6 +520,7 @@ async def create_outward_batch(
                         is_matched=False,
                         is_flagged_for_review=True,
                         flag_reason=line.flag_reason,
+                        unit_type=line.unit_type,
                         status_label="Flagged",
                     )
                 )
@@ -500,6 +541,7 @@ async def create_outward_batch(
                     is_matched=False,
                     is_flagged_for_review=True,
                     flag_reason=f"Previous status was '{old_status.value}'",
+                    unit_type=u_type or sn.unit_type,
                 )
                 db.add(line)
                 await db.flush()
@@ -527,6 +569,7 @@ async def create_outward_batch(
                         is_matched=False,
                         is_flagged_for_review=True,
                         flag_reason=line.flag_reason,
+                        unit_type=line.unit_type,
                         status_label="Flagged",
                     )
                 )
@@ -547,6 +590,7 @@ async def create_outward_batch(
                     is_matched=True,
                     is_flagged_for_review=False,
                     flag_reason=None,
+                    unit_type=u_type or sn.unit_type,
                 )
                 db.add(line)
                 await db.flush()
@@ -574,6 +618,7 @@ async def create_outward_batch(
                         is_matched=True,
                         is_flagged_for_review=False,
                         flag_reason=None,
+                        unit_type=line.unit_type,
                         status_label="Matched",
                     )
                 )
@@ -583,8 +628,9 @@ async def create_outward_batch(
     batch.unmatched_count = unmatched_cnt
     batch.flagged_count = flagged_cnt
 
-    # 10. Update product stock (floored at 0)
-    product.current_stock_qty = max(0, product.current_stock_qty - len(cleaned_items))
+    # 10. Update product stock (allow negative numbers if outward exceeds stock)
+    outward_units_count = (len(cleaned_items) // 2) if (cat and cat.has_dual_serial) else len(cleaned_items)
+    product.current_stock_qty = product.current_stock_qty - outward_units_count
 
     # 11. Audit Log
     audit = AuditLog(

@@ -24,7 +24,9 @@ class OutwardCheckSerialResponse(BaseModel):
     is_blocked: bool = False
     is_matched: bool = False
     registered_model_name: Optional[str] = None
+    registered_product_id: Optional[uuid.UUID] = None
     current_status: Optional[str] = None
+    unit_type: Optional[str] = None
     last_dispatched_date: Optional[date] = None
     last_dispatched_shop_name: Optional[str] = None
 
@@ -47,6 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class OutwardSerialInput(BaseModel):
     serial_number: str = Field(..., min_length=1, max_length=100)
     confirmed_warning: bool = False  # Set to True by staff if confirming case 3 or 4
+    unit_type: Optional[str] = None  # "indoor" or "outdoor" for dual-serial models
 
 
 class OutwardBatchCreate(BaseModel):
@@ -55,6 +58,7 @@ class OutwardBatchCreate(BaseModel):
     delivery_reference: Optional[str] = Field(None, max_length=100)
     transaction_date: date = Field(default_factory=date.today)
     serials: list[OutwardSerialInput] = Field(default_factory=list, description="List of scanned serials with confirmation flags")
+    unit_types: Optional[dict[str, str]] = Field(default=None, description="Optional mapping of serial to unit_type")
     remarks: Optional[str] = None
 
     @model_validator(mode="before")
@@ -82,6 +86,7 @@ class OutwardLineResponse(BaseModel):
     is_matched: bool
     is_flagged_for_review: bool
     flag_reason: Optional[str] = None
+    unit_type: Optional[str] = None
     status_label: str  # "Matched" | "Recorded only" | "Flagged"
 
 

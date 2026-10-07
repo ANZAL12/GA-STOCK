@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from typing import Optional
 
 from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, Text
@@ -26,9 +26,6 @@ class Product(Base, PrimaryKeyMixin, TimestampMixin):
       (they may still have untracked opening stock).
     """
     __tablename__ = "products"
-    __table_args__ = (
-        CheckConstraint("current_stock_qty >= 0", name="ck_products_stock_non_negative"),
-    )
 
     name:                   Mapped[str]           = mapped_column(String(255), nullable=False)
     sku:                    Mapped[Optional[str]]  = mapped_column(String(100), unique=True, nullable=True)

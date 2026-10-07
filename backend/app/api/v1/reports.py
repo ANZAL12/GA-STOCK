@@ -107,7 +107,7 @@ async def get_overview(
     # Out of stock models (where current_stock_qty == 0 AND has_had_inward == True)
     res_oos = await db.execute(
         select(func.count(Product.id)).where(
-            Product.current_stock_qty == 0,
+            Product.current_stock_qty <= 0,
             Product.has_had_inward == True,
             Product.is_active == True,
         )
@@ -220,8 +220,8 @@ async def get_stock_by_model(
     items = []
     export_rows = []
     for p, cat_name, avail, disp, dam, tot_rec, unm_cnt in rows:
-        oos_rem = (p.current_stock_qty == 0 and p.has_had_inward)
-        label = "No tracked stock left" if oos_rem else None
+        oos_rem = (p.current_stock_qty <= 0 and p.has_had_inward)
+        label = f"Negative ({p.current_stock_qty})" if p.current_stock_qty < 0 else ("No tracked stock left" if oos_rem else None)
 
         items.append(
             StockByModelItem(
@@ -403,6 +403,7 @@ async def get_stock_out_report(
             "id": l.id,
             "transaction_date": l.transaction_date,
             "serial_number": l.serial_text,
+            "unit_type": l.unit_type,
             "product_name": p_name,
             "brand": p_brand,
             "model": p_model,
@@ -416,10 +417,11 @@ async def get_stock_out_report(
         items.append(entry)
 
         if export:
+            s_text = f"{l.serial_text} ({l.unit_type.capitalize()})" if l.unit_type else l.serial_text
             export_rows.append(
                 [
                     str(l.transaction_date),
-                    l.serial_text,
+                    s_text,
                     p_name,
                     f"{s_name} ({s_city})",
                     del_ref or "-",
@@ -505,6 +507,7 @@ async def get_damaged_report(
         entry = {
             "id": sn.id,
             "serial_number": sn.serial_number,
+            "unit_type": sn.unit_type,
             "product_name": p_name,
             "brand": p_brand,
             "model": p_model,
@@ -515,9 +518,10 @@ async def get_damaged_report(
         items.append(entry)
 
         if export:
+            sn_text = f"{sn.serial_number} ({sn.unit_type.capitalize()})" if sn.unit_type else sn.serial_number
             export_rows.append(
                 [
-                    sn.serial_number,
+                    sn_text,
                     p_name,
                     p_brand,
                     p_model,

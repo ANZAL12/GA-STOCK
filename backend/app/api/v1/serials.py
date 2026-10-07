@@ -48,6 +48,7 @@ async def list_serials(
             OutwardLine.transaction_date.label("outward_date"),
             OutwardBatch.delivery_reference.label("outward_ref"),
             OutwardLine.created_at.label("outward_created_at"),
+            OutwardLine.unit_type.label("outward_unit_type"),
             Shop.name.label("outward_shop_name"),
             Shop.city.label("outward_shop_city"),
         )
@@ -64,6 +65,7 @@ async def list_serials(
             SerialNumber.id.label("sn_id"),
             SerialNumber.serial_number.label("sn_text"),
             SerialNumber.status.label("sn_status"),
+            SerialNumber.unit_type.label("sn_unit_type"),
             SerialNumber.created_at.label("sn_created_at"),
             Product.name.label("prod_name"),
             Product.brand.label("prod_brand"),
@@ -76,6 +78,7 @@ async def list_serials(
             outward_subq.c.outward_date,
             outward_subq.c.outward_ref,
             outward_subq.c.outward_created_at,
+            outward_subq.c.outward_unit_type,
             outward_subq.c.outward_shop_name,
             outward_subq.c.outward_shop_city,
         )
@@ -129,6 +132,7 @@ async def list_serials(
                 shop_city=s_city,
                 reference=ref,
                 is_matched=True,
+                unit_type=r.sn_unit_type or r.outward_unit_type,
             )
         )
 
@@ -138,6 +142,7 @@ async def list_serials(
             OutwardLine.serial_text.label("serial_text"),
             OutwardLine.created_at.label("created_at"),
             OutwardLine.transaction_date.label("outward_date"),
+            OutwardLine.unit_type.label("unit_type"),
             Product.name.label("prod_name"),
             Product.brand.label("prod_brand"),
             Product.model.label("prod_model"),
@@ -175,6 +180,7 @@ async def list_serials(
                 shop_city=r.shop_city,
                 reference=r.outward_ref,
                 is_matched=False,
+                unit_type=r.unit_type,
             )
         )
 
@@ -287,6 +293,15 @@ async def lookup_serial(
 
         status_label = sn.status.value.replace("_", " ").title()
 
+        disp_unit_type = sn.unit_type
+        if not disp_unit_type:
+            ol_res = await db.execute(
+                select(OutwardLine.unit_type)
+                .where(OutwardLine.serial_number_id == sn.id, OutwardLine.unit_type.isnot(None))
+                .order_by(OutwardLine.created_at.desc())
+            )
+            disp_unit_type = ol_res.scalars().first()
+
         return SerialDetailResponse(
             serial_number=sn.serial_number,
             serial_number_id=sn.id,
@@ -297,6 +312,7 @@ async def lookup_serial(
             brand=p_brand,
             model=p_model,
             category_name=cat_name,
+            unit_type=disp_unit_type,
             last_shop_id=s_id,
             last_shop_name=s_name,
             last_shop_city=s_city,
@@ -368,6 +384,7 @@ async def lookup_serial(
             brand=p_brand,
             model=p_model,
             category_name=cat_name,
+            unit_type=line.unit_type,
             last_shop_id=s_id,
             last_shop_name=s_name,
             last_shop_city=s_city,
@@ -411,7 +428,7 @@ async def update_serial_status(
 
     if old_status == SerialStatus.available and req.new_status != SerialStatus.available:
         # Stock leaves available pool
-        product.current_stock_qty = max(0, product.current_stock_qty - 1)
+        product.current_stock_qty = product.current_stock_qty - 1
     elif old_status != SerialStatus.available and req.new_status == SerialStatus.available:
         # Stock returns to available pool
         product.current_stock_qty += 1

@@ -43,6 +43,7 @@ export const StockPage: React.FC = () => {
   // Category Modal state
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryHasDualSerial, setNewCategoryHasDualSerial] = useState(false);
   const [categorySubmitting, setCategorySubmitting] = useState(false);
   const [categoryError, setCategoryError] = useState<string | null>(null);
 
@@ -54,11 +55,15 @@ export const StockPage: React.FC = () => {
     try {
       const created = await apiRequest<Category>("/categories", {
         method: "POST",
-        body: JSON.stringify({ name: newCategoryName.trim() }),
+        body: JSON.stringify({ 
+          name: newCategoryName.trim(),
+          has_dual_serial: newCategoryHasDualSerial,
+        }),
       });
       await fetchStock();
       setFormData((prev) => ({ ...prev, category_id: created.id }));
       setNewCategoryName("");
+      setNewCategoryHasDualSerial(false);
       setIsCategoryModalOpen(false);
     } catch (err: any) {
       setCategoryError(err.message || "Failed to create category");
@@ -261,13 +266,21 @@ export const StockPage: React.FC = () => {
               <button
                 key={c.id}
                 onClick={() => setSelectedCategory(c.id)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                className={`px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
                   selectedCategory === c.id
                     ? "bg-[#3C3489] text-white shadow-sm"
                     : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
                 }`}
               >
-                {c.name} ({count})
+                <span>{c.name}</span>
+                {c.has_dual_serial && (
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-full ${
+                    selectedCategory === c.id ? "bg-white/20 text-white" : "bg-purple-100 text-purple-700"
+                  }`}>
+                    Dual
+                  </span>
+                )}
+                <span className="opacity-70">({count})</span>
               </button>
             );
           })}
@@ -293,16 +306,27 @@ export const StockPage: React.FC = () => {
             className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 hover:border-slate-300 transition-all flex flex-col justify-between"
           >
             <div className="space-y-2">
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-[11px] font-semibold text-[#3C3489] bg-[#EEF2FF] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
-                  {p.category_name}
-                </span>
+              <div className="flex items-start justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-semibold text-[#3C3489] bg-[#EEF2FF] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                    {p.category_name}
+                  </span>
+                  {p.has_dual_serial && (
+                    <span className="text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-full">
+                      Dual Serial (Indoor / Outdoor)
+                    </span>
+                  )}
+                </div>
 
-                {p.out_of_stock_reminder && (
+                {p.current_stock_qty < 0 ? (
+                  <span className="text-[11px] font-semibold text-rose-800 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
+                    Negative ({p.current_stock_qty})
+                  </span>
+                ) : p.out_of_stock_reminder ? (
                   <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
                     No tracked stock left
                   </span>
-                )}
+                ) : null}
               </div>
 
               <div>
@@ -327,8 +351,8 @@ export const StockPage: React.FC = () => {
                 <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
                   Current Stock
                 </span>
-                <span className="text-lg font-bold text-slate-900">
-                  {p.current_stock_qty} <span className="text-xs font-normal text-slate-500">{p.unit}s</span>
+                <span className={`text-lg font-bold ${p.current_stock_qty < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                  {p.current_stock_qty} <span className={`text-xs font-normal ${p.current_stock_qty < 0 ? 'text-rose-500 font-semibold' : 'text-slate-500'}`}>{p.unit}s</span>
                 </span>
               </div>
 
@@ -404,6 +428,7 @@ export const StockPage: React.FC = () => {
                     onClick={() => {
                       setCategoryError(null);
                       setNewCategoryName("");
+                      setNewCategoryHasDualSerial(false);
                       setIsCategoryModalOpen(true);
                     }}
                     className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
@@ -514,9 +539,27 @@ export const StockPage: React.FC = () => {
               autoFocus
               value={newCategoryName}
               onChange={(e) => setNewCategoryName(e.target.value)}
-              placeholder="e.g. Microwave Oven, Dishwasher, Water Purifier"
+              placeholder="e.g. Air Conditioners, Microwave Oven"
               className="w-full px-3 py-2.5 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
             />
+          </div>
+
+          <div className="flex items-center justify-between p-3.5 rounded-xl bg-purple-50/50 border border-purple-200/70">
+            <div>
+              <p className="text-xs font-semibold text-slate-800">Dual Serial Model</p>
+              <p className="text-[11px] text-slate-500">
+                Enable for AC (Separate Indoor & Outdoor unit serials)
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={newCategoryHasDualSerial}
+                onChange={(e) => setNewCategoryHasDualSerial(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#3C3489]"></div>
+            </label>
           </div>
 
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">

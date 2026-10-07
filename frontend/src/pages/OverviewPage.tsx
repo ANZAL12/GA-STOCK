@@ -166,10 +166,17 @@ export const OverviewPage: React.FC = () => {
           <div className="max-w-2xl bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 animate-fade-in">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono font-bold text-base text-slate-900">
                     {searchResult.serial_number}
                   </span>
+                  {searchResult.unit_type && (
+                    <span className={`text-xs font-semibold ${
+                      searchResult.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
+                    }`}>
+                      ({searchResult.unit_type.charAt(0).toUpperCase() + searchResult.unit_type.slice(1).toLowerCase()})
+                    </span>
+                  )}
                   <Badge label={searchResult.status_label} />
                   <Badge 
                     label={searchResult.is_tracked ? "Matched" : "Recorded only"} 

@@ -67,24 +67,31 @@ if ($nssmPath) {
     & $nssmPath set $ServiceName Start SERVICE_AUTO_START
     & $nssmPath set $ServiceName AppStdout "$StdoutLog"
     & $nssmPath set $ServiceName AppStderr "$StderrLog"
-    & $nssmPath set $ServiceName DependOnService "postgresql-x64-17"
+
+    # Dynamically detect postgres service name (e.g. postgresql-x64-16, postgresql-x64-15, etc.)
+    $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pgService) {
+        Write-Host "[+] Setting dependency on PostgreSQL service: $($pgService.Name)" -ForegroundColor Green
+        & $nssmPath set $ServiceName DependOnService $pgService.Name
+    }
 
     # Start service
     & $nssmPath start $ServiceName
-    Write-Host "[✓] Windows Service '$ServiceName' installed and started successfully via NSSM!" -ForegroundColor Green
+    Write-Host "[OK] Windows Service '$ServiceName' installed and started successfully via NSSM!" -ForegroundColor Green
 } else {
-    Write-Host "[!] NSSM not found in PATH. Creating PowerShell background service launcher." -ForegroundColor Yellow
+    Write-Host "[!] NSSM not found in PATH. Creating Windows Task Scheduler auto-start on boot." -ForegroundColor Yellow
 
     # Fallback to Task Scheduler auto-start on Windows boot
     $TaskName = "GlobalAgenciesGodownServer"
     $ActionScript = Join-Path $ScriptDir "run_server_background.vbs"
 
-    $vbsContent = @"
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = "$BackendDir"
-WshShell.Run """$UvicornExe"" app.main:app --host 0.0.0.0 --port $Port", 0, False
-"@
-    Set-Content -Path $ActionScript -Value $vbsContent
+    $vbsLines = @(
+        'WScript.Sleep 5000',
+        'Set WshShell = CreateObject("WScript.Shell")',
+        "WshShell.CurrentDirectory = `"$BackendDir`"",
+        "WshShell.Run `"`"`"$UvicornExe`"`" app.main:app --host 0.0.0.0 --port $Port`", 0, False"
+    )
+    $vbsLines | Set-Content -Path $ActionScript -Force
 
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     $Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "`"$ActionScript`""
@@ -95,11 +102,38 @@ WshShell.Run """$UvicornExe"" app.main:app --host 0.0.0.0 --port $Port", 0, Fals
     Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings | Out-Null
     Start-ScheduledTask -TaskName $TaskName
 
-    Write-Host "[✓] Task '$TaskName' registered for automatic startup at Windows boot!" -ForegroundColor Green
+    Write-Host "[OK] Task '$TaskName' registered for automatic startup at Windows boot!" -ForegroundColor Green
+}
+
+# Auto-configure Windows Defender Firewall for Port 8000
+if (-not (Get-NetFirewallRule -DisplayName "GA Stock Server 8000" -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName "GA Stock Server 8000" -Direction Inbound -LocalPort $Port -Protocol TCP -Action Allow | Out-Null
+    Write-Host "[OK] Windows Firewall rule added: Port $Port allowed inbound." -ForegroundColor Green
+} else {
+    Write-Host "[OK] Windows Firewall rule already active for Port $Port." -ForegroundColor Green
+}
+
+# Create convenient Desktop Shortcut to Admin Dashboard
+try {
+    $desktopPath = [Environment]::GetFolderPath("Desktop")
+    $shortcutPath = Join-Path $desktopPath "GA Stock Admin Dashboard.url"
+    $shortcutLines = @(
+        "[InternetShortcut]",
+        "URL=http://localhost:$Port",
+        "IconIndex=0"
+    )
+    $shortcutLines | Set-Content -Path $shortcutPath -Force
+    Write-Host "[OK] Created 'GA Stock Admin Dashboard' shortcut on your Desktop." -ForegroundColor Green
+} catch {
+    Write-Host "[!] Could not create desktop shortcut: $_" -ForegroundColor Yellow
 }
 
 Write-Host ""
-Write-Host "Server is accessible on:" -ForegroundColor Cyan
-Write-Host "  Local Desktop : http://127.0.0.1:$Port" -ForegroundColor White
-Write-Host "  Godown LAN    : http://<LAN-IP>:$Port" -ForegroundColor White
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host " [SUCCESS] Auto-start configured successfully!" -ForegroundColor Green
+Write-Host " The server will now start automatically whenever Windows turns on or restarts." -ForegroundColor White
+Write-Host ""
+Write-Host " Access URLs:" -ForegroundColor Cyan
+Write-Host "   Admin Dashboard on this PC : http://localhost:$Port" -ForegroundColor White
+Write-Host "   Other PCs / Phones on LAN  : http://<SERVER-IP>:$Port" -ForegroundColor White
 Write-Host "==========================================================" -ForegroundColor Cyan

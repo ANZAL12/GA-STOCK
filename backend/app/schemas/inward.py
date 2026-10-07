@@ -26,6 +26,7 @@ class InwardBatchCreate(BaseModel):
     transaction_date: date = Field(default_factory=date.today)
     invoice_reference: Optional[str] = Field(None, max_length=100)
     serials: list[str] = Field(default_factory=list, description="List of scanned serial numbers")
+    unit_types: Optional[dict[str, str]] = Field(default=None, description="Optional mapping of serial to unit_type (indoor/outdoor)")
     remarks: Optional[str] = None
 
     @model_validator(mode="before")

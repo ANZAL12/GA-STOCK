@@ -32,7 +32,11 @@ async def list_products(
     Accessible by both admin and staff.
     """
     query = (
-        select(Product, Category.name.label("category_name"))
+        select(
+            Product,
+            Category.name.label("category_name"),
+            Category.has_dual_serial.label("has_dual_serial"),
+        )
         .join(Category, Product.category_id == Category.id)
         .order_by(Product.name.asc())
     )
@@ -58,9 +62,10 @@ async def list_products(
     rows = result.all()
 
     responses = []
-    for prod, cat_name in rows:
+    for prod, cat_name, has_dual in rows:
         resp = ProductResponse.model_validate(prod)
         resp.category_name = cat_name
+        resp.has_dual_serial = has_dual
         responses.append(resp)
 
     return responses
@@ -76,7 +81,11 @@ async def get_product(
     Get a single product by ID.
     """
     query = (
-        select(Product, Category.name.label("category_name"))
+        select(
+            Product,
+            Category.name.label("category_name"),
+            Category.has_dual_serial.label("has_dual_serial"),
+        )
         .join(Category, Product.category_id == Category.id)
         .where(Product.id == product_id)
     )
@@ -85,9 +94,10 @@ async def get_product(
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
 
-    prod, cat_name = row
+    prod, cat_name, has_dual = row
     resp = ProductResponse.model_validate(prod)
     resp.category_name = cat_name
+    resp.has_dual_serial = has_dual
     return resp
 
 
@@ -153,6 +163,7 @@ async def create_product(
 
     resp = ProductResponse.model_validate(product)
     resp.category_name = cat.name
+    resp.has_dual_serial = cat.has_dual_serial
 
     await ws_manager.broadcast("product_created", json.loads(resp.model_dump_json()))
     return resp
@@ -237,12 +248,13 @@ async def update_product(
     await db.commit()
     await db.refresh(product)
 
-    # Fetch category name
-    cat_res = await db.execute(select(Category.name).where(Category.id == product.category_id))
-    cat_name = cat_res.scalar_one_or_none()
+    # Fetch category
+    cat_res = await db.execute(select(Category).where(Category.id == product.category_id))
+    cat = cat_res.scalar_one_or_none()
 
     resp = ProductResponse.model_validate(product)
-    resp.category_name = cat_name
+    resp.category_name = cat.name if cat else None
+    resp.has_dual_serial = cat.has_dual_serial if cat else False
 
     await ws_manager.broadcast("product_updated", json.loads(resp.model_dump_json()))
     return resp

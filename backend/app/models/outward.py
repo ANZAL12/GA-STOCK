@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import date
 from typing import Optional
 
@@ -94,6 +94,7 @@ class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
     is_matched:           Mapped[bool]          = mapped_column(Boolean, nullable=False, default=False, index=True)
     is_flagged_for_review: Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, index=True)
     flag_reason:          Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    unit_type:            Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
     def __repr__(self) -> str:
         return f"<OutwardLine {self.serial_text!r} matched={self.is_matched}>"
