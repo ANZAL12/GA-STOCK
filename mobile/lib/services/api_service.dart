@@ -401,4 +401,35 @@ class ApiService {
       throw Exception(msg);
     }
   }
+
+  // --- BILL LOOKUP ---
+  Future<List<BillListItem>> listBills({String? search, int limit = 50}) async {
+    final uri = Uri.parse('$_baseUrl/outward/bills').replace(queryParameters: {
+      if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
+      'limit': limit.toString(),
+    });
+    final res = await _authenticatedGet(uri);
+    if (res.statusCode == 200) {
+      final List<dynamic> data = jsonDecode(res.body);
+      return data.map((j) => BillListItem.fromJson(j as Map<String, dynamic>)).toList();
+    } else {
+      throw Exception('Failed to load bills');
+    }
+  }
+
+  Future<BillDetail> getBillDetail(String billNumber) async {
+    final uri = Uri.parse(
+      '$_baseUrl/outward/bills/${Uri.encodeComponent(billNumber)}',
+    );
+    final res = await _authenticatedGet(uri);
+    if (res.statusCode == 200) {
+      return BillDetail.fromJson(jsonDecode(res.body));
+    } else {
+      String msg = 'Bill not found';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
 }

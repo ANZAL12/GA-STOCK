@@ -171,6 +171,178 @@ class SerialHistoryEntry {
   }
 }
 
+// ─── BILL / DISPATCH MODELS ────────────────────────────────────────────────
+
+class BillListItem {
+  final String billNumber;
+  final String shopId;
+  final String shopName;
+  final String shopCity;
+  final String transactionDate;
+  final String createdAt;
+  final String dispatchedByName;
+  final String? deliveryReference;
+  final String? remarks;
+  final int totalUnits;
+  final int totalBatches;
+  final List<String> modelsSummary;
+
+  BillListItem({
+    required this.billNumber,
+    required this.shopId,
+    required this.shopName,
+    required this.shopCity,
+    required this.transactionDate,
+    required this.createdAt,
+    required this.dispatchedByName,
+    this.deliveryReference,
+    this.remarks,
+    required this.totalUnits,
+    required this.totalBatches,
+    required this.modelsSummary,
+  });
+
+  factory BillListItem.fromJson(Map<String, dynamic> json) {
+    return BillListItem(
+      billNumber: json['bill_number'] ?? '',
+      shopId: json['shop_id'] ?? '',
+      shopName: json['shop_name'] ?? '',
+      shopCity: json['shop_city'] ?? '',
+      transactionDate: json['transaction_date'] ?? '',
+      createdAt: json['created_at'] ?? '',
+      dispatchedByName: json['dispatched_by_name'] ?? '',
+      deliveryReference: json['delivery_reference'],
+      remarks: json['remarks'],
+      totalUnits: json['total_units'] ?? 0,
+      totalBatches: json['total_batches'] ?? 0,
+      modelsSummary: List<String>.from(json['models_summary'] ?? []),
+    );
+  }
+}
+
+class BillLine {
+  final String id;
+  final String serialText;
+  final bool isMatched;
+  final bool isFlagged;
+  final String? unitType;
+  final String statusLabel;
+
+  BillLine({
+    required this.id,
+    required this.serialText,
+    required this.isMatched,
+    required this.isFlagged,
+    this.unitType,
+    required this.statusLabel,
+  });
+
+  factory BillLine.fromJson(Map<String, dynamic> json) {
+    return BillLine(
+      id: json['id'] ?? '',
+      serialText: json['serial_text'] ?? '',
+      isMatched: json['is_matched'] ?? false,
+      isFlagged: json['is_flagged_for_review'] ?? false,
+      unitType: json['unit_type'],
+      statusLabel: json['status_label'] ?? 'Recorded only',
+    );
+  }
+}
+
+class BillBatch {
+  final String batchId;
+  final String productId;
+  final String productName;
+  final String brand;
+  final String model;
+  final int quantity;
+  final int matchedCount;
+  final int unmatchedCount;
+  final int flaggedCount;
+  final List<BillLine> lines;
+
+  BillBatch({
+    required this.batchId,
+    required this.productId,
+    required this.productName,
+    required this.brand,
+    required this.model,
+    required this.quantity,
+    required this.matchedCount,
+    required this.unmatchedCount,
+    required this.flaggedCount,
+    required this.lines,
+  });
+
+  factory BillBatch.fromJson(Map<String, dynamic> json) {
+    return BillBatch(
+      batchId: json['batch_id'] ?? '',
+      productId: json['product_id'] ?? '',
+      productName: json['product_name'] ?? '',
+      brand: json['brand'] ?? '',
+      model: json['model'] ?? '',
+      quantity: json['quantity'] ?? 0,
+      matchedCount: json['matched_count'] ?? 0,
+      unmatchedCount: json['unmatched_count'] ?? 0,
+      flaggedCount: json['flagged_count'] ?? 0,
+      lines: (json['lines'] as List<dynamic>? ?? [])
+          .map((l) => BillLine.fromJson(l as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+}
+
+class BillDetail {
+  final String billNumber;
+  final String shopId;
+  final String shopName;
+  final String shopCity;
+  final String transactionDate;
+  final String createdAt;
+  final String dispatchedByName;
+  final String? deliveryReference;
+  final String? remarks;
+  final int totalUnits;
+  final int totalBatches;
+  final List<BillBatch> batches;
+
+  BillDetail({
+    required this.billNumber,
+    required this.shopId,
+    required this.shopName,
+    required this.shopCity,
+    required this.transactionDate,
+    required this.createdAt,
+    required this.dispatchedByName,
+    this.deliveryReference,
+    this.remarks,
+    required this.totalUnits,
+    required this.totalBatches,
+    required this.batches,
+  });
+
+  factory BillDetail.fromJson(Map<String, dynamic> json) {
+    return BillDetail(
+      billNumber: json['bill_number'] ?? '',
+      shopId: json['shop_id'] ?? '',
+      shopName: json['shop_name'] ?? '',
+      shopCity: json['shop_city'] ?? '',
+      transactionDate: json['transaction_date'] ?? '',
+      createdAt: json['created_at'] ?? '',
+      dispatchedByName: json['dispatched_by_name'] ?? '',
+      deliveryReference: json['delivery_reference'],
+      remarks: json['remarks'],
+      totalUnits: json['total_units'] ?? 0,
+      totalBatches: json['total_batches'] ?? 0,
+      batches: (json['batches'] as List<dynamic>? ?? [])
+          .map((b) => BillBatch.fromJson(b as Map<String, dynamic>))
+          .toList(),
+    );
+  }
+}
+
+// ─── SERIAL LOOKUP ──────────────────────────────────────────────────────────
+
 class SerialLookupDetail {
   final String serialNumber;
   final bool isTracked;

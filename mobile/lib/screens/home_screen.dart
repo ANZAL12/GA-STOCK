@@ -7,6 +7,7 @@ import 'inward_screen.dart';
 import 'outward_screen.dart';
 import 'serial_lookup_screen.dart';
 import 'offline_queue_screen.dart';
+import 'print_bill_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -226,6 +227,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const SerialLookupScreen()),
+                    );
+                  },
+                ),
+                const SizedBox(height: 14),
+
+                // Card 4: Print Bill
+                _buildActionCard(
+                  title: 'Print / Export Bill',
+                  subtitle: 'Search dispatched bills by bill number or shop name and print or share as a PDF delivery challan.',
+                  icon: Icons.print_rounded,
+                  iconColor: const Color(0xFF7C3AED),
+                  iconBg: const Color(0xFFF5F3FF),
+                  badgeText: 'PDF / Print',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const PrintBillScreen()),
                     );
                   },
                 ),
