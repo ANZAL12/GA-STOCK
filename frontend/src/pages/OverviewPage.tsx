@@ -123,7 +123,7 @@ export const OverviewPage: React.FC = () => {
 
       {/* 2. Large Rounded Search Bar with Scan Icon (§11) */}
       <div className="space-y-4">
-        <form onSubmit={handleSearch} className="relative max-w-2xl">
+        <form onSubmit={handleSearch} className="relative max-w-3xl">
           <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-400">
             <Barcode size={20} />
           </div>
@@ -156,14 +156,14 @@ export const OverviewPage: React.FC = () => {
 
         {/* Search Result Card (§11) */}
         {searchError && (
-          <div className="max-w-2xl p-4 bg-white border border-rose-200 rounded-2xl shadow-sm flex items-center gap-3 text-rose-700 text-xs">
+          <div className="max-w-3xl p-4 bg-white border border-rose-200 rounded-2xl shadow-sm flex items-center gap-3 text-rose-700 text-xs">
             <AlertCircle size={16} className="text-rose-500 shrink-0" />
             <span>{searchError}</span>
           </div>
         )}
 
         {searchResult && (
-          <div className="max-w-2xl bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 animate-fade-in">
+          <div className="max-w-3xl bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 animate-fade-in">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -300,8 +300,8 @@ export const OverviewPage: React.FC = () => {
         </div>
 
         {/* Right Column: Today Movements Timeline (5 cols) */}
-        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-5">
-          <div className="flex items-center justify-between">
+        <div className="lg:col-span-5 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4 flex flex-col max-h-[640px]">
+          <div className="flex items-center justify-between shrink-0 pb-1">
             <h2 className="text-sm font-bold uppercase tracking-wider text-slate-600 flex items-center gap-2">
               <Clock size={16} className="text-[#3C3489]" />
               Today Movements
@@ -316,33 +316,35 @@ export const OverviewPage: React.FC = () => {
               No movements recorded yet today.
             </div>
           ) : (
-            <div className="relative pl-6 space-y-4 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
-              {timeline.map((event) => {
-                const dotColors = {
-                  green: "bg-emerald-500 ring-emerald-100",
-                  amber: "bg-amber-500 ring-amber-100",
-                  red: "bg-rose-500 ring-rose-100",
-                  indigo: "bg-[#3C3489] ring-[#EEF2FF]",
-                }[event.dot_color];
+            <div className="overflow-y-auto flex-1 pr-3 -mr-2 pl-2">
+              <div className="relative pl-6 space-y-4 py-1.5 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
+                {timeline.map((event) => {
+                  const dotColors = {
+                    green: "bg-emerald-500 ring-emerald-100",
+                    amber: "bg-amber-500 ring-amber-100",
+                    red: "bg-rose-500 ring-rose-100",
+                    indigo: "bg-[#3C3489] ring-[#EEF2FF]",
+                  }[event.dot_color];
 
-                return (
-                  <div key={event.id} className="relative group text-xs">
-                    {/* Timeline Dot */}
-                    <div className={`absolute -left-6 top-1 w-2.5 h-2.5 rounded-full ring-4 ${dotColors}`} />
-                    
-                    <div className="space-y-0.5">
-                      <p className="text-slate-800 font-medium leading-snug">
-                        {event.description}
-                      </p>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                        <span>{new Date(event.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
-                        <span>•</span>
-                        <span>{event.user_name}</span>
+                  return (
+                    <div key={event.id} className="relative group text-xs">
+                      {/* Timeline Dot */}
+                      <div className={`absolute -left-6 top-1 w-2.5 h-2.5 rounded-full ring-4 ${dotColors}`} />
+                      
+                      <div className="space-y-0.5">
+                        <p className="text-slate-800 font-medium leading-snug">
+                          {event.description}
+                        </p>
+                        <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                          <span>{new Date(event.timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                          <span>•</span>
+                          <span>{event.user_name}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
