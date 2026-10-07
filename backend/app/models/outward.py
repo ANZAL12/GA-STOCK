@@ -26,6 +26,7 @@ class OutwardBatch(Base, PrimaryKeyMixin, CreatedAtMixin):
     shop_id:                Mapped[uuid.UUID]     = mapped_column(
         UUID(as_uuid=True), ForeignKey("shops.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    bill_number:            Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
     delivery_reference:     Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     transaction_date:       Mapped[date]          = mapped_column(Date, nullable=False, index=True)
     dispatched_by_user_id:  Mapped[uuid.UUID]     = mapped_column(

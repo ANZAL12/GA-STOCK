@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { Lock, User, ArrowRight, AlertCircle, Warehouse } from "lucide-react";
+import { Lock, User, ArrowRight, AlertCircle } from "lucide-react";
+import logoImg from "../assets/Global Logistics Warehouse Emblem.png";
 
 export const LoginPage: React.FC = () => {
   const [username, setUsername] = useState("");
@@ -37,14 +38,16 @@ export const LoginPage: React.FC = () => {
         
         {/* Brand Header */}
         <div className="text-center mb-8">
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-[#3C3489] flex items-center justify-center text-white shadow-lg shadow-[#3C3489]/25 mb-4">
-            <Warehouse size={28} />
-          </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            Godown Management
+          <img
+            src={logoImg}
+            alt="Global Logistics Emblem"
+            className="w-20 h-20 mx-auto object-contain drop-shadow-md mb-3"
+          />
+          <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
+            GLOBAL LOGISTICS
           </h1>
-          <p className="text-sm text-slate-500 mt-1 font-medium">
-            Global Agencies • Appliance Stock Control
+          <p className="text-xs text-slate-500 mt-1 font-semibold uppercase tracking-wider">
+            Warehouse Management & Serial Tracking System
           </p>
         </div>
 

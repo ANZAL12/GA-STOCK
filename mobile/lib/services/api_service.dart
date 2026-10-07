@@ -348,6 +348,7 @@ class ApiService {
     required String productId,
     required List<String> serialNumbers,
     Map<String, String>? unitTypes,
+    String? billNumber,
     String? deliveryReference,
     String? remarks,
   }) async {
@@ -363,6 +364,7 @@ class ApiService {
         }).toList(),
         'serial_numbers': serialNumbers,
         'unit_types': unitTypes,
+        'bill_number': billNumber?.trim().isEmpty == true ? null : billNumber?.trim(),
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks,
       }),

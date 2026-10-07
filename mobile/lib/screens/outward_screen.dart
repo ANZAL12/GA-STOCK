@@ -34,6 +34,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   String _productSearch = '';
   bool _loadingProducts = true;
 
+  final TextEditingController _billNumberController = TextEditingController();
   final TextEditingController _deliveryRefController = TextEditingController();
   final TextEditingController _remarksController = TextEditingController();
   String? _deliveryRefWarning;
@@ -167,6 +168,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   @override
   void dispose() {
     _wsSubscription?.cancel();
+    _billNumberController.dispose();
     _deliveryRefController.dispose();
     _remarksController.dispose();
     super.dispose();
@@ -1186,6 +1188,22 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 ),
                 const SizedBox(height: 14),
 
+                // Bill Number / Invoice No (Required for outward dispatch)
+                TextField(
+                  controller: _billNumberController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    labelText: 'Bill Number / Invoice No *',
+                    hintText: 'e.g. BILL-1024, INV-8841',
+                    prefixIcon: const Icon(Icons.receipt_long, size: 20, color: Color(0xFF4F46E5)),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFFCBD5E1))),
+                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 1.5)),
+                  ),
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 12),
+
                 // Optional remarks with plenty of width
                 TextField(
                   controller: _remarksController,
@@ -1230,7 +1248,20 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             elevation: 0,
                           ),
-                          onPressed: () => Navigator.pop(ctx, true),
+                          onPressed: () {
+                            final billText = _billNumberController.text.trim();
+                            if (billText.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Please enter Bill Number before confirming dispatch'),
+                                  backgroundColor: Color(0xFFDC2626),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                              return;
+                            }
+                            Navigator.pop(ctx, true);
+                          },
                           child: const Text('Confirm & Dispatch', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                         ),
                       ),
@@ -1254,6 +1285,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     setState(() => _submitting = true);
 
+    final billNumber = _billNumberController.text.trim();
     final deliveryRef = _deliveryRefController.text.trim();
     final remarks = _remarksController.text.trim();
 
@@ -1288,6 +1320,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           productId: prodId,
           serialNumbers: serialList,
           unitTypes: unitTypesMap.isNotEmpty ? unitTypesMap : null,
+          billNumber: billNumber.isEmpty ? null : billNumber,
           deliveryReference: deliveryRef.isEmpty ? null : deliveryRef,
           remarks: remarks.isEmpty ? null : remarks,
         );
@@ -1400,6 +1433,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
               'product_id': prodId,
               'serial_numbers': serialList,
               if (unitTypesMap.isNotEmpty) 'unit_types': unitTypesMap,
+              'bill_number': billNumber.isEmpty ? null : billNumber,
               'delivery_reference': deliveryRef.isEmpty ? null : deliveryRef,
               'remarks': remarks.isEmpty ? null : remarks,
             },
@@ -1433,6 +1467,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   _currentStep = 1;
                   _selectedProduct = null;
                   _scannedItems.clear();
+                  _billNumberController.clear();
+                  _deliveryRefController.clear();
+                  _remarksController.clear();
                 });
               },
               child: const Text('Restart', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
@@ -1633,6 +1670,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
           ),
           const SizedBox(height: 12),
+
+          // Bill Number input
+          TextField(
+            controller: _billNumberController,
+            textCapitalization: TextCapitalization.characters,
+            decoration: InputDecoration(
+              hintText: 'Bill / Invoice No (e.g. BILL-1024, INV-8841)',
+              prefixIcon: const Icon(Icons.receipt_long, size: 20, color: Color(0xFF4F46E5)),
+              filled: true,
+              fillColor: Colors.white,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
 
           // Delivery Reference input
           TextField(

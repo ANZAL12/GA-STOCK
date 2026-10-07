@@ -6,11 +6,14 @@ import {
   Layers, 
   Barcode, 
   Store, 
+  Receipt,
   FileText, 
   Users, 
   Smartphone, 
   LogOut
 } from "lucide-react";
+
+import logoImg from "../assets/Global Logistics Warehouse Emblem.png";
 
 export const Navbar: React.FC = () => {
   const { user, logout, isAdmin } = useAuth();
@@ -26,6 +29,7 @@ export const Navbar: React.FC = () => {
     { label: "Stock", path: "/stock", icon: Layers },
     { label: "Serials", path: "/serials", icon: Barcode },
     { label: "Shops", path: "/shops", icon: Store },
+    { label: "Bills", path: "/bills", icon: Receipt },
     { label: "Reports", path: "/reports", icon: FileText },
     ...(isAdmin ? [{ label: "Users", path: "/users", icon: Users }] : []),
     ...(isAdmin ? [{ label: "Devices", path: "/devices", icon: Smartphone }] : []),
@@ -37,15 +41,17 @@ export const Navbar: React.FC = () => {
         
         {/* Brand Logo */}
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[#3C3489] flex items-center justify-center text-white font-bold shadow-sm shadow-[#3C3489]/20">
-            G
-          </div>
+          <img
+            src={logoImg}
+            alt="Global Logistics Emblem"
+            className="w-12 h-12 object-contain drop-shadow-sm shrink-0"
+          />
           <div>
-            <span className="font-semibold text-base tracking-tight text-slate-900 block leading-none">
-              Godown
+            <span className="font-extrabold text-base tracking-tight text-slate-900 block leading-none">
+              GLOBAL LOGISTICS
             </span>
-            <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider block mt-0.5">
-              Global Agencies
+            <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mt-1">
+              Warehouse Management System
             </span>
           </div>
         </div>

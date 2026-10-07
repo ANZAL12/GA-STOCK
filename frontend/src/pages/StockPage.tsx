@@ -384,7 +384,7 @@ export const StockPage: React.FC = () => {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         title={editingProduct ? "Edit Product Model" : "Add Product Model"}
-        subtitle="Global Agencies Master Product Catalog"
+        subtitle="Global Logistics Master Product Catalog"
       >
         {formError && (
           <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
@@ -511,7 +511,7 @@ export const StockPage: React.FC = () => {
         isOpen={isCategoryModalOpen}
         onClose={() => setIsCategoryModalOpen(false)}
         title="Add Appliance Category"
-        subtitle="Global Agencies Master Product Catalog"
+        subtitle="Global Logistics Master Product Catalog"
       >
         {categoryError && (
           <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">

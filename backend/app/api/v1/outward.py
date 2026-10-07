@@ -19,6 +19,9 @@ from app.models.serial import SerialNumber
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.outward import (
+    BillBatchSummary,
+    BillDetailResponse,
+    BillListItem,
     OutwardBatchCreate,
     OutwardBatchResponse,
     OutwardCheckRefRequest,
@@ -417,6 +420,7 @@ async def create_outward_batch(
     batch = OutwardBatch(
         product_id=product.id,
         shop_id=shop.id,
+        bill_number=req.bill_number.strip() if req.bill_number else None,
         delivery_reference=req.delivery_reference.strip() if req.delivery_reference else None,
         transaction_date=req.transaction_date,
         dispatched_by_user_id=current_user.id,
@@ -675,6 +679,7 @@ async def create_outward_batch(
         shop_id=shop.id,
         shop_name=shop.name,
         shop_city=shop.city,
+        bill_number=batch.bill_number,
         delivery_reference=batch.delivery_reference,
         transaction_date=batch.transaction_date,
         quantity=batch.quantity,
@@ -706,6 +711,7 @@ async def list_outward_batches(
     db: Annotated[AsyncSession, Depends(get_db)],
     shop_id: Optional[uuid.UUID] = Query(None, description="Filter by shop"),
     product_id: Optional[uuid.UUID] = Query(None, description="Filter by product"),
+    bill_number: Optional[str] = Query(None, description="Filter by bill number"),
     date_from: Optional[date] = Query(None, description="Filter from date"),
     date_to: Optional[date] = Query(None, description="Filter to date"),
     limit: int = Query(50, ge=1, le=200),
@@ -736,6 +742,8 @@ async def list_outward_batches(
         query = query.where(OutwardBatch.shop_id == shop_id)
     if product_id:
         query = query.where(OutwardBatch.product_id == product_id)
+    if bill_number:
+        query = query.where(OutwardBatch.bill_number.ilike(f"%{bill_number.strip()}%"))
     if date_from:
         query = query.where(OutwardBatch.transaction_date >= date_from)
     if date_to:
@@ -756,6 +764,7 @@ async def list_outward_batches(
                 shop_id=b.shop_id,
                 shop_name=s_name,
                 shop_city=s_city,
+                bill_number=b.bill_number,
                 delivery_reference=b.delivery_reference,
                 transaction_date=b.transaction_date,
                 quantity=b.quantity,
@@ -823,6 +832,7 @@ async def get_outward_batch(
                 is_matched=l.is_matched,
                 is_flagged_for_review=l.is_flagged_for_review,
                 flag_reason=l.flag_reason,
+                unit_type=l.unit_type,
                 status_label=label,
             )
         )
@@ -836,6 +846,7 @@ async def get_outward_batch(
         shop_id=b.shop_id,
         shop_name=s_name,
         shop_city=s_city,
+        bill_number=b.bill_number,
         delivery_reference=b.delivery_reference,
         transaction_date=b.transaction_date,
         quantity=b.quantity,
@@ -848,4 +859,177 @@ async def get_outward_batch(
         remarks=b.remarks,
         created_at=b.created_at,
         lines=line_items,
+    )
+
+
+@router.get("/bills", response_model=list[BillListItem])
+async def list_outward_bills(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    search: Optional[str] = Query(None, description="Search by bill number or shop name"),
+    shop_id: Optional[uuid.UUID] = Query(None, description="Filter by shop"),
+    date_from: Optional[date] = Query(None, description="Filter from date"),
+    date_to: Optional[date] = Query(None, description="Filter to date"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[BillListItem]:
+    """
+    List outward dispatches aggregated by Bill Number.
+    Allows viewing all models/batches dispatched together under one invoice or bill.
+    """
+    query = (
+        select(
+            OutwardBatch,
+            Product.name.label("product_name"),
+            Product.brand.label("product_brand"),
+            Product.model.label("product_model"),
+            Shop.name.label("shop_name"),
+            Shop.city.label("shop_city"),
+            User.full_name.label("dispatcher_name"),
+        )
+        .join(Product, OutwardBatch.product_id == Product.id)
+        .join(Shop, OutwardBatch.shop_id == Shop.id)
+        .join(User, OutwardBatch.dispatched_by_user_id == User.id)
+        .order_by(OutwardBatch.transaction_date.desc(), OutwardBatch.created_at.desc())
+    )
+
+    if search:
+        s = f"%{search.strip()}%"
+        query = query.where(
+            (OutwardBatch.bill_number.ilike(s))
+            | (Shop.name.ilike(s))
+            | (Shop.city.ilike(s))
+            | (OutwardBatch.delivery_reference.ilike(s))
+        )
+    if shop_id:
+        query = query.where(OutwardBatch.shop_id == shop_id)
+    if date_from:
+        query = query.where(OutwardBatch.transaction_date >= date_from)
+    if date_to:
+        query = query.where(OutwardBatch.transaction_date <= date_to)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Group batches by bill_number (or by batch id if bill_number is missing)
+    bills_map: dict[str, dict] = {}
+    for b, p_name, p_brand, p_model, s_name, s_city, u_name in rows:
+        b_key = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
+        if b_key not in bills_map:
+            bills_map[b_key] = {
+                "bill_number": b.bill_number or f"REF-{b.delivery_reference or str(b.id)[:8]}",
+                "shop_id": b.shop_id,
+                "shop_name": s_name,
+                "shop_city": s_city,
+                "transaction_date": b.transaction_date,
+                "created_at": b.created_at,
+                "dispatched_by_name": u_name,
+                "delivery_reference": b.delivery_reference,
+                "remarks": b.remarks,
+                "total_units": 0,
+                "total_batches": 0,
+                "models_summary": [],
+            }
+        item = bills_map[b_key]
+        item["total_units"] += b.quantity
+        item["total_batches"] += 1
+        summary_str = f"{p_brand} {p_model} ({b.quantity}u)"
+        if summary_str not in item["models_summary"]:
+            item["models_summary"].append(summary_str)
+
+    bill_list = [BillListItem(**data) for data in bills_map.values()]
+    return bill_list[offset : offset + limit]
+
+
+@router.get("/bills/{bill_number}", response_model=BillDetailResponse)
+async def get_outward_bill_detail(
+    bill_number: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BillDetailResponse:
+    """
+    Get all batches and scanned serial lines associated with a specific Bill Number.
+    """
+    clean_b_num = bill_number.strip()
+    query = (
+        select(
+            OutwardBatch,
+            Product.name.label("product_name"),
+            Product.brand.label("product_brand"),
+            Product.model.label("product_model"),
+            Shop.name.label("shop_name"),
+            Shop.city.label("shop_city"),
+            User.full_name.label("dispatcher_name"),
+        )
+        .join(Product, OutwardBatch.product_id == Product.id)
+        .join(Shop, OutwardBatch.shop_id == Shop.id)
+        .join(User, OutwardBatch.dispatched_by_user_id == User.id)
+        .where(
+            (func.lower(OutwardBatch.bill_number) == clean_b_num.lower())
+            | (func.lower(OutwardBatch.delivery_reference) == clean_b_num.lower())
+        )
+        .order_by(OutwardBatch.created_at.asc())
+    )
+    result = await db.execute(query)
+    rows = result.all()
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
+
+    first_b, _, _, _, s_name, s_city, u_name = rows[0]
+
+    batch_ids = [b.id for b, _, _, _, _, _, _ in rows]
+    lines_res = await db.execute(
+        select(OutwardLine)
+        .where(OutwardLine.batch_id.in_(batch_ids))
+        .order_by(OutwardLine.created_at.asc())
+    )
+    all_lines = lines_res.scalars().all()
+    lines_by_batch: dict[uuid.UUID, list[OutwardLineResponse]] = {}
+    for l in all_lines:
+        lbl = "Flagged" if l.is_flagged_for_review else ("Matched" if l.is_matched else "Recorded only")
+        lines_by_batch.setdefault(l.batch_id, []).append(
+            OutwardLineResponse(
+                id=l.id,
+                serial_text=l.serial_text,
+                serial_number_id=l.serial_number_id,
+                is_matched=l.is_matched,
+                is_flagged_for_review=l.is_flagged_for_review,
+                flag_reason=l.flag_reason,
+                unit_type=l.unit_type,
+                status_label=lbl,
+            )
+        )
+
+    batch_summaries: list[BillBatchSummary] = []
+    total_units = 0
+    for b, p_name, p_brand, p_model, _, _, _ in rows:
+        total_units += b.quantity
+        batch_summaries.append(
+            BillBatchSummary(
+                batch_id=b.id,
+                product_id=b.product_id,
+                product_name=p_name,
+                brand=p_brand,
+                model=p_model,
+                quantity=b.quantity,
+                matched_count=b.matched_count,
+                unmatched_count=b.unmatched_count,
+                flagged_count=b.flagged_count,
+                lines=lines_by_batch.get(b.id, []),
+            )
+        )
+
+    return BillDetailResponse(
+        bill_number=first_b.bill_number or clean_b_num,
+        shop_id=first_b.shop_id,
+        shop_name=s_name,
+        shop_city=s_city,
+        transaction_date=first_b.transaction_date,
+        created_at=first_b.created_at,
+        dispatched_by_name=u_name,
+        delivery_reference=first_b.delivery_reference,
+        remarks=first_b.remarks,
+        total_units=total_units,
+        total_batches=len(rows),
+        batches=batch_summaries,
     )

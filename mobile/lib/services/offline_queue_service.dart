@@ -105,6 +105,7 @@ class OfflineQueueService {
             unitTypes: item.payload['unit_types'] != null
                 ? Map<String, String>.from(item.payload['unit_types'])
                 : null,
+            billNumber: item.payload['bill_number'],
             deliveryReference: item.payload['delivery_reference'],
             remarks: item.payload['remarks'],
           );

@@ -219,3 +219,57 @@ export interface DamagedReportItem {
   last_shop_name?: string | null;
   updated_at: string;
 }
+
+export interface BillLineItem {
+  id: string;
+  serial_text: string;
+  serial_number_id?: string | null;
+  is_matched: boolean;
+  is_flagged_for_review: boolean;
+  flag_reason?: string | null;
+  unit_type?: string | null;
+  status_label: string;
+}
+
+export interface BillBatchSummary {
+  batch_id: string;
+  product_id: string;
+  product_name: string;
+  brand: string;
+  model: string;
+  quantity: number;
+  matched_count: number;
+  unmatched_count: number;
+  flagged_count: number;
+  lines: BillLineItem[];
+}
+
+export interface BillDetail {
+  bill_number: string;
+  shop_id: string;
+  shop_name: string;
+  shop_city: string;
+  transaction_date: string;
+  created_at: string;
+  dispatched_by_name: string;
+  delivery_reference?: string | null;
+  remarks?: string | null;
+  total_units: number;
+  total_batches: number;
+  batches: BillBatchSummary[];
+}
+
+export interface BillListItem {
+  bill_number: string;
+  shop_id: string;
+  shop_name: string;
+  shop_city: string;
+  transaction_date: string;
+  created_at: string;
+  dispatched_by_name: string;
+  delivery_reference?: string | null;
+  remarks?: string | null;
+  total_units: number;
+  total_batches: number;
+  models_summary: string[];
+}

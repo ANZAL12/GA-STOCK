@@ -55,6 +55,7 @@ class OutwardSerialInput(BaseModel):
 class OutwardBatchCreate(BaseModel):
     product_id: uuid.UUID
     shop_id: uuid.UUID
+    bill_number: Optional[str] = Field(None, max_length=100)
     delivery_reference: Optional[str] = Field(None, max_length=100)
     transaction_date: date = Field(default_factory=date.today)
     serials: list[OutwardSerialInput] = Field(default_factory=list, description="List of scanned serials with confirmation flags")
@@ -101,6 +102,7 @@ class OutwardBatchResponse(BaseModel):
     shop_id: uuid.UUID
     shop_name: str
     shop_city: str
+    bill_number: Optional[str] = None
     delivery_reference: Optional[str] = None
     transaction_date: date
     quantity: int
@@ -113,3 +115,46 @@ class OutwardBatchResponse(BaseModel):
     remarks: Optional[str] = None
     created_at: datetime
     lines: list[OutwardLineResponse] = []
+
+
+class BillBatchSummary(BaseModel):
+    batch_id: uuid.UUID
+    product_id: uuid.UUID
+    product_name: str
+    brand: str
+    model: str
+    quantity: int
+    matched_count: int
+    unmatched_count: int
+    flagged_count: int
+    lines: list[OutwardLineResponse] = []
+
+
+class BillDetailResponse(BaseModel):
+    bill_number: str
+    shop_id: uuid.UUID
+    shop_name: str
+    shop_city: str
+    transaction_date: date
+    created_at: datetime
+    dispatched_by_name: str
+    delivery_reference: Optional[str] = None
+    remarks: Optional[str] = None
+    total_units: int
+    total_batches: int
+    batches: list[BillBatchSummary] = []
+
+
+class BillListItem(BaseModel):
+    bill_number: str
+    shop_id: uuid.UUID
+    shop_name: str
+    shop_city: str
+    transaction_date: date
+    created_at: datetime
+    dispatched_by_name: str
+    delivery_reference: Optional[str] = None
+    remarks: Optional[str] = None
+    total_units: int
+    total_batches: int
+    models_summary: list[str] = []
