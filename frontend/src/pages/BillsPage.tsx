@@ -204,7 +204,7 @@ export const BillsPage: React.FC = () => {
               <option value="">All Shops / Dealers</option>
               {shops.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} ({s.city})
+                  {s.name}{s.city ? ` (${s.city})` : ""}
                 </option>
               ))}
             </select>
@@ -443,7 +443,7 @@ export const BillsPage: React.FC = () => {
                     </span>
                   </div>
                   <h2 className="text-xl font-bold mt-1 tracking-tight text-white">
-                    {selectedBill.shop_name} ({selectedBill.shop_city})
+                    {selectedBill.shop_name}{selectedBill.shop_city ? ` (${selectedBill.shop_city})` : ""}
                   </h2>
                   <p className="text-xs text-indigo-200 mt-0.5">
                     Dispatched by {selectedBill.dispatched_by_name} • Ref:{" "}

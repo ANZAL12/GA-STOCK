@@ -1,4 +1,4 @@
-﻿from typing import Optional
+from typing import Optional
 
 from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
@@ -14,8 +14,8 @@ class Shop(Base, PrimaryKeyMixin, TimestampMixin):
     __tablename__ = "shops"
 
     name:      Mapped[str]           = mapped_column(String(255), nullable=False)
-    city:      Mapped[str]           = mapped_column(String(100), nullable=False)
-    phone:     Mapped[Optional[str]] = mapped_column(String(30),  nullable=True)
+    city:      Mapped[Optional[str]] = mapped_column(String(100), nullable=True, default=None)
+    phone:     Mapped[Optional[str]] = mapped_column(String(30),  nullable=True, default=None)
     is_active: Mapped[bool]          = mapped_column(Boolean, nullable=False, default=True)
 
     def __repr__(self) -> str:

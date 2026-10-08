@@ -323,7 +323,7 @@ export const ReportsPage: React.FC = () => {
                 <option value="">All Destination Shops</option>
                 {shops.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.name} ({s.city})
+                    {s.name}{s.city ? ` (${s.city})` : ""}
                   </option>
                 ))}
               </select>

@@ -235,6 +235,30 @@ export const StockPage: React.FC = () => {
 
     const finalName = `${formData.brand.trim()} ${formData.model.trim()}`.trim();
 
+    if (
+      isAdmin &&
+      editingProduct &&
+      editingProduct.has_had_inward &&
+      Number(formData.opening_stock_qty) !== editingProduct.opening_stock_qty
+    ) {
+      const oldQty = editingProduct.opening_stock_qty;
+      const newQty = Number(formData.opening_stock_qty) || 0;
+      const diff = newQty - oldQty;
+      const diffStr = diff > 0 ? `+${diff}` : `${diff}`;
+      const confirmMsg =
+        `⚠️ CONFIRM STOCK ADJUSTMENT\n\n` +
+        `Scanning has already started for "${editingProduct.brand} ${editingProduct.model}".\n\n` +
+        `• Old Opening Stock: ${oldQty}\n` +
+        `• New Opening Stock: ${newQty}\n` +
+        `• Live Stock Adjustment: ${diffStr} unit(s)\n\n` +
+        `Are you sure you want to proceed with this stock adjustment?`;
+
+      if (!window.confirm(confirmMsg)) {
+        setSubmitting(false);
+        return;
+      }
+    }
+
     try {
       if (editingProduct) {
         const updated = await apiRequest<Product>(`/products/${editingProduct.id}`, {
@@ -248,7 +272,7 @@ export const StockPage: React.FC = () => {
             size_capacity: null,
             unit: "piece",
             description: formData.description?.trim() || null,
-            ...(editingProduct.has_had_inward ? {} : { opening_stock_qty: Number(formData.opening_stock_qty) || 0 }),
+            opening_stock_qty: Number(formData.opening_stock_qty) || 0,
           }),
         });
         setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
@@ -588,14 +612,23 @@ export const StockPage: React.FC = () => {
               <input
                 type="number"
                 min="0"
-                disabled={editingProduct?.has_had_inward}
+                disabled={editingProduct?.has_had_inward && !isAdmin}
                 value={formData.opening_stock_qty}
                 onChange={(e) => setFormData({ ...formData, opening_stock_qty: parseInt(e.target.value) || 0 })}
                 placeholder="0"
                 className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] disabled:bg-slate-50 disabled:text-slate-400"
               />
               {editingProduct?.has_had_inward && (
-                <span className="text-[10px] text-slate-400 mt-1 block">Locked: inward transactions have started.</span>
+                isAdmin ? (
+                  <span className="text-[11px] text-amber-700 font-medium mt-1.5 flex items-center gap-1.5 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    Scanning has started. Changing this will recalculate live stock with confirmation.
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-slate-400 mt-1 block">
+                    Locked: inward transactions have started (Admin only).
+                  </span>
+                )
               )}
             </div>
 
@@ -911,7 +944,7 @@ export const StockPage: React.FC = () => {
                                 <div>
                                   <div className="font-semibold text-slate-800 flex items-center gap-1">
                                     <Building2 size={12} className="text-slate-400" />
-                                    {sn.shop_name} ({sn.shop_city})
+                                    {sn.shop_name}{sn.shop_city ? ` (${sn.shop_city})` : ""}
                                   </div>
                                   <div className="text-[10px] text-slate-400">
                                     {sn.outward_date} {sn.delivery_ref ? `• ${sn.delivery_ref}` : ""}

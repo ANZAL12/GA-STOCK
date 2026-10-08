@@ -66,9 +66,13 @@ export function generateBillPdf(bill: BillDetail): void {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
   doc.setTextColor(71, 85, 105);
-  doc.text(`City / Location: ${bill.shop_city}`, 18, startY + 17);
+  let leftInfoY = startY + 17;
+  if (bill.shop_city && bill.shop_city.trim()) {
+    doc.text(`City / Location: ${bill.shop_city.trim()}`, 18, leftInfoY);
+    leftInfoY += 5;
+  }
   if (bill.remarks) {
-    doc.text(`Remarks: ${bill.remarks}`, 18, startY + 22);
+    doc.text(`Remarks: ${bill.remarks}`, 18, leftInfoY);
   }
 
   doc.text(`Date: ${bill.transaction_date}`, 115, startY + 12);

@@ -6,13 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ShopCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
-    city: str = Field(..., min_length=1, max_length=100)
+    city: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=30)
 
 
 class ShopUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
-    city: Optional[str] = Field(None, min_length=1, max_length=100)
+    city: Optional[str] = Field(None, max_length=100)
     phone: Optional[str] = Field(None, max_length=30)
     is_active: Optional[bool] = None
 
@@ -22,12 +22,29 @@ class ShopResponse(BaseModel):
 
     id: uuid.UUID
     name: str
-    city: str
+    city: Optional[str] = None
     phone: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
     total_dispatched_count: int = 0
+
+
+class ShopExcelColumnsResponse(BaseModel):
+    filename: str
+    columns: list[str]
+    suggested_column: Optional[str] = None
+    sample_preview: list[str] = []
+
+
+class ShopExcelImportResponse(BaseModel):
+    column_used: str
+    total_rows_scanned: int
+    unique_shops_found: int
+    newly_created_count: int
+    already_existing_count: int
+    new_shops: list[str] = []
+    existing_shops: list[str] = []
 
 
 class ShopDispatchedSerial(BaseModel):

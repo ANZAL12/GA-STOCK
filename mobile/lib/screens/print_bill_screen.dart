@@ -208,7 +208,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${bill.shopName} • ${bill.shopCity}',
+                    bill.shopCity.trim().isNotEmpty ? '${bill.shopName} • ${bill.shopCity.trim()}' : bill.shopName,
                     style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -440,11 +440,13 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                     color: const PdfColor.fromInt(0xFF0F172A),
                   ),
                 ),
-                pw.SizedBox(height: 2),
-                pw.Text(
-                  'City / Location: ${bill.shopCity}',
-                  style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
-                ),
+                if (bill.shopCity.trim().isNotEmpty) ...[
+                  pw.SizedBox(height: 2),
+                  pw.Text(
+                    'City / Location: ${bill.shopCity.trim()}',
+                    style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
+                  ),
+                ],
                 if (bill.remarks != null && bill.remarks!.trim().isNotEmpty) ...[
                   pw.SizedBox(height: 2),
                   pw.Text(
@@ -770,7 +772,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             ),
           ]),
           const SizedBox(height: 10),
-          _infoRow(Icons.store_outlined, 'Shop', '${bill.shopName} – ${bill.shopCity}'),
+          _infoRow(Icons.store_outlined, 'Shop', bill.shopCity.trim().isNotEmpty ? '${bill.shopName} – ${bill.shopCity.trim()}' : bill.shopName),
           _infoRow(Icons.calendar_today_outlined, 'Date', bill.transactionDate),
           _infoRow(Icons.person_outline, 'Dispatched By', bill.dispatchedByName),
           if (bill.deliveryReference != null)

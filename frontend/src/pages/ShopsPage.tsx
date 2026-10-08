@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
-import type { Shop, ShopDispatchedSerial } from "../types";
+import type { Shop, ShopDispatchedSerial, ShopExcelColumnsResponse, ShopExcelImportResponse } from "../types";
 import { Badge } from "../components/Badge";
 import { Modal } from "../components/Modal";
 import { 
@@ -16,7 +16,9 @@ import {
   RotateCcw,
   AlertCircle,
   ChevronRight,
-  Sparkles
+  Sparkles,
+  FileSpreadsheet,
+  CheckCircle2
 } from "lucide-react";
 
 export const ShopsPage: React.FC = () => {
@@ -29,7 +31,7 @@ export const ShopsPage: React.FC = () => {
   // Shop Add / Edit Modal
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<Shop | null>(null);
-  const [shopForm, setShopForm] = useState({ name: "", city: "", phone: "", is_active: true });
+  const [shopForm, setShopForm] = useState({ name: "", is_active: true });
   const [shopFormError, setShopFormError] = useState<string | null>(null);
   const [shopSubmitting, setShopSubmitting] = useState(false);
 
@@ -37,6 +39,17 @@ export const ShopsPage: React.FC = () => {
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
   const [dispatchedSerials, setDispatchedSerials] = useState<ShopDispatchedSerial[]>([]);
   const [serialsLoading, setSerialsLoading] = useState(false);
+
+  // Excel Import Modal State
+  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
+  const [excelFile, setExcelFile] = useState<File | null>(null);
+  const [excelPreview, setExcelPreview] = useState<ShopExcelColumnsResponse | null>(null);
+  const [selectedColumn, setSelectedColumn] = useState("");
+  const [customColumn, setCustomColumn] = useState("");
+  const [isAnalyzingExcel, setIsAnalyzingExcel] = useState(false);
+  const [isImportingExcel, setIsImportingExcel] = useState(false);
+  const [excelError, setExcelError] = useState<string | null>(null);
+  const [excelResult, setExcelResult] = useState<ShopExcelImportResponse | null>(null);
 
   const fetchShops = async () => {
     try {
@@ -59,7 +72,7 @@ export const ShopsPage: React.FC = () => {
 
   const openAddShop = () => {
     setEditingShop(null);
-    setShopForm({ name: "", city: "", phone: "", is_active: true });
+    setShopForm({ name: "", is_active: true });
     setShopFormError(null);
     setIsShopModalOpen(true);
   };
@@ -67,7 +80,7 @@ export const ShopsPage: React.FC = () => {
   const openEditShop = (s: Shop, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingShop(s);
-    setShopForm({ name: s.name, city: s.city, phone: s.phone || "", is_active: s.is_active });
+    setShopForm({ name: s.name, is_active: s.is_active });
     setShopFormError(null);
     setIsShopModalOpen(true);
   };
@@ -81,16 +94,17 @@ export const ShopsPage: React.FC = () => {
       if (editingShop) {
         const updated = await apiRequest<Shop>(`/shops/${editingShop.id}`, {
           method: "PUT",
-          body: JSON.stringify(shopForm),
+          body: JSON.stringify({
+            name: shopForm.name.trim(),
+            is_active: shopForm.is_active,
+          }),
         });
         setShops((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
       } else {
         const created = await apiRequest<Shop>("/shops", {
           method: "POST",
           body: JSON.stringify({
-            name: shopForm.name,
-            city: shopForm.city,
-            phone: shopForm.phone,
+            name: shopForm.name.trim(),
           }),
         });
         setShops((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);
@@ -101,6 +115,80 @@ export const ShopsPage: React.FC = () => {
       setShopFormError(err.message || "Failed to save shop.");
     } finally {
       setShopSubmitting(false);
+    }
+  };
+
+  // Excel Import Handlers
+  const openExcelImport = () => {
+    setExcelFile(null);
+    setExcelPreview(null);
+    setSelectedColumn("");
+    setCustomColumn("");
+    setExcelError(null);
+    setExcelResult(null);
+    setIsExcelModalOpen(true);
+  };
+
+  const handleExcelFileSelect = async (file: File) => {
+    setExcelFile(file);
+    setExcelError(null);
+    setExcelResult(null);
+    setExcelPreview(null);
+    setSelectedColumn("");
+    setCustomColumn("");
+    setIsAnalyzingExcel(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await apiRequest<ShopExcelColumnsResponse>("/shops/import-excel/preview", {
+        method: "POST",
+        body: formData,
+      });
+      setExcelPreview(res);
+      if (res.suggested_column) {
+        setSelectedColumn(res.suggested_column);
+      } else if (res.columns.length > 0) {
+        setSelectedColumn(res.columns[0]);
+      }
+    } catch (err: any) {
+      setExcelError(err.message || "Failed to analyze Excel file.");
+    } finally {
+      setIsAnalyzingExcel(false);
+    }
+  };
+
+  const handleExcelImportSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!excelFile) {
+      setExcelError("Please select an Excel or CSV file.");
+      return;
+    }
+    const columnToUse = (customColumn.trim() || selectedColumn).trim();
+    if (!columnToUse) {
+      setExcelError("Please select or specify the column name containing the shops.");
+      return;
+    }
+
+    setIsImportingExcel(true);
+    setExcelError(null);
+    setExcelResult(null);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", excelFile);
+      formData.append("column_name", columnToUse);
+
+      const res = await apiRequest<ShopExcelImportResponse>("/shops/import-excel", {
+        method: "POST",
+        body: formData,
+      });
+      setExcelResult(res);
+      await fetchShops();
+    } catch (err: any) {
+      setExcelError(err.message || "Failed to import shops from file.");
+    } finally {
+      setIsImportingExcel(false);
     }
   };
 
@@ -188,7 +276,7 @@ export const ShopsPage: React.FC = () => {
     .filter(
       (s) =>
         s.name.toLowerCase().includes(search.toLowerCase()) ||
-        s.city.toLowerCase().includes(search.toLowerCase())
+        (s.city ? s.city.toLowerCase().includes(search.toLowerCase()) : false)
     );
 
   const activeCount = shops.filter((s) => s.is_active).length;
@@ -223,13 +311,24 @@ export const ShopsPage: React.FC = () => {
           )}
 
           {isAdmin && (
-            <button
-              onClick={openAddShop}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer"
-            >
-              <Plus size={16} />
-              <span>Add Destination Shop</span>
-            </button>
+            <>
+              <button
+                onClick={openExcelImport}
+                className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-50 hover:border-slate-300 shadow-sm transition-all cursor-pointer"
+                title="Import shops from an Excel or CSV file"
+              >
+                <FileSpreadsheet size={16} className="text-emerald-600" />
+                <span>Import from Excel</span>
+              </button>
+
+              <button
+                onClick={openAddShop}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer"
+              >
+                <Plus size={16} />
+                <span>Add Destination Shop</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -279,7 +378,7 @@ export const ShopsPage: React.FC = () => {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by shop name or city..."
+            placeholder="Search by shop name..."
             className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] text-slate-800 placeholder-slate-400"
           />
         </div>
@@ -297,10 +396,12 @@ export const ShopsPage: React.FC = () => {
           >
             <div className="space-y-2">
               <div className="flex items-start justify-between gap-3">
-                <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                  <MapPin size={11} className="text-slate-400" />
-                  {shop.city}
-                </span>
+                {shop.city ? (
+                  <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                    <MapPin size={11} className="text-slate-400" />
+                    {shop.city}
+                  </span>
+                ) : <span />}
 
                 {shop.is_active ? (
                   <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
@@ -318,13 +419,11 @@ export const ShopsPage: React.FC = () => {
                 <h3 className="font-bold text-base text-slate-900 tracking-tight group-hover:text-[#3C3489] transition-colors">
                   {shop.name}
                 </h3>
-                {shop.phone ? (
+                {shop.phone && (
                   <p className="text-xs text-slate-400 flex items-center gap-1 mt-1">
                     <Phone size={12} />
                     {shop.phone}
                   </p>
-                ) : (
-                  <p className="text-xs text-slate-400 mt-1">No phone recorded</p>
                 )}
               </div>
             </div>
@@ -469,33 +568,6 @@ export const ShopsPage: React.FC = () => {
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-              City / Location *
-            </label>
-            <input
-              type="text"
-              required
-              value={shopForm.city}
-              onChange={(e) => setShopForm({ ...shopForm, city: e.target.value })}
-              placeholder="e.g. Malappuram"
-              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-              Phone Number
-            </label>
-            <input
-              type="text"
-              value={shopForm.phone}
-              onChange={(e) => setShopForm({ ...shopForm, phone: e.target.value })}
-              placeholder="e.g. +91 98470 12345"
-              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-            />
-          </div>
-
           {editingShop && (
             <div className="pt-2">
               <label className="flex items-center gap-2.5 cursor-pointer p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition-colors">
@@ -534,6 +606,227 @@ export const ShopsPage: React.FC = () => {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Excel / CSV Shop Import Modal */}
+      <Modal
+        isOpen={isExcelModalOpen}
+        onClose={() => setIsExcelModalOpen(false)}
+        title="Import Shops from Excel / CSV"
+        subtitle="Extract and register destination shops from a specific column in your spreadsheet"
+        maxWidth="lg"
+      >
+        {excelError && (
+          <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
+            <AlertCircle size={15} />
+            <span>{excelError}</span>
+          </div>
+        )}
+
+        {excelResult ? (
+          <div className="space-y-4 py-2">
+            <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800">
+              <div className="flex items-center gap-2.5 mb-1.5">
+                <CheckCircle2 size={18} className="text-emerald-600" />
+                <h4 className="font-bold text-sm text-emerald-900">
+                  Import Completed Successfully
+                </h4>
+              </div>
+              <p className="text-xs text-emerald-700 leading-relaxed">
+                Extracted from column <span className="font-bold">"{excelResult.column_used}"</span> across{" "}
+                <span className="font-bold">{excelResult.total_rows_scanned}</span> rows.
+              </p>
+              <div className="grid grid-cols-2 gap-3 mt-3.5 pt-3 border-t border-emerald-200/60">
+                <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200">
+                  <span className="text-[11px] text-slate-500 font-medium block">Newly Created</span>
+                  <span className="text-base font-bold text-emerald-700">
+                    +{excelResult.newly_created_count} shops
+                  </span>
+                </div>
+                <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200">
+                  <span className="text-[11px] text-slate-500 font-medium block">Already Existing</span>
+                  <span className="text-base font-bold text-slate-600">
+                    {excelResult.already_existing_count} skipped
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {excelResult.new_shops.length > 0 && (
+              <div>
+                <span className="text-xs font-semibold text-slate-700 block mb-2">
+                  Newly Registered Shops ({excelResult.new_shops.length}):
+                </span>
+                <div className="max-h-44 overflow-y-auto p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-wrap gap-1.5">
+                  {excelResult.new_shops.map((s, idx) => (
+                    <span
+                      key={idx}
+                      className="text-xs px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-800 font-medium shadow-xs"
+                    >
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsExcelModalOpen(false)}
+                className="px-5 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleExcelImportSubmit} className="space-y-4">
+            {/* Step 1: File Upload */}
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
+                1. Select Excel or CSV File *
+              </label>
+              <div className="relative border-2 border-dashed border-slate-200 hover:border-[#3C3489]/50 rounded-2xl p-5 text-center transition-colors bg-slate-50/40">
+                <input
+                  type="file"
+                  accept=".xlsx,.xlsm,.xltx,.xltm,.csv"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleExcelFileSelect(f);
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <div className="flex flex-col items-center justify-center gap-1.5 pointer-events-none">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                    <FileSpreadsheet size={22} />
+                  </div>
+                  {excelFile ? (
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 block">
+                        {excelFile.name}
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        {(excelFile.size / 1024).toFixed(1)} KB • Click or drop to replace
+                      </span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span className="text-xs font-semibold text-slate-700 block">
+                        Drop your spreadsheet here or click to browse
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        Supports Excel (.xlsx, .xlsm) and CSV (.csv)
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Analyzing Indicator */}
+            {isAnalyzingExcel && (
+              <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center gap-2.5 text-xs text-indigo-700">
+                <div className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                <span>Scanning columns and detecting headers...</span>
+              </div>
+            )}
+
+            {/* Step 2: Column Selection */}
+            {excelPreview && (
+              <div className="space-y-3 pt-1">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                      2. Column Containing Shop Names *
+                    </label>
+                    {excelPreview.suggested_column && (
+                      <span className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-medium">
+                        Auto-detected: {excelPreview.suggested_column}
+                      </span>
+                    )}
+                  </div>
+
+                  <select
+                    value={selectedColumn}
+                    onChange={(e) => {
+                      setSelectedColumn(e.target.value);
+                      setCustomColumn("");
+                    }}
+                    className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                  >
+                    <option value="">-- Choose Column Header --</option>
+                    {excelPreview.columns.map((c, idx) => (
+                      <option key={idx} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Or type exact column name if not listed above:
+                  </label>
+                  <input
+                    type="text"
+                    value={customColumn}
+                    onChange={(e) => setCustomColumn(e.target.value)}
+                    placeholder="e.g. Party Name or Customer"
+                    className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                  />
+                </div>
+
+                {/* Sample Preview Chips */}
+                {excelPreview.sample_preview && excelPreview.sample_preview.length > 0 && (
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider block mb-1.5">
+                      Sample Values Found in Column:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {excelPreview.sample_preview.map((val, idx) => (
+                        <span
+                          key={idx}
+                          className="text-[11px] px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 font-medium"
+                        >
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsExcelModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!excelFile || isImportingExcel || isAnalyzingExcel || (!selectedColumn && !customColumn)}
+                className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {isImportingExcel ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Importing Shops...</span>
+                  </>
+                ) : (
+                  <>
+                    <FileSpreadsheet size={14} />
+                    <span>Import Shops</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        )}
       </Modal>
 
     </div>

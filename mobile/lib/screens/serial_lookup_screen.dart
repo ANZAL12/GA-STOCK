@@ -279,8 +279,8 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
                               d.lastShopName!,
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF1E293B)),
                             ),
-                            if (d.lastShopCity != null)
-                              Text(d.lastShopCity!, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                            if (d.lastShopCity != null && d.lastShopCity!.trim().isNotEmpty)
+                              Text(d.lastShopCity!.trim(), style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
                           ],
                         ),
                       ),

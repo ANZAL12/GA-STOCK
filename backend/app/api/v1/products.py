@@ -223,23 +223,37 @@ async def update_product(
     if req.is_active is not None:
         product.is_active = req.is_active
 
-    # Opening stock adjustment: only permitted before any inward transactions
-    if req.opening_stock_qty is not None:
-        if product.has_had_inward:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot change opening stock quantity after inward transactions have occurred.",
-            )
+    # Opening stock adjustment: permitted by admin even after inward transactions have started
+    if req.opening_stock_qty is not None and req.opening_stock_qty != product.opening_stock_qty:
         # Adjust current_stock_qty by the difference
         diff = req.opening_stock_qty - product.opening_stock_qty
         new_current = product.current_stock_qty + diff
         if new_current < 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="New opening stock would cause negative current stock.",
+                detail=f"New opening stock of {req.opening_stock_qty} would cause negative current stock ({new_current}).",
             )
+        old_opening = product.opening_stock_qty
+        old_current = product.current_stock_qty
         product.opening_stock_qty = req.opening_stock_qty
         product.current_stock_qty = new_current
+
+        audit_stock = AuditLog(
+            user_id=admin.id,
+            action="PRODUCT_OPENING_STOCK_EDITED",
+            entity_type="product",
+            entity_id=str(product.id),
+            details={
+                "name": product.name,
+                "old_opening_stock": old_opening,
+                "new_opening_stock": req.opening_stock_qty,
+                "old_current_stock": old_current,
+                "new_current_stock": new_current,
+                "diff": diff,
+                "has_had_inward": product.has_had_inward,
+            },
+        )
+        db.add(audit_stock)
 
     audit = AuditLog(
         user_id=admin.id,

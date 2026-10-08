@@ -1195,10 +1195,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       const SizedBox(height: 4),
                       Row(
                         children: [
-                          Text(
-                            'City: ${_selectedShop!.city}',
-                            style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                          ),
+                          if (_selectedShop!.city.trim().isNotEmpty)
+                            Text(
+                              'City: ${_selectedShop!.city.trim()}',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                            ),
                           if (_deliveryRefController.text.trim().isNotEmpty) ...[
                             const SizedBox(width: 12),
                             Container(
@@ -1735,11 +1736,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   s.name,
                                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  s.city,
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                ),
+                                if (s.city.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    s.city.trim(),
+                                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                  ),
+                                ],
                               ],
                             ),
                           ),
@@ -1799,7 +1802,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Destination: ${_selectedShop!.name} (${_selectedShop!.city})',
+                    _selectedShop!.city.trim().isNotEmpty
+                        ? 'Destination: ${_selectedShop!.name} (${_selectedShop!.city.trim()})'
+                        : 'Destination: ${_selectedShop!.name}',
                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                   ),
                 ),
@@ -2009,10 +2014,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        Text(
-                          _selectedShop!.city,
-                          style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
-                        ),
+                        if (_selectedShop!.city.trim().isNotEmpty)
+                          Text(
+                            _selectedShop!.city.trim(),
+                            style: const TextStyle(fontSize: 10, color: Color(0xFF64748B)),
+                          ),
                       ],
                     ),
                   ),

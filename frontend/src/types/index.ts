@@ -71,7 +71,7 @@ export interface ProductSerialItem {
 export interface Shop {
   id: string;
   name: string;
-  city: string;
+  city?: string | null;
   phone?: string | null;
   is_active: boolean;
   created_at: string;
@@ -90,6 +90,23 @@ export interface ShopDispatchedSerial {
   is_matched: boolean;
   is_flagged_for_review: boolean;
   status_label: string;
+}
+
+export interface ShopExcelColumnsResponse {
+  filename: string;
+  columns: string[];
+  suggested_column?: string | null;
+  sample_preview: string[];
+}
+
+export interface ShopExcelImportResponse {
+  column_used: string;
+  total_rows_scanned: number;
+  unique_shops_found: number;
+  newly_created_count: number;
+  already_existing_count: number;
+  new_shops: string[];
+  existing_shops: string[];
 }
 
 export interface NeedsAttentionPills {

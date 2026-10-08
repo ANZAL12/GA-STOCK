@@ -497,7 +497,7 @@ export const SerialsPage: React.FC = () => {
                 </span>
                 <span className="font-semibold text-slate-800 mt-0.5 block">
                   {selectedSerial.last_shop_name 
-                    ? `${selectedSerial.last_shop_name} (${selectedSerial.last_shop_city})` 
+                    ? `${selectedSerial.last_shop_name}${selectedSerial.last_shop_city ? ` (${selectedSerial.last_shop_city})` : ""}` 
                     : "In Godown"}
                 </span>
               </div>
@@ -576,7 +576,7 @@ export const SerialsPage: React.FC = () => {
                     {h.shop_name && (
                       <div className="flex items-center gap-1.5 text-slate-700 font-medium">
                         <Building2 size={13} className="text-slate-400" />
-                        <span>{h.shop_name} ({h.shop_city})</span>
+                        <span>{h.shop_name}{h.shop_city ? ` (${h.shop_city})` : ""}</span>
                         {h.is_matched !== null && (
                           <Badge
                             label={h.is_matched ? "Matched" : "Recorded only"}

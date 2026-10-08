@@ -196,7 +196,7 @@ export const OverviewPage: React.FC = () => {
                   <span className="text-[11px] uppercase font-semibold text-slate-400 block">Dispatched To</span>
                   <span className="text-xs font-medium text-slate-800 flex items-center gap-1 mt-0.5 justify-end">
                     <Building2 size={13} className="text-slate-400" />
-                    {searchResult.last_shop_name} ({searchResult.last_shop_city})
+                    {searchResult.last_shop_name}{searchResult.last_shop_city ? ` (${searchResult.last_shop_city})` : ""}
                   </span>
                 </div>
               )}
