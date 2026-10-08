@@ -27,13 +27,13 @@ class ApiService {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // 1. Base URL - auto-migrate to permanent Tailscale IP
+    // 1. Base URL
     final savedUrl = prefs.getString('base_url');
-    if (savedUrl == null || !savedUrl.contains('100.66.97.14')) {
+    if (savedUrl != null && savedUrl.trim().isNotEmpty) {
+      _baseUrl = savedUrl.trim();
+    } else {
       _baseUrl = defaultBaseUrl;
       await prefs.setString('base_url', defaultBaseUrl);
-    } else {
-      _baseUrl = savedUrl;
     }
 
     // 2. Persistent hardware Device UID

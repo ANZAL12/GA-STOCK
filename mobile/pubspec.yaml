@@ -100,3 +100,15 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/images/group_icon.png"
+  min_sdk_android: 21
+  web:
+    generate: true
+    image_path: "assets/images/group_icon.png"
+  windows:
+    generate: true
+    image_path: "assets/images/group_icon.png"
