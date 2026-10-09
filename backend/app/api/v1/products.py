@@ -12,14 +12,21 @@ from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.category import Category
-from app.models.enums import SerialStatus
+from app.models.enums import SerialStatus, UserRole
 from app.models.inward import InwardBatch, InwardLine
 from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
 from app.models.serial import SerialNumber
 from app.models.shop import Shop
 from app.models.user import User
-from app.schemas.product import ProductCreate, ProductResponse, ProductUpdate, ProductSerialItem
+from app.schemas.product import (
+    ProductCreate,
+    BulkProductCreate,
+    BulkProductCreateResponse,
+    ProductResponse,
+    ProductUpdate,
+    ProductSerialItem,
+)
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -30,12 +37,21 @@ async def list_products(
     db: Annotated[AsyncSession, Depends(get_db)],
     q: Optional[str] = Query(None, description="Search query across name, brand, model, SKU"),
     category_id: Optional[uuid.UUID] = Query(None, description="Filter by category"),
-    is_active: Optional[bool] = Query(True, description="Filter by active status"),
+    is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    active_only: Optional[bool] = Query(None, description="Compatibility alias for is_active"),
 ) -> list[ProductResponse]:
     """
     Search and list products with real-time stock counts.
     Accessible by both admin and staff.
+    Admins can see both active and deactivated products unless filtered.
+    Staff members see active products by default.
     """
+    if active_only is not None and is_active is None:
+        is_active = active_only
+
+    if current_user.role != UserRole.admin and is_active is None:
+        is_active = True
+
     query = (
         select(
             Product,
@@ -172,6 +188,115 @@ async def create_product(
 
     await ws_manager.broadcast("product_created", json.loads(resp.model_dump_json()))
     return resp
+
+
+@router.post("/bulk", response_model=BulkProductCreateResponse, status_code=status.HTTP_201_CREATED)
+async def bulk_create_products(
+    req: BulkProductCreate,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BulkProductCreateResponse:
+    """
+    Admin only: bulk add product models under a category and brand.
+    Opening stock default to 0 (or specified opening_stock_qty).
+    Skips models that already exist for this brand.
+    """
+    cat_res = await db.execute(select(Category).where(Category.id == req.category_id))
+    cat = cat_res.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Selected category does not exist")
+
+    clean_brand = req.brand.strip()
+    if not clean_brand:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Brand name is required")
+
+    # Clean and de-duplicate incoming models list while preserving order
+    seen_raw = set()
+    cleaned_models = []
+    for m in req.models:
+        s = m.strip()
+        if s and s.lower() not in seen_raw:
+            seen_raw.add(s.lower())
+            cleaned_models.append(s)
+
+    if not cleaned_models:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one valid model number is required")
+
+    # Check which models already exist in DB for this brand
+    existing_res = await db.execute(
+        select(Product.model).where(
+            func.lower(Product.brand) == clean_brand.lower(),
+            func.lower(Product.model).in_([m.lower() for m in cleaned_models]),
+        )
+    )
+    existing_in_db = {row[0].lower() for row in existing_res.fetchall()}
+
+    opening_qty = max(0, req.opening_stock_qty)
+    new_products = []
+    skipped_models = []
+
+    for model_str in cleaned_models:
+        if model_str.lower() in existing_in_db:
+            skipped_models.append(model_str)
+            continue
+
+        prod_name = f"{clean_brand} {model_str}".strip()
+        product = Product(
+            name=prod_name,
+            sku=None,
+            category_id=req.category_id,
+            brand=clean_brand,
+            model=model_str,
+            size_capacity=None,
+            unit="piece",
+            serial_number_required=True,
+            description=req.description.strip() if req.description else None,
+            opening_stock_qty=opening_qty,
+            current_stock_qty=opening_qty,
+            has_had_inward=False,
+            is_active=True,
+        )
+        db.add(product)
+        new_products.append(product)
+
+    if new_products:
+        await db.flush()
+
+        audit = AuditLog(
+            user_id=admin.id,
+            action="BULK_PRODUCTS_CREATED",
+            entity_type="product",
+            entity_id=str(new_products[0].id),
+            details={
+                "brand": clean_brand,
+                "category_id": str(req.category_id),
+                "category_name": cat.name,
+                "created_count": len(new_products),
+                "skipped_count": len(skipped_models),
+                "models": [p.model for p in new_products],
+            },
+        )
+        db.add(audit)
+        await db.commit()
+
+        for p in new_products:
+            await db.refresh(p)
+
+    created_responses = []
+    for prod in new_products:
+        resp = ProductResponse.model_validate(prod)
+        resp.category_name = cat.name
+        resp.has_dual_serial = cat.has_dual_serial
+        created_responses.append(resp)
+        await ws_manager.broadcast("product_created", json.loads(resp.model_dump_json()))
+
+    return BulkProductCreateResponse(
+        created_count=len(created_responses),
+        skipped_count=len(skipped_models),
+        created=created_responses,
+        skipped_models=skipped_models,
+    )
+
 
 
 @router.put("/{product_id}", response_model=ProductResponse)
@@ -315,6 +440,46 @@ async def deactivate_product(
     resp.category_name = cat_name
 
     await ws_manager.broadcast("product_deleted", {"id": str(product_id)})
+    await ws_manager.broadcast("product_updated", json.loads(resp.model_dump_json()))
+    return resp
+
+
+@router.post("/{product_id}/reactivate", response_model=ProductResponse)
+async def reactivate_product(
+    product_id: uuid.UUID,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ProductResponse:
+    """
+    Admin only: reactivate a previously deactivated product model.
+    """
+    result = await db.execute(select(Product).where(Product.id == product_id))
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    product.is_active = True
+
+    audit = AuditLog(
+        user_id=admin.id,
+        action="PRODUCT_REACTIVATED",
+        entity_type="product",
+        entity_id=str(product.id),
+        details={"name": product.name},
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(product)
+
+    cat_res = await db.execute(select(Category).where(Category.id == product.category_id))
+    cat = cat_res.scalar_one_or_none()
+
+    resp = ProductResponse.model_validate(product)
+    resp.category_name = cat.name if cat else None
+    resp.has_dual_serial = cat.has_dual_serial if cat else False
+
+    await ws_manager.broadcast("product_updated", json.loads(resp.model_dump_json()))
     return resp
 
 

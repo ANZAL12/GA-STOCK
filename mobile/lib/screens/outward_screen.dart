@@ -8,6 +8,7 @@ import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
+import 'print_bill_screen.dart';
 
 class OutwardScreen extends StatefulWidget {
   const OutwardScreen({super.key});
@@ -1486,6 +1487,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       final totalMatched = (result['total_matched'] as num?)?.toInt() ?? 0;
       final totalRecorded = (result['total_unmatched'] as num?)?.toInt() ?? 0;
       final List<dynamic> batches = (result['batches'] as List<dynamic>?) ?? [];
+      final finalBillNumber = (result['bill_number'] as String?)?.trim() ?? billNumber.trim();
 
       final List<String> modelSummaries = [];
       for (final b in batches) {
@@ -1538,6 +1540,24 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ],
           ),
           actions: [
+            if (finalBillNumber.isNotEmpty)
+              OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF3C3489),
+                  side: const BorderSide(color: Color(0xFF3C3489)),
+                ),
+                icon: const Icon(Icons.picture_as_pdf, size: 16),
+                label: const Text('View & Print Bill'),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => BillDetailScreen(billNumber: finalBillNumber),
+                    ),
+                  );
+                },
+              ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF059669)),
               onPressed: () => Navigator.pop(ctx),

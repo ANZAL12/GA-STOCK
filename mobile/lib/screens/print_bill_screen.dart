@@ -6,6 +6,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import '../services/api_service.dart';
 import '../models/models.dart';
+import '../widgets/top_toast.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  PrintBillScreen – list bills and print/share as PDF
@@ -289,7 +290,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     pw.MemoryImage? logoImage;
     try {
       final bytes = await rootBundle.load('assets/images/logo.png');
-      logoImage = pw.MemoryImage(bytes.buffer.asUint8List());
+      logoImage = pw.MemoryImage(bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
     } catch (_) {}
 
     final nowFormatted = DateFormat('M/d/yyyy, h:mm:ss a').format(DateTime.now());
@@ -304,10 +305,10 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
           pw.SizedBox(height: 12),
           _pdfBillInfoCard(bill),
           pw.SizedBox(height: 14),
-          _pdfModelsTable(bill),
+          ..._pdfModelsTable(bill),
           pw.SizedBox(height: 14),
-          _pdfSerialsTable(bill),
-          pw.SizedBox(height: 75),
+          ..._pdfSerialsTable(bill),
+          pw.SizedBox(height: 40),
           _pdfSignatureBlock(),
         ],
       ),
@@ -493,7 +494,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  pw.Widget _pdfModelsTable(BillDetail bill) {
+  List<pw.Widget> _pdfModelsTable(BillDetail bill) {
     final modelRows = bill.batches.asMap().entries.map((e) {
       final b = e.value;
       return [
@@ -514,52 +515,49 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       '${bill.totalUnits}',
     ]);
 
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Text(
-          '1. Models & Quantities Dispatched',
-          style: pw.TextStyle(
-            fontSize: 10,
-            fontWeight: pw.FontWeight.bold,
-            color: const PdfColor.fromInt(0xFF0F172A),
-          ),
+    return [
+      pw.Text(
+        '1. Models & Quantities Dispatched',
+        style: pw.TextStyle(
+          fontSize: 10,
+          fontWeight: pw.FontWeight.bold,
+          color: const PdfColor.fromInt(0xFF0F172A),
         ),
-        pw.SizedBox(height: 4),
-        pw.TableHelper.fromTextArray(
-          headers: ['#', 'Brand', 'Model', 'Description', 'Quantity'],
-          data: modelRows,
-          headerStyle: pw.TextStyle(
-            color: PdfColors.white,
-            fontWeight: pw.FontWeight.bold,
-            fontSize: 8.5,
-          ),
-          headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF3C3489)),
-          cellStyle: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF1E293B)),
-          cellDecoration: (index, data, rowNum) {
-            if (rowNum == modelRows.length) {
-              return const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF1F5F9));
-            }
-            return const pw.BoxDecoration();
-          },
-          columnWidths: {
-            0: const pw.FixedColumnWidth(26),
-            1: const pw.FlexColumnWidth(2),
-            2: const pw.FlexColumnWidth(2.5),
-            3: const pw.FlexColumnWidth(3.5),
-            4: const pw.FixedColumnWidth(55),
-          },
-          cellAlignments: {
-            0: pw.Alignment.center,
-            4: pw.Alignment.center,
-          },
-          border: pw.TableBorder.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
+      ),
+      pw.SizedBox(height: 4),
+      pw.TableHelper.fromTextArray(
+        headers: ['#', 'Brand', 'Model', 'Description', 'Quantity'],
+        data: modelRows,
+        headerStyle: pw.TextStyle(
+          color: PdfColors.white,
+          fontWeight: pw.FontWeight.bold,
+          fontSize: 8.5,
         ),
-      ],
-    );
+        headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF3C3489)),
+        cellStyle: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF1E293B)),
+        cellDecoration: (index, data, rowNum) {
+          if (rowNum == modelRows.length) {
+            return const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF1F5F9));
+          }
+          return const pw.BoxDecoration();
+        },
+        columnWidths: {
+          0: const pw.FixedColumnWidth(26),
+          1: const pw.FlexColumnWidth(2),
+          2: const pw.FlexColumnWidth(2.5),
+          3: const pw.FlexColumnWidth(3.5),
+          4: const pw.FixedColumnWidth(55),
+        },
+        cellAlignments: {
+          0: pw.Alignment.center,
+          4: pw.Alignment.center,
+        },
+        border: pw.TableBorder.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
+      ),
+    ];
   }
 
-  pw.Widget _pdfSerialsTable(BillDetail bill) {
+  List<pw.Widget> _pdfSerialsTable(BillDetail bill) {
     final rows = <List<String>>[];
     int idx = 1;
     for (final b in bill.batches) {
@@ -574,44 +572,41 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       }
     }
 
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Text(
-          '2. Scanned Serial Number Register',
-          style: pw.TextStyle(
-            fontSize: 10,
-            fontWeight: pw.FontWeight.bold,
-            color: const PdfColor.fromInt(0xFF0F172A),
-          ),
+    return [
+      pw.Text(
+        '2. Scanned Serial Number Register',
+        style: pw.TextStyle(
+          fontSize: 10,
+          fontWeight: pw.FontWeight.bold,
+          color: const PdfColor.fromInt(0xFF0F172A),
         ),
-        pw.SizedBox(height: 4),
-        pw.TableHelper.fromTextArray(
-          headers: ['#', 'Brand', 'Model', 'Serial Number', 'Unit Type'],
-          data: rows,
-          headerStyle: pw.TextStyle(
-            color: PdfColors.white,
-            fontWeight: pw.FontWeight.bold,
-            fontSize: 8.5,
-          ),
-          headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF4F46E5)),
-          cellStyle: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF1E293B)),
-          columnWidths: {
-            0: const pw.FixedColumnWidth(26),
-            1: const pw.FlexColumnWidth(2),
-            2: const pw.FlexColumnWidth(2.5),
-            3: const pw.FlexColumnWidth(3.5),
-            4: const pw.FixedColumnWidth(55),
-          },
-          cellAlignments: {
-            0: pw.Alignment.center,
-            4: pw.Alignment.center,
-          },
-          border: pw.TableBorder.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
-          oddRowDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF8FAFC)),
+      ),
+      pw.SizedBox(height: 4),
+      pw.TableHelper.fromTextArray(
+        headers: ['#', 'Brand', 'Model', 'Serial Number', 'Unit Type'],
+        data: rows,
+        headerStyle: pw.TextStyle(
+          color: PdfColors.white,
+          fontWeight: pw.FontWeight.bold,
+          fontSize: 8.5,
         ),
-      ],
-    );
+        headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF4F46E5)),
+        cellStyle: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF1E293B)),
+        columnWidths: {
+          0: const pw.FixedColumnWidth(26),
+          1: const pw.FlexColumnWidth(2),
+          2: const pw.FlexColumnWidth(2.5),
+          3: const pw.FlexColumnWidth(3.5),
+          4: const pw.FixedColumnWidth(55),
+        },
+        cellAlignments: {
+          0: pw.Alignment.center,
+          4: pw.Alignment.center,
+        },
+        border: pw.TableBorder.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
+        oddRowDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF8FAFC)),
+      ),
+    ];
   }
 
   pw.Widget _pdfSignatureBlock() {
@@ -650,6 +645,64 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
   // ── UI ──────────────────────────────────────────────────────────────────────
 
+  bool _isGeneratingPdf = false;
+
+  Future<void> _openPdfPreview() async {
+    if (_detail == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => BillPdfViewerScreen(bill: _detail!, onBuildPdf: _buildPdf)),
+    );
+  }
+
+  Future<void> _directPrint() async {
+    if (_detail == null || _isGeneratingPdf) return;
+    setState(() => _isGeneratingPdf = true);
+    try {
+      final doc = await _buildPdf(_detail!);
+      await Printing.layoutPdf(
+        name: 'Bill_${_detail!.billNumber}',
+        onLayout: (_) async => doc.save(),
+      );
+    } catch (e) {
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: 'Direct print unavailable ($e). Opening preview...',
+          backgroundColor: const Color(0xFFD97706),
+          icon: Icons.info_outline_rounded,
+        );
+        _openPdfPreview();
+      }
+    } finally {
+      if (mounted) setState(() => _isGeneratingPdf = false);
+    }
+  }
+
+  Future<void> _sharePdf() async {
+    if (_detail == null || _isGeneratingPdf) return;
+    setState(() => _isGeneratingPdf = true);
+    try {
+      final doc = await _buildPdf(_detail!);
+      final bytes = await doc.save();
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: 'Bill_${_detail!.billNumber}.pdf',
+      );
+    } catch (e) {
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: 'Share error: $e',
+          backgroundColor: const Color(0xFFE11D48),
+          icon: Icons.error_outline_rounded,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isGeneratingPdf = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -663,12 +716,18 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         ),
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
-          if (_detail != null)
+          if (_detail != null) ...[
+            IconButton(
+              icon: const Icon(Icons.share_outlined, color: Color(0xFF3C3489)),
+              tooltip: 'Share PDF',
+              onPressed: _isGeneratingPdf ? null : _sharePdf,
+            ),
             IconButton(
               icon: const Icon(Icons.print, color: Color(0xFF3C3489)),
-              tooltip: 'Print / Share PDF',
-              onPressed: _printOrShare,
+              tooltip: 'Direct Print',
+              onPressed: _isGeneratingPdf ? null : _directPrint,
             ),
+          ],
         ],
       ),
       body: _loading
@@ -694,29 +753,60 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               : _buildDetail(_detail!),
       bottomNavigationBar: _detail != null
           ? SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: ElevatedButton.icon(
-                  onPressed: _printOrShare,
-                  icon: const Icon(Icons.print),
-                  label: const Text('Print / Share PDF'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF3C3489),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      flex: 1,
+                      child: SizedBox(
+                        height: 48,
+                        child: OutlinedButton.icon(
+                          onPressed: _isGeneratingPdf ? null : _sharePdf,
+                          icon: const Icon(Icons.share_outlined, size: 18),
+                          label: const Text('Share PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF3C3489),
+                            side: const BorderSide(color: Color(0xFF3C3489)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: SizedBox(
+                        height: 48,
+                        child: ElevatedButton.icon(
+                          onPressed: _isGeneratingPdf ? null : _openPdfPreview,
+                          icon: _isGeneratingPdf
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                )
+                              : const Icon(Icons.picture_as_pdf_rounded, size: 20),
+                          label: const Text('View & Print PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF3C3489),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            elevation: 1,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             )
           : null,
     );
-  }
-
-  Future<void> _printOrShare() async {
-    if (_detail == null) return;
-    final doc = await _buildPdf(_detail!);
-    await Printing.layoutPdf(onLayout: (_) async => doc.save());
   }
 
   Widget _buildDetail(BillDetail bill) {
@@ -945,3 +1035,60 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  BillPdfViewerScreen – Interactive PDF Preview with Print & Share actions
+// ─────────────────────────────────────────────────────────────────────────────
+
+class BillPdfViewerScreen extends StatelessWidget {
+  final BillDetail bill;
+  final Future<pw.Document> Function(BillDetail) onBuildPdf;
+
+  const BillPdfViewerScreen({
+    super.key,
+    required this.bill,
+    required this.onBuildPdf,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF1F5F9),
+      appBar: AppBar(
+        title: Text(
+          'Challan: ${bill.billNumber}',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+        ),
+        backgroundColor: Colors.white,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
+      ),
+      body: PdfPreview(
+        build: (format) async {
+          final doc = await onBuildPdf(bill);
+          return doc.save();
+        },
+        pdfFileName: 'Bill_${bill.billNumber}.pdf',
+        canChangeOrientation: false,
+        canChangePageFormat: false,
+        canDebug: false,
+        allowPrinting: true,
+        allowSharing: true,
+        loadingWidget: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: Color(0xFF3C3489)),
+              SizedBox(height: 12),
+              Text(
+                'Rendering Challan PDF...',
+                style: TextStyle(color: Color(0xFF64748B), fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+

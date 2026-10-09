@@ -17,6 +17,14 @@ class ProductCreate(BaseModel):
     opening_stock_qty: int = Field(0, ge=0)
 
 
+class BulkProductCreate(BaseModel):
+    category_id: uuid.UUID
+    brand: str = Field(..., min_length=1, max_length=100)
+    models: list[str] = Field(..., min_length=1)
+    opening_stock_qty: int = Field(0, ge=0)
+    description: Optional[str] = None
+
+
 class ProductUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     sku: Optional[str] = Field(None, max_length=100)
@@ -71,6 +79,13 @@ class ProductResponse(BaseModel):
         if self.current_stock_qty == 0 and not self.has_had_inward:
             return "0 units (untracked)"
         return f"{self.current_stock_qty} in stock"
+
+
+class BulkProductCreateResponse(BaseModel):
+    created_count: int
+    skipped_count: int
+    created: list[ProductResponse]
+    skipped_models: list[str] = []
 
 
 class ProductSerialItem(BaseModel):

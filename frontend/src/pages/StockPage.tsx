@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
+import * as XLSX from "xlsx";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
@@ -11,6 +12,7 @@ import {
   Layers, 
   Edit2, 
   Archive, 
+  RotateCcw,
   AlertCircle,
   FolderPlus,
   Trash2,
@@ -19,7 +21,9 @@ import {
   Barcode,
   X,
   Building2,
-  Package
+  Package,
+  FileSpreadsheet,
+  Upload
 } from "lucide-react";
 
 export const StockPage: React.FC = () => {
@@ -28,6 +32,7 @@ export const StockPage: React.FC = () => {
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
   const [loading, setLoading] = useState(true);
 
   // Modal state
@@ -43,9 +48,141 @@ export const StockPage: React.FC = () => {
     unit: "piece",
     opening_stock_qty: 0,
     description: "",
+    is_active: true,
   });
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Bulk / Parcel Modal state
+  const [modalMode, setModalMode] = useState<"single" | "bulk">("single");
+  const [bulkCategory, setBulkCategory] = useState<string>("");
+  const [bulkBrand, setBulkBrand] = useState<string>("");
+  const [bulkText, setBulkText] = useState<string>("");
+  const [bulkOpeningQty, setBulkOpeningQty] = useState<number>(0);
+  const [bulkDescription, setBulkDescription] = useState<string>("");
+  const [bulkResult, setBulkResult] = useState<{
+    created_count: number;
+    skipped_count: number;
+    skipped_models: string[];
+  } | null>(null);
+
+  // Compute parsed unique model numbers from bulkText
+  const parsedBulkModels = React.useMemo(() => {
+    if (!bulkText.trim()) return [];
+    const lines = bulkText
+      .split(/[\n,;]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return Array.from(new Set(lines));
+  }, [bulkText]);
+
+  // Unique list of existing brands for quick selection
+  const existingBrands = React.useMemo(() => {
+    const list = Array.from(new Set(products.map((p) => p.brand.trim()).filter(Boolean)));
+    list.sort((a, b) => a.localeCompare(b));
+    return list;
+  }, [products]);
+
+  // Excel File Parser state
+  const [excelFileName, setExcelFileName] = useState<string | null>(null);
+  const [excelWorkbook, setExcelWorkbook] = useState<XLSX.WorkBook | null>(null);
+  const [excelSheets, setExcelSheets] = useState<string[]>([]);
+  const [excelSelectedSheet, setExcelSelectedSheet] = useState<string>("");
+  const [excelColumns, setExcelColumns] = useState<string[]>([]);
+  const [excelSelectedColumn, setExcelSelectedColumn] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const parseSheetData = (wb: XLSX.WorkBook, sheetName: string, targetColName?: string) => {
+    const worksheet = wb.Sheets[sheetName];
+    if (!worksheet) return;
+
+    const rows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: "" });
+    if (!rows || rows.length === 0) {
+      setFormError("The selected Excel sheet appears to be empty.");
+      return;
+    }
+
+    // Determine header row from the first row that has non-empty values
+    let headerRowIdx = 0;
+    for (let i = 0; i < Math.min(6, rows.length); i++) {
+      if (rows[i] && rows[i].some((cell: any) => String(cell || "").trim().length > 0)) {
+        headerRowIdx = i;
+        break;
+      }
+    }
+
+    const headerRow = rows[headerRowIdx] || [];
+    const colNames: string[] = headerRow.map((cell: any, idx: number) => {
+      const str = String(cell || "").trim();
+      return str || `Column ${idx + 1}`;
+    });
+
+    setExcelColumns(colNames);
+
+    // Auto-detect model column if not explicitly given
+    let colIdx = 0;
+    if (targetColName && colNames.includes(targetColName)) {
+      colIdx = colNames.indexOf(targetColName);
+    } else {
+      const keywords = ["model", "model no", "model number", "model code", "item model", "product model", "code", "item code", "item", "description"];
+      const match = colNames.findIndex((c) =>
+        keywords.some((kw) => c.toLowerCase().includes(kw))
+      );
+      if (match !== -1) {
+        colIdx = match;
+      }
+    }
+
+    const chosenCol = colNames[colIdx] || colNames[0];
+    setExcelSelectedColumn(chosenCol);
+
+    // Extract values from that column starting after the header row
+    const extracted: string[] = [];
+    for (let r = headerRowIdx + 1; r < rows.length; r++) {
+      const val = rows[r]?.[colIdx];
+      if (val !== undefined && val !== null) {
+        const strVal = String(val).trim();
+        if (
+          strVal &&
+          !strVal.toLowerCase().startsWith("model") &&
+          !strVal.toLowerCase().startsWith("total")
+        ) {
+          extracted.push(strVal);
+        }
+      }
+    }
+
+    const uniqueExtracted = Array.from(new Set(extracted));
+    setBulkText(uniqueExtracted.join("\n"));
+    setFormError(null);
+  };
+
+  const handleExcelFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setExcelFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const buffer = evt.target?.result as ArrayBuffer;
+        const wb = XLSX.read(buffer, { type: "array" });
+        const sheets = wb.SheetNames;
+        if (!sheets || sheets.length === 0) {
+          setFormError("No sheets found in Excel file.");
+          return;
+        }
+        setExcelWorkbook(wb);
+        setExcelSheets(sheets);
+        setExcelSelectedSheet(sheets[0]);
+        parseSheetData(wb, sheets[0]);
+      } catch (err: any) {
+        setFormError("Failed to parse Excel file: " + (err.message || String(err)));
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    if (e.target) e.target.value = "";
+  };
 
   // Category Modal state
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -186,33 +323,53 @@ export const StockPage: React.FC = () => {
       if (event === "product_created" && data && data.id) {
         setProducts((prev) => [data as Product, ...prev.filter((p) => p.id !== data.id)]);
       } else if (event === "product_updated" && data && data.id) {
-        setProducts((prev) => prev.map((p) => (p.id === data.id ? (data as Product) : p)));
+        setProducts((prev) => prev.map((p) => (p.id === data.id ? { ...p, ...(data as Product) } : p)));
       } else if (event === "product_deleted" && data && data.id) {
-        setProducts((prev) => prev.filter((p) => p.id !== data.id));
+        if (isAdmin) {
+          setProducts((prev) => prev.map((p) => (p.id === data.id ? { ...p, is_active: false } : p)));
+        } else {
+          setProducts((prev) => prev.filter((p) => p.id !== data.id));
+        }
       }
       fetchStock();
     }
   });
 
-  const openAddModal = () => {
+  const openAddModal = (mode: "single" | "bulk" = "single") => {
     setEditingProduct(null);
+    setModalMode(mode);
+    const defaultCat = (selectedCategory !== "all" ? selectedCategory : categories[0]?.id) || "";
     setFormData({
       name: "",
       sku: "",
-      category_id: (selectedCategory !== "all" ? selectedCategory : categories[0]?.id) || "",
+      category_id: defaultCat,
       brand: "",
       model: "",
       size_capacity: "",
       unit: "piece",
       opening_stock_qty: 0,
       description: "",
+      is_active: true,
     });
+    setBulkCategory(defaultCat);
+    setBulkBrand("");
+    setBulkText("");
+    setBulkOpeningQty(0);
+    setBulkDescription("");
+    setBulkResult(null);
+    setExcelFileName(null);
+    setExcelWorkbook(null);
+    setExcelSheets([]);
+    setExcelSelectedSheet("");
+    setExcelColumns([]);
+    setExcelSelectedColumn("");
     setFormError(null);
     setIsModalOpen(true);
   };
 
   const openEditModal = (p: Product) => {
     setEditingProduct(p);
+    setModalMode("single");
     setFormData({
       name: p.name,
       sku: p.sku || "",
@@ -223,9 +380,74 @@ export const StockPage: React.FC = () => {
       unit: p.unit,
       opening_stock_qty: p.opening_stock_qty,
       description: p.description || "",
+      is_active: p.is_active,
     });
     setFormError(null);
     setIsModalOpen(true);
+  };
+
+  const handleBulkSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkCategory) {
+      setFormError("Please select a category.");
+      return;
+    }
+    if (!bulkBrand.trim()) {
+      setFormError("Please enter a brand name.");
+      return;
+    }
+    if (parsedBulkModels.length === 0) {
+      setFormError("Please paste or write at least one model number.");
+      return;
+    }
+
+    setSubmitting(true);
+    setFormError(null);
+    setBulkResult(null);
+
+    try {
+      const res = await apiRequest<{
+        created_count: number;
+        skipped_count: number;
+        created: Product[];
+        skipped_models: string[];
+      }>("/products/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          category_id: bulkCategory,
+          brand: bulkBrand.trim(),
+          models: parsedBulkModels,
+          opening_stock_qty: Number(bulkOpeningQty) || 0,
+          description: bulkDescription.trim() || null,
+        }),
+      });
+
+      setBulkResult({
+        created_count: res.created_count,
+        skipped_count: res.skipped_count,
+        skipped_models: res.skipped_models || [],
+      });
+
+      if (res.created && res.created.length > 0) {
+        setProducts((prev) => [
+          ...res.created,
+          ...prev.filter((p) => !res.created.some((c) => c.id === p.id)),
+        ]);
+        if (selectedCategory !== "all" && selectedCategory !== bulkCategory) {
+          setSelectedCategory("all");
+        }
+      }
+
+      await fetchStock();
+
+      if (res.skipped_count === 0) {
+        setIsModalOpen(false);
+      }
+    } catch (err: any) {
+      setFormError(err.message || "Failed to bulk add models.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -273,6 +495,7 @@ export const StockPage: React.FC = () => {
             unit: "piece",
             description: formData.description?.trim() || null,
             opening_stock_qty: Number(formData.opening_stock_qty) || 0,
+            is_active: formData.is_active,
           }),
         });
         setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
@@ -308,19 +531,41 @@ export const StockPage: React.FC = () => {
   };
 
   const handleDeactivate = async (id: string, name: string) => {
-    if (!window.confirm(`Deactivate '${name}'? Products with history are never deleted to preserve tracking.`)) {
+    if (!window.confirm(`Deactivate '${name}'? Deactivated models are hidden from staff scanning but remain in admin for tracking.`)) {
       return;
     }
     try {
       await apiRequest(`/products/${id}`, { method: "DELETE" });
-      setProducts((prev) => prev.filter((p) => p.id !== id));
+      setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, is_active: false } : p)));
       await fetchStock();
     } catch (e: any) {
       alert(e.message || "Failed to deactivate");
     }
   };
 
+  const handleReactivate = async (id: string, name: string) => {
+    if (!window.confirm(`Reactivate '${name}'? This will make the model active and available for inward/outward scanning.`)) {
+      return;
+    }
+    try {
+      await apiRequest(`/products/${id}/reactivate`, { method: "POST" });
+      setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, is_active: true } : p)));
+      await fetchStock();
+    } catch (e: any) {
+      alert(e.message || "Failed to reactivate");
+    }
+  };
+
+  const activeCount = products.filter((p) => p.is_active).length;
+  const deactivatedCount = products.filter((p) => !p.is_active).length;
+
   const filtered = products.filter((p) => {
+    if (isAdmin) {
+      if (filterStatus === "active" && !p.is_active) return false;
+      if (filterStatus === "deactivated" && p.is_active) return false;
+    } else {
+      if (!p.is_active) return false;
+    }
     const matchesCategory = selectedCategory === "all" || p.category_id === selectedCategory;
     const q = search.toLowerCase();
     const matchesSearch =
@@ -361,21 +606,21 @@ export const StockPage: React.FC = () => {
         </div>
 
         {isAdmin && (
-          <div className="flex items-center gap-2 self-start sm:self-auto">
+          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
             <button
               onClick={() => {
                 setCategoryError(null);
                 setNewCategoryName("");
                 setIsCategoryModalOpen(true);
               }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 shadow-sm transition-all cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 shadow-xs transition-all cursor-pointer"
             >
               <FolderPlus size={15} className="text-[#3C3489]" />
               <span>Add Category</span>
             </button>
             <button
-              onClick={openAddModal}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer"
+              onClick={() => openAddModal("single")}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-xs shadow-[#3C3489]/25 transition-all cursor-pointer"
             >
               <Plus size={16} />
               <span>Add Product Model</span>
@@ -385,7 +630,64 @@ export const StockPage: React.FC = () => {
       </div>
 
       {/* Filter Tabs & Search */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          {/* Status Pills for Admin */}
+          {isAdmin ? (
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setFilterStatus("all")}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                  filterStatus === "all"
+                    ? "bg-white text-slate-900 font-semibold shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                All Models ({products.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterStatus("active")}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                  filterStatus === "active"
+                    ? "bg-white text-emerald-700 font-semibold shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                Active ({activeCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setFilterStatus("deactivated")}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
+                  filterStatus === "deactivated"
+                    ? "bg-white text-amber-800 font-semibold shadow-xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                <span className={`w-2 h-2 rounded-full ${deactivatedCount > 0 ? "bg-amber-500" : "bg-slate-400"} inline-block`} />
+                Deactivated ({deactivatedCount})
+              </button>
+            </div>
+          ) : (
+            <div />
+          )}
+
+          <div className="relative w-full sm:w-72 shrink-0">
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter models, brand..."
+              className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] transition-all text-slate-800 placeholder-slate-400"
+            />
+          </div>
+        </div>
+
+        {/* Category Pills */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 max-w-full">
           <button
             onClick={() => setSelectedCategory("all")}
@@ -395,10 +697,23 @@ export const StockPage: React.FC = () => {
                 : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
             }`}
           >
-            All Products ({products.length})
+            All Categories ({products.filter((p) => {
+              if (isAdmin) {
+                if (filterStatus === "active" && !p.is_active) return false;
+                if (filterStatus === "deactivated" && p.is_active) return false;
+              }
+              return true;
+            }).length})
           </button>
           {categories.map((c) => {
-            const count = products.filter((p) => p.category_id === c.id).length;
+            const count = products.filter((p) => {
+              if (p.category_id !== c.id) return false;
+              if (isAdmin) {
+                if (filterStatus === "active" && !p.is_active) return false;
+                if (filterStatus === "deactivated" && p.is_active) return false;
+              }
+              return true;
+            }).length;
             return (
               <button
                 key={c.id}
@@ -422,17 +737,6 @@ export const StockPage: React.FC = () => {
             );
           })}
         </div>
-
-        <div className="relative w-full md:w-72 shrink-0">
-          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter models, brand..."
-            className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] transition-all text-slate-800 placeholder-slate-400"
-          />
-        </div>
       </div>
 
       {/* Products Grid */}
@@ -441,7 +745,11 @@ export const StockPage: React.FC = () => {
           <div
             key={p.id}
             onClick={() => openSerialModal(p)}
-            className="group bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs space-y-4 hover:border-indigo-400/80 hover:shadow-md transition-all flex flex-col justify-between cursor-pointer"
+            className={`group bg-white border rounded-2xl p-5 shadow-xs space-y-4 hover:shadow-md transition-all flex flex-col justify-between cursor-pointer ${
+              p.is_active
+                ? "border-slate-200/90 hover:border-indigo-400/80"
+                : "border-amber-200/90 bg-amber-50/20 hover:border-amber-400/80"
+            }`}
           >
             <div className="space-y-2">
               <div className="flex items-start justify-between gap-2 flex-wrap">
@@ -454,6 +762,12 @@ export const StockPage: React.FC = () => {
                       Dual Serial (Indoor / Outdoor)
                     </span>
                   )}
+                  {!p.is_active && (
+                    <span className="text-[10px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
+                      <Archive size={11} className="text-amber-700" />
+                      Deactivated
+                    </span>
+                  )}
                 </div>
                 <span className="text-[11px] font-semibold text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5">
                   View Serials →
@@ -461,7 +775,9 @@ export const StockPage: React.FC = () => {
               </div>
 
               <div>
-                <h3 className="font-bold text-base text-slate-900 tracking-tight leading-snug group-hover:text-indigo-900 transition-colors">
+                <h3 className={`font-bold text-base tracking-tight leading-snug group-hover:text-indigo-900 transition-colors ${
+                  p.is_active ? "text-slate-900" : "text-slate-700"
+                }`}>
                   {p.brand} {p.model}
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -503,16 +819,29 @@ export const StockPage: React.FC = () => {
                     >
                       <Edit2 size={15} />
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeactivate(p.id, p.name);
-                      }}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                      title="Deactivate Product"
-                    >
-                      <Archive size={15} />
-                    </button>
+                    {p.is_active ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeactivate(p.id, p.name);
+                        }}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                        title="Deactivate Product"
+                      >
+                        <Archive size={15} />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReactivate(p.id, p.name);
+                        }}
+                        className="p-1.5 rounded-lg text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer"
+                        title="Reactivate Product Model"
+                      >
+                        <RotateCcw size={15} />
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -533,9 +862,43 @@ export const StockPage: React.FC = () => {
       <Modal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        title={editingProduct ? "Edit Product Model" : "Add Product Model"}
-        subtitle="Global Logistics Master Product Catalog"
+        title={editingProduct ? "Edit Product Model" : (modalMode === "bulk" ? "Excel & Bulk Model Parser" : "Add Product Model")}
+        subtitle={editingProduct ? "Global Logistics Master Product Catalog" : (modalMode === "bulk" ? "Upload Excel (.xlsx, .csv) or paste model numbers under category & brand with default 0 opening stock" : "Global Logistics Master Product Catalog")}
+        maxWidth={modalMode === "bulk" ? "2xl" : "lg"}
       >
+        {!editingProduct && (
+          <div className="flex items-center gap-2 border-b border-slate-100 pb-3 mb-4 -mt-1">
+            <button
+              type="button"
+              onClick={() => { setModalMode("single"); setFormError(null); }}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-all cursor-pointer ${
+                modalMode === "single"
+                  ? "bg-[#3C3489] text-white shadow-xs"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              Single Model
+            </button>
+            <button
+              type="button"
+              onClick={() => { setModalMode("bulk"); setFormError(null); }}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 ${
+                modalMode === "bulk"
+                  ? "bg-[#3C3489] text-white shadow-xs"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              <FileSpreadsheet size={14} className={modalMode === "bulk" ? "text-emerald-300" : "text-emerald-600"} />
+              <span>Excel & Bulk Parser</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                modalMode === "bulk" ? "bg-white/20 text-white" : "bg-emerald-100 text-emerald-800"
+              }`}>
+                Auto
+              </span>
+            </button>
+          </div>
+        )}
+
         {formError && (
           <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
             <AlertCircle size={15} />
@@ -543,126 +906,447 @@ export const StockPage: React.FC = () => {
           </div>
         )}
 
-        <form onSubmit={handleSave} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Brand Name *
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.brand}
-                onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
-                placeholder="e.g. Samsung, LG, IFB"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                  Category *
-                </label>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCategoryError(null);
-                      setNewCategoryName("");
-                      setNewCategoryHasDualSerial(false);
-                      setIsCategoryModalOpen(true);
-                    }}
-                    className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
-                  >
-                    <Plus size={11} /> New Category
-                  </button>
+        {modalMode === "bulk" && !editingProduct ? (
+          <form onSubmit={handleBulkSave} className="space-y-4">
+            {bulkResult && (
+              <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1 animate-fade-in">
+                <p className="font-bold flex items-center gap-1.5 text-emerald-800">
+                  <Check size={15} className="text-emerald-600" />
+                  Successfully added {bulkResult.created_count} product model(s)!
+                </p>
+                {bulkResult.skipped_count > 0 && (
+                  <p className="text-amber-800 text-[11px] bg-amber-50/80 p-2 rounded-lg border border-amber-200/60 mt-1">
+                    ⚠️ {bulkResult.skipped_count} model(s) already existed and were skipped:{" "}
+                    <span className="font-semibold">{bulkResult.skipped_models.join(", ")}</span>
+                  </p>
                 )}
               </div>
-              <select
-                required
-                value={formData.category_id}
-                onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-              >
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </select>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Category Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                    Category *
+                  </label>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCategoryError(null);
+                        setNewCategoryName("");
+                        setNewCategoryHasDualSerial(false);
+                        setIsCategoryModalOpen(true);
+                      }}
+                      className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
+                    >
+                      <Plus size={11} /> New Category
+                    </button>
+                  )}
+                </div>
+                <select
+                  required
+                  value={bulkCategory}
+                  onChange={(e) => setBulkCategory(e.target.value)}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                >
+                  <option value="">Select Category...</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {c.has_dual_serial ? "(Dual Serial)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Brand Selection */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Brand Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={bulkBrand}
+                  onChange={(e) => setBulkBrand(e.target.value)}
+                  placeholder="e.g. ROCKWELL, FORMENTY"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                />
+                {existingBrands.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+                    <span className="text-[10px] text-slate-400 font-medium">Quick select:</span>
+                    {existingBrands.map((b) => (
+                      <button
+                        key={b}
+                        type="button"
+                        onClick={() => setBulkBrand(b)}
+                        className={`text-[11px] px-2 py-0.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                          bulkBrand.trim().toLowerCase() === b.toLowerCase()
+                            ? "bg-[#3C3489] text-white"
+                            : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        }`}
+                      >
+                        {b}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Model Number *
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.model}
-                onChange={(e) => setFormData({ ...formData, model: e.target.value })}
-                placeholder="e.g. UA43T5350"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-              />
-            </div>
+            {/* Excel File Upload & Auto-Parser Area */}
+            <div className="p-3 sm:p-3.5 rounded-xl bg-gradient-to-br from-emerald-50/60 via-white to-indigo-50/40 border border-emerald-200/80 space-y-2.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <FileSpreadsheet size={16} className="text-emerald-600" />
+                    <span>Upload Excel File (.xlsx, .xls, .csv)</span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Select your Excel sheet to automatically detect and extract model numbers.
+                  </p>
+                </div>
 
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Old Stock Number (Opening Qty)
-              </label>
-              <input
-                type="number"
-                min="0"
-                disabled={editingProduct?.has_had_inward && !isAdmin}
-                value={formData.opening_stock_qty}
-                onChange={(e) => setFormData({ ...formData, opening_stock_qty: parseInt(e.target.value) || 0 })}
-                placeholder="0"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] disabled:bg-slate-50 disabled:text-slate-400"
-              />
-              {editingProduct?.has_had_inward && (
-                isAdmin ? (
-                  <span className="text-[11px] text-amber-700 font-medium mt-1.5 flex items-center gap-1.5 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
-                    <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                    Scanning has started. Changing this will recalculate live stock with confirmation.
-                  </span>
-                ) : (
-                  <span className="text-[11px] text-slate-400 mt-1 block">
-                    Locked: inward transactions have started (Admin only).
-                  </span>
-                )
+                <div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".xlsx, .xls, .csv"
+                    onChange={handleExcelFileChange}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-3.5 py-1.5 text-xs font-semibold rounded-xl bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-50 shadow-2xs transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+                  >
+                    <Upload size={13} className="text-emerald-600" />
+                    <span>{excelFileName ? "Choose Different Excel" : "Browse Excel File"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* If Excel file loaded */}
+              {excelFileName && (
+                <div className="pt-2.5 border-t border-emerald-100 flex flex-wrap items-center justify-between gap-3 text-xs animate-fade-in">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-700 bg-white px-2.5 py-1 rounded-lg border border-slate-200 flex items-center gap-1.5 shadow-2xs">
+                      <FileSpreadsheet size={13} className="text-emerald-600" />
+                      {excelFileName}
+                    </span>
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/70 px-2.5 py-0.5 rounded-full border border-emerald-300/80">
+                      ✓ {parsedBulkModels.length} model(s) extracted
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    {/* Sheet selector if multiple */}
+                    {excelSheets.length > 1 && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-slate-500 font-medium">Sheet:</span>
+                        <select
+                          value={excelSelectedSheet}
+                          onChange={(e) => {
+                            const s = e.target.value;
+                            setExcelSelectedSheet(s);
+                            if (excelWorkbook) parseSheetData(excelWorkbook, s);
+                          }}
+                          className="text-xs px-2.5 py-1 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-medium"
+                        >
+                          {excelSheets.map((sh) => (
+                            <option key={sh} value={sh}>{sh}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Column selector */}
+                    {excelColumns.length > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-slate-500 font-medium">Model Column:</span>
+                        <select
+                          value={excelSelectedColumn}
+                          onChange={(e) => {
+                            const col = e.target.value;
+                            setExcelSelectedColumn(col);
+                            if (excelWorkbook && excelSelectedSheet) {
+                              parseSheetData(excelWorkbook, excelSelectedSheet, col);
+                            }
+                          }}
+                          className="text-xs font-semibold px-2.5 py-1 bg-white border border-emerald-400 rounded-lg text-emerald-950 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        >
+                          {excelColumns.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
 
-            <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-                Description / Remarks
-              </label>
+            {/* Model Numbers Textarea (Parcel) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                  Model Numbers (Extracted from Excel or paste manually) *
+                </label>
+                {parsedBulkModels.length > 0 && (
+                  <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                    <Package size={13} />
+                    {parsedBulkModels.length} Model{parsedBulkModels.length > 1 ? "s" : ""} Ready
+                  </span>
+                )}
+              </div>
               <textarea
-                rows={3}
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                placeholder="Optional notes or warranty details..."
-                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                required
+                rows={4}
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                placeholder={"Model numbers extracted from your Excel sheet will appear here, or you can paste directly.\nExample:\nGFR1210F\nGFR 450 DDUC-5S\nGFR 550 DDUC5S"}
+                className="w-full font-mono text-xs px-3.5 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] leading-relaxed placeholder:font-sans placeholder:text-slate-400"
               />
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                You can review, edit, or delete any model above before saving. Duplicates are filtered out automatically.
+              </p>
             </div>
-          </div>
 
-          <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setIsModalOpen(false)}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {submitting ? "Saving..." : "Save Product"}
-            </button>
-          </div>
-        </form>
+            {/* Preview Chip Tags */}
+            {parsedBulkModels.length > 0 && (
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1.5 max-h-32 overflow-y-auto">
+                <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium">
+                  <span>Parsed Models Preview ({parsedBulkModels.length}):</span>
+                  {bulkBrand.trim() && (
+                    <span className="text-indigo-700 font-semibold">
+                      Full Name: "{bulkBrand.trim()} &lt;Model&gt;"
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {parsedBulkModels.slice(0, 30).map((m, idx) => (
+                    <span
+                      key={idx}
+                      className="text-[11px] font-mono font-medium bg-white border border-slate-200 px-2 py-0.5 rounded-md text-slate-800 shadow-2xs"
+                    >
+                      {m}
+                    </span>
+                  ))}
+                  {parsedBulkModels.length > 30 && (
+                    <span className="text-[11px] font-medium bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">
+                      +{parsedBulkModels.length - 30} more
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Old Stock Number (Opening Qty) */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Old Stock Number (Opening Qty)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={bulkOpeningQty}
+                  onChange={(e) => setBulkOpeningQty(parseInt(e.target.value) || 0)}
+                  placeholder="0 (Default)"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                />
+                <span className="text-[11px] text-slate-500 mt-0.5 block">
+                  Defaults to 0. Applied as opening stock for all models in this parcel.
+                </span>
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Description / Remarks (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={bulkDescription}
+                  onChange={(e) => setBulkDescription(e.target.value)}
+                  placeholder="e.g. 2026 Models, standard warranty"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting || parsedBulkModels.length === 0}
+                className="px-5 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {submitting ? (
+                  "Adding Models..."
+                ) : (
+                  <>
+                    <Layers size={14} />
+                    <span>
+                      Add {parsedBulkModels.length > 0 ? `${parsedBulkModels.length} Models` : "Models"}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={handleSave} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Brand Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.brand}
+                  onChange={(e) => setFormData({ ...formData, brand: e.target.value })}
+                  placeholder="e.g. Samsung, LG, IFB"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
+                    Category *
+                  </label>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCategoryError(null);
+                        setNewCategoryName("");
+                        setNewCategoryHasDualSerial(false);
+                        setIsCategoryModalOpen(true);
+                      }}
+                      className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
+                    >
+                      <Plus size={11} /> New Category
+                    </button>
+                  )}
+                </div>
+                <select
+                  required
+                  value={formData.category_id}
+                  onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Model Number *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={formData.model}
+                  onChange={(e) => setFormData({ ...formData, model: e.target.value })}
+                  placeholder="e.g. UA43T5350"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Old Stock Number (Opening Qty)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  disabled={editingProduct?.has_had_inward && !isAdmin}
+                  value={formData.opening_stock_qty}
+                  onChange={(e) => setFormData({ ...formData, opening_stock_qty: parseInt(e.target.value) || 0 })}
+                  placeholder="0"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] disabled:bg-slate-50 disabled:text-slate-400"
+                />
+                {editingProduct?.has_had_inward && (
+                  isAdmin ? (
+                    <span className="text-[11px] text-amber-700 font-medium mt-1.5 flex items-center gap-1.5 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      Scanning has started. Changing this will recalculate live stock with confirmation.
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-400 mt-1 block">
+                      Locked: inward transactions have started (Admin only).
+                    </span>
+                  )
+                )}
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Description / Remarks
+                </label>
+                <textarea
+                  rows={3}
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="Optional notes or warranty details..."
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+                />
+              </div>
+
+              {editingProduct && isAdmin && (
+                <div className="sm:col-span-2 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={formData.is_active}
+                      onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
+                      className="w-4 h-4 rounded text-[#3C3489] focus:ring-[#3C3489] cursor-pointer"
+                    />
+                    <div>
+                      <span className="text-xs font-semibold text-slate-800">
+                        {formData.is_active ? "Model is Active" : "Model is Deactivated"}
+                      </span>
+                      <p className="text-[11px] text-slate-500">
+                        {formData.is_active
+                          ? "Available for staff inward & outward scanning."
+                          : "Deactivated: hidden from staff scanning while preserving history."}
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsModalOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submitting}
+                className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {submitting ? "Saving..." : "Save Product"}
+              </button>
+            </div>
+          </form>
+        )}
       </Modal>
 
       {/* Add Category Modal */}
