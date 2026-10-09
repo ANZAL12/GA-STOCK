@@ -7,6 +7,7 @@ import '../services/api_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
+import '../widgets/top_toast.dart';
 
 class OutwardScreen extends StatefulWidget {
   const OutwardScreen({super.key});
@@ -957,12 +958,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   void _showToast(String message, Color bgColor) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 1),
-        backgroundColor: bgColor,
-      ),
+    TopToast.show(
+      context,
+      message: message,
+      backgroundColor: bgColor,
     );
   }
 

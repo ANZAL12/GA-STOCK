@@ -443,14 +443,33 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             ),
           ),
 
-          // Top Header (Prompt & Mode Switch)
+          // Top Header (Last Scanned Card popped from upside + Prompt & Mode Switch)
           Positioned(
-            top: 16,
+            top: 12,
             left: 16,
             right: 16,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                // Prominently pop out the scanned serial number card from UPSIDE (the top)
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  transitionBuilder: (child, anim) => SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(0.0, -0.6),
+                      end: Offset.zero,
+                    ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+                    child: FadeTransition(opacity: anim, child: child),
+                  ),
+                  child: (_lastScannedValue != null && _lastScannedValue!.isNotEmpty)
+                      ? Padding(
+                          key: ValueKey<String>(_lastScannedValue!),
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: _buildLastScannedCard(),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
                   decoration: BoxDecoration(
@@ -534,7 +553,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             ),
           ),
 
-          // Bottom Controls (Trigger + Manual Input + Last Scanned)
+          // Bottom Controls (Trigger + Manual Input)
           Positioned(
             bottom: 24,
             left: 20,
@@ -542,10 +561,6 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Prominently display the last scanned serial number
-                _buildLastScannedCard(),
-                const SizedBox(height: 12),
-
                 if (_holdToScanMode) ...[
                   Listener(
                     behavior: HitTestBehavior.opaque,
@@ -658,29 +673,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
   Widget _buildLastScannedCard() {
     if (_lastScannedValue == null || _lastScannedValue!.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.65),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white12),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.qr_code_scanner, size: 14, color: Colors.white54),
-            SizedBox(width: 8),
-            Text(
-              'No serial scanned yet',
-              style: TextStyle(
-                color: Colors.white60,
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-      );
+      return const SizedBox.shrink();
     }
 
     return Container(

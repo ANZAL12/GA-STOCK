@@ -7,6 +7,7 @@ import '../services/api_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
+import '../widgets/top_toast.dart';
 
 enum InwardStage {
   selectCase,   // Step 1: Pick Stock In, Returned Product, or Damaged Product
@@ -125,8 +126,11 @@ class _InwardScreenState extends State<InwardScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _loadingProducts = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load models: $e')),
+        TopToast.show(
+          context,
+          message: 'Failed to load models: $e',
+          backgroundColor: const Color(0xFFE11D48),
+          icon: Icons.error_outline_rounded,
         );
       }
     }
@@ -301,7 +305,7 @@ class _InwardScreenState extends State<InwardScreen> {
   }
 
   Future<void> _handleScannedSerial(String serial) async {
-    final cleanSerial = serial.trim();
+    final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
 
     if (_isHandlingScan) return;
@@ -422,13 +426,10 @@ class _InwardScreenState extends State<InwardScreen> {
       HapticFeedback.lightImpact();
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✓ Scanned $cleanSerial • ${targetProduct.brand} ${targetProduct.model} (${_scannedItems.length} total)'),
-            duration: const Duration(seconds: 2),
-            backgroundColor: _getInwardTypeColor(_inwardType),
-            behavior: SnackBarBehavior.floating,
-          ),
+        TopToast.show(
+          context,
+          message: '✓ Scanned $cleanSerial • ${targetProduct.brand} ${targetProduct.model} (${_scannedItems.length} total)',
+          backgroundColor: _getInwardTypeColor(_inwardType),
         );
       }
     } catch (e) {
@@ -439,163 +440,182 @@ class _InwardScreenState extends State<InwardScreen> {
     }
   }
 
-  // "Strange case" dialog: Prompt user to assign model for an unrecorded serial
+  // "Strange case" dialog: Prompt user to assign model for an unrecorded serial (Slides in from the TOP!)
   Future<Product?> _showSelectModelForSerialDialog(String serial) async {
-    return showModalBottomSheet<Product>(
+    return showGeneralDialog<Product>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
+      barrierDismissible: false,
+      barrierLabel: 'Assign Model',
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      transitionDuration: const Duration(milliseconds: 280),
+      transitionBuilder: (ctx, anim, secondaryAnim, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0.0, -1.0), // Pops out / drops down from the TOP (upside)
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+          child: FadeTransition(
+            opacity: anim,
+            child: child,
+          ),
+        );
+      },
+      pageBuilder: (ctx, anim1, anim2) {
         String filter = '';
-        return StatefulBuilder(
-          builder: (context, setModalState) {
-            final filtered = _products.where((p) {
-              final q = filter.toLowerCase();
-              return p.name.toLowerCase().contains(q) ||
-                  p.brand.toLowerCase().contains(q) ||
-                  p.model.toLowerCase().contains(q) ||
-                  (p.sku?.toLowerCase().contains(q) ?? false);
-            }).toList();
+        return SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+              ),
+              child: Material(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                elevation: 16,
+                clipBehavior: Clip.antiAlias,
+                child: StatefulBuilder(
+                  builder: (context, setModalState) {
+                    final filtered = _products.where((p) {
+                      final q = filter.toLowerCase();
+                      return p.name.toLowerCase().contains(q) ||
+                          p.brand.toLowerCase().contains(q) ||
+                          p.model.toLowerCase().contains(q) ||
+                          (p.sku?.toLowerCase().contains(q) ?? false);
+                    }).toList();
 
-            return SafeArea(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  left: 20,
-                  right: 20,
-                  top: 12,
-                  bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 38,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 14),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFCBD5E1),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(9),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFFBEB),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFFFDE68A)),
-                          ),
-                          child: const Icon(Icons.help_outline_rounded, color: Color(0xFFD97706), size: 22),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                    return Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
                             children: [
-                              const Text(
-                                'Assign Appliance Model',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                              Container(
+                                padding: const EdgeInsets.all(9),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFFBEB),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: const Color(0xFFFDE68A)),
+                                ),
+                                child: const Icon(Icons.help_outline_rounded, color: Color(0xFFD97706), size: 22),
                               ),
-                              const SizedBox(height: 2),
-                              Text(
-                                'Serial "$serial"',
-                                style: const TextStyle(fontSize: 12, color: Color(0xFF64748B), fontFamily: 'monospace'),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Assign Appliance Model',
+                                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Serial "$serial"',
+                                      style: const TextStyle(fontSize: 12, color: Color(0xFF64748B), fontFamily: 'monospace'),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(16),
+                                onTap: () => Navigator.pop(ctx, null),
+                                child: const Padding(
+                                  padding: EdgeInsets.all(4),
+                                  child: Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                                ),
                               ),
                             ],
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.info_outline, size: 16, color: Color(0xFF475569)),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Select the matching appliance model for this unit:',
-                              style: TextStyle(fontSize: 12, color: Color(0xFF334155), fontWeight: FontWeight.w500),
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF8FAFC),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.info_outline, size: 16, color: Color(0xFF475569)),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Select the matching appliance model for this unit:',
+                                    style: TextStyle(fontSize: 12, color: Color(0xFF334155), fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            autofocus: false,
+                            decoration: InputDecoration(
+                              hintText: 'Search brand or model...',
+                              prefixIcon: const Icon(Icons.search, size: 18),
+                              isDense: true,
+                              filled: true,
+                              fillColor: const Color(0xFFF1F5F9),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                            ),
+                            onChanged: (val) => setModalState(() => filter = val),
+                          ),
+                          const SizedBox(height: 10),
+                          ConstrainedBox(
+                            constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.38),
+                            child: filtered.isEmpty
+                                ? const Center(
+                                    child: Padding(
+                                      padding: EdgeInsets.all(24),
+                                      child: Text('No models match your search.', style: TextStyle(color: Color(0xFF94A3B8))),
+                                    ),
+                                  )
+                                : ListView.separated(
+                                    shrinkWrap: true,
+                                    itemCount: filtered.length,
+                                    separatorBuilder: (_, index) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                                    itemBuilder: (c, idx) {
+                                      final p = filtered[idx];
+                                      return ListTile(
+                                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                        title: Text(
+                                          p.name,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                        ),
+                                        subtitle: Text(
+                                          '${p.brand} • ${p.model}',
+                                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                        ),
+                                        trailing: const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
+                                        onTap: () => Navigator.pop(ctx, p),
+                                      );
+                                    },
+                                  ),
+                          ),
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(ctx, null),
+                              style: OutlinedButton.styleFrom(
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              child: const Text('Cancel & Skip Serial'),
                             ),
                           ),
                         ],
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      autofocus: false,
-                      decoration: InputDecoration(
-                        hintText: 'Search brand or model...',
-                        prefixIcon: const Icon(Icons.search, size: 18),
-                        isDense: true,
-                        filled: true,
-                        fillColor: const Color(0xFFF1F5F9),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                      ),
-                      onChanged: (val) => setModalState(() => filter = val),
-                    ),
-                    const SizedBox(height: 10),
-                    ConstrainedBox(
-                      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.4),
-                      child: filtered.isEmpty
-                          ? const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(24),
-                                child: Text('No models match your search.', style: TextStyle(color: Color(0xFF94A3B8))),
-                              ),
-                            )
-                          : ListView.separated(
-                              shrinkWrap: true,
-                              itemCount: filtered.length,
-                              separatorBuilder: (_, index) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
-                              itemBuilder: (ctx, idx) {
-                                final p = filtered[idx];
-                                return ListTile(
-                                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                  title: Text(
-                                    p.name,
-                                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                                  ),
-                                  subtitle: Text(
-                                    '${p.brand} • ${p.model}',
-                                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                  ),
-                                  trailing: const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
-                                  onTap: () => Navigator.pop(ctx, p),
-                                );
-                              },
-                            ),
-                    ),
-                    const SizedBox(height: 10),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.pop(ctx, null),
-                        style: OutlinedButton.styleFrom(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: const Text('Cancel & Skip Serial'),
-                      ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
-            );
-          },
+            ),
+          ),
         );
       },
     );
@@ -779,222 +799,233 @@ class _InwardScreenState extends State<InwardScreen> {
 
     final totalUnits = _scannedItems.length;
 
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showGeneralDialog<bool>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(ctx).viewInsets.bottom,
-        ),
-        child: SafeArea(
+      barrierDismissible: true,
+      barrierLabel: 'Confirm Batch',
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      transitionDuration: const Duration(milliseconds: 280),
+      transitionBuilder: (ctx, anim, secondaryAnim, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0.0, -1.0), // Pops out / drops down from the TOP (upside)
+            end: Offset.zero,
+          ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+          child: FadeTransition(
+            opacity: anim,
+            child: child,
+          ),
+        );
+      },
+      pageBuilder: (ctx, anim1, anim2) => SafeArea(
+        child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Center(
-                  child: Container(
-                    width: 38,
-                    height: 4,
-                    margin: const EdgeInsets.only(bottom: 14),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFCBD5E1),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                Row(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 16,
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            ),
+            child: Material(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              elevation: 16,
+              clipBehavior: Clip.antiAlias,
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(9),
-                      decoration: BoxDecoration(
-                        color: _getInwardTypeBgColor(_inwardType),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Icon(_getInwardTypeIcon(_inwardType), color: _getInwardTypeColor(_inwardType), size: 22),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(9),
+                          decoration: BoxDecoration(
+                            color: _getInwardTypeBgColor(_inwardType),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Icon(_getInwardTypeIcon(_inwardType), color: _getInwardTypeColor(_inwardType), size: 22),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Confirm ${_getInwardTypeShort(_inwardType)} Batch',
+                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                              ),
+                              const SizedBox(height: 1),
+                              Text(
+                                'Review the batch summary ($totalUnits units) before saving',
+                                style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                              ),
+                            ],
+                          ),
+                        ),
+                        InkWell(
+                          borderRadius: BorderRadius.circular(20),
+                          onTap: () => Navigator.pop(ctx, false),
+                          child: const Padding(
+                            padding: EdgeInsets.all(4),
+                            child: Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
+                    const SizedBox(height: 16),
+                    // Models breakdown list
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFE2E8F0)),
+                      ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            'Confirm ${_getInwardTypeShort(_inwardType)} Batch',
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                          const Text(
+                            'MODELS IN THIS BATCH',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5),
                           ),
-                          const SizedBox(height: 1),
-                          Text(
-                            'Review the batch summary ($totalUnits units) before saving',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                          const SizedBox(height: 8),
+                          ...byProduct.entries.map((entry) {
+                            final p = entry.value.first.product;
+                            final count = entry.value.length;
+                            final isDual = p.hasDualSerial;
+                            final indoor = isDual ? entry.value.where((it) => it.unitType == 'indoor').length : 0;
+                            final outdoor = isDual ? entry.value.where((it) => it.unitType == 'outdoor').length : 0;
+
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          p.name,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                        ),
+                                        Text(
+                                          '${p.brand} • ${p.model}',
+                                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                        ),
+                                        if (isDual)
+                                          Text(
+                                            '($indoor Indoor, $outdoor Outdoor)',
+                                            style: const TextStyle(fontSize: 10, color: Color(0xFF7C3AED), fontWeight: FontWeight.w600),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: _getInwardTypeBgColor(_inwardType),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      isDual ? '${count ~/ 2} Sets' : '$count Units',
+                                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _getInwardTypeColor(_inwardType)),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }),
+                          const Divider(height: 16),
+                          // Stock effect note
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: _getInwardTypeBgColor(_inwardType).withOpacity(0.6),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              _inwardType == 'damaged'
+                                  ? '⚠️ Stored as Damaged stock. Does NOT increase saleable inventory.'
+                                  : _inwardType == 'return'
+                                      ? '✓ Restores units to godown stock & frees serials for future dispatch.'
+                                      : '✓ Adds new factory units directly into saleable godown stock.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: _getInwardTypeColor(_inwardType),
+                              ),
+                            ),
                           ),
                         ],
                       ),
                     ),
-                    InkWell(
-                      borderRadius: BorderRadius.circular(20),
-                      onTap: () => Navigator.pop(ctx, false),
-                      child: const Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                    const SizedBox(height: 14),
+                    TextField(
+                      controller: _remarksController,
+                      decoration: InputDecoration(
+                        labelText: 'Batch Remarks (Optional)',
+                        hintText: _inwardType == 'damaged'
+                            ? 'e.g. Reason for damage...'
+                            : _inwardType == 'return'
+                                ? 'e.g. Return reason or shop name...'
+                                : 'e.g. Supplier invoice reference...',
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFFCBD5E1))),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _getInwardTypeColor(_inwardType), width: 1.5)),
                       ),
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 1,
+                          child: SizedBox(
+                            height: 46,
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFF475569),
+                                side: const BorderSide(color: Color(0xFFCBD5E1)),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          flex: 2,
+                          child: SizedBox(
+                            height: 46,
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _getInwardTypeColor(_inwardType),
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                elevation: 0,
+                              ),
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: Text(
+                                _inwardType == 'damaged'
+                                    ? 'Confirm Damaged Batch'
+                                    : _inwardType == 'return'
+                                        ? 'Confirm Return Batch'
+                                        : 'Confirm & Save Inward',
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                // Models breakdown list
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'MODELS IN THIS BATCH',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B), letterSpacing: 0.5),
-                      ),
-                      const SizedBox(height: 8),
-                      ...byProduct.entries.map((entry) {
-                        final p = entry.value.first.product;
-                        final count = entry.value.length;
-                        final isDual = p.hasDualSerial;
-                        final indoor = isDual ? entry.value.where((it) => it.unitType == 'indoor').length : 0;
-                        final outdoor = isDual ? entry.value.where((it) => it.unitType == 'outdoor').length : 0;
-
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      p.name,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                                    ),
-                                    Text(
-                                      '${p.brand} • ${p.model}',
-                                      style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                    ),
-                                    if (isDual)
-                                      Text(
-                                        '($indoor Indoor, $outdoor Outdoor)',
-                                        style: const TextStyle(fontSize: 10, color: Color(0xFF7C3AED), fontWeight: FontWeight.w600),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: _getInwardTypeBgColor(_inwardType),
-                                  borderRadius: BorderRadius.circular(6),
-                                ),
-                                child: Text(
-                                  isDual ? '${count ~/ 2} Sets' : '$count Units',
-                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _getInwardTypeColor(_inwardType)),
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }),
-                      const Divider(height: 16),
-                      // Stock effect note
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: _getInwardTypeBgColor(_inwardType).withOpacity(0.6),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          _inwardType == 'damaged'
-                              ? '⚠️ Stored as Damaged stock. Does NOT increase saleable inventory.'
-                              : _inwardType == 'return'
-                                  ? '✓ Restores units to godown stock & frees serials for future dispatch.'
-                                  : '✓ Adds new factory units directly into saleable godown stock.',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: _getInwardTypeColor(_inwardType),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                TextField(
-                  controller: _remarksController,
-                  decoration: InputDecoration(
-                    labelText: 'Batch Remarks (Optional)',
-                    hintText: _inwardType == 'damaged'
-                        ? 'e.g. Reason for damage...'
-                        : _inwardType == 'return'
-                            ? 'e.g. Return reason or shop name...'
-                            : 'e.g. Supplier invoice reference...',
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFFCBD5E1))),
-                    focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _getInwardTypeColor(_inwardType), width: 1.5)),
-                  ),
-                  style: const TextStyle(fontSize: 13),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 1,
-                      child: SizedBox(
-                        height: 46,
-                        child: OutlinedButton(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFF475569),
-                            side: const BorderSide(color: Color(0xFFCBD5E1)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: SizedBox(
-                        height: 46,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _getInwardTypeColor(_inwardType),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            elevation: 0,
-                          ),
-                          onPressed: () => Navigator.pop(ctx, true),
-                          child: Text(
-                            _inwardType == 'damaged'
-                                ? 'Confirm Damaged Batch'
-                                : _inwardType == 'return'
-                                    ? 'Confirm Return Batch'
-                                    : 'Confirm & Save Inward',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+              ),
             ),
           ),
         ),
@@ -1190,8 +1221,11 @@ class _InwardScreenState extends State<InwardScreen> {
         await _queue.enqueue(batch);
         _inwardRequestId = null;
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Inward batch saved to Offline Queue!')),
+        TopToast.show(
+          context,
+          message: '✓ Inward batch saved to Offline Queue!',
+          backgroundColor: const Color(0xFF2563EB),
+          icon: Icons.cloud_done_rounded,
         );
         Navigator.pop(context);
       }
