@@ -115,7 +115,14 @@ export const SerialsPage: React.FC = () => {
     .filter((s) => {
       if (flowFilter === "inward") return s.flow_type === "inward";
       if (flowFilter === "outward") return s.flow_type === "outward";
-      if (flowFilter === "damaged") return ["damaged", "under_repair", "lost"].includes(s.status);
+      if (flowFilter === "damaged") {
+        return (
+          s.is_damaged ||
+          s.is_dispatched_damaged ||
+          ["damaged", "under_repair", "lost"].includes(s.status) ||
+          Boolean(s.flag_reason?.toLowerCase().includes("damage"))
+        );
+      }
       return true;
     })
     .filter((s) => {
@@ -138,7 +145,13 @@ export const SerialsPage: React.FC = () => {
 
   const inwardCount = serials.filter((s) => s.flow_type === "inward").length;
   const outwardCount = serials.filter((s) => s.flow_type === "outward").length;
-  const attentionCount = serials.filter((s) => ["damaged", "under_repair", "lost"].includes(s.status)).length;
+  const attentionCount = serials.filter(
+    (s) =>
+      s.is_damaged ||
+      s.is_dispatched_damaged ||
+      ["damaged", "under_repair", "lost"].includes(s.status) ||
+      Boolean(s.flag_reason?.toLowerCase().includes("damage"))
+  ).length;
 
   const getFilterLabel = () => {
     switch (flowFilter) {
@@ -329,6 +342,21 @@ export const SerialsPage: React.FC = () => {
                           </span>
                         )}
                       </div>
+
+                      {/* Small Colored Damaged Indicator Under Serial Number */}
+                      {(item.is_damaged || item.is_dispatched_damaged || item.status === "damaged" || item.flag_reason?.toLowerCase().includes("damage")) && (
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                            Damaged
+                          </span>
+                          {item.flow_type === "outward" && (
+                            <span className="text-[10px] font-semibold text-rose-600">
+                              (Dispatched Damaged)
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </td>
 
                     {/* Flow Type Badge */}
@@ -462,6 +490,12 @@ export const SerialsPage: React.FC = () => {
                 <span className="font-bold text-slate-900 mt-0.5 block capitalize">
                   {selectedSerial.status_label}
                 </span>
+                {(selectedSerial.is_damaged || selectedSerial.is_dispatched_damaged || selectedSerial.status === "damaged" || selectedSerial.flag_reason?.toLowerCase().includes("damage")) && (
+                  <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                    Damaged {selectedSerial.status === "dispatched" || selectedSerial.is_dispatched_damaged ? "(Dispatched Damaged)" : ""}
+                  </span>
+                )}
               </div>
               {selectedSerial.unit_type && (
                 <div>

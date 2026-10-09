@@ -144,9 +144,14 @@ export function generateSerialListPdf(options: {
   const tableStartY = searchQuery && searchQuery.trim() ? startY + cardHeight + 6 : startY + cardHeight + 3;
 
   const tableRows = items.map((item, idx) => {
-    const serialDisplay = item.unit_type
+    const isDamaged = item.is_damaged || item.is_dispatched_damaged || item.status === "damaged" || Boolean(item.flag_reason?.toLowerCase().includes("damage"));
+    const damagedSuffix = isDamaged 
+      ? (item.flow_type === "outward" ? "\n[DAMAGED - DISPATCHED]" : "\n[DAMAGED]")
+      : "";
+
+    const serialDisplay = (item.unit_type
       ? `${item.serial_number} (${item.unit_type.charAt(0).toUpperCase() + item.unit_type.slice(1).toLowerCase()})`
-      : item.serial_number;
+      : item.serial_number) + damagedSuffix;
 
     const dateStr = item.transaction_date
       ? new Date(item.transaction_date).toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })

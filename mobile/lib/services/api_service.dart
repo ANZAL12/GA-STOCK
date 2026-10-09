@@ -248,15 +248,19 @@ class ApiService {
 
   // --- INWARD API ---
   Future<Map<String, dynamic>> validateInwardSerial(
-    String productId,
+    String? productId,
     String serialNumber, {
     String inwardType = 'stock_in',
   }) async {
-    final res = await _authenticatedGet(
-      Uri.parse(
-        '$_baseUrl/inward/validate-serial?product_id=$productId&serial_number=${Uri.encodeComponent(serialNumber.trim())}&inward_type=$inwardType',
-      ),
-    );
+    final queryParams = <String, String>{
+      'serial_number': serialNumber.trim(),
+      'inward_type': inwardType,
+    };
+    if (productId != null && productId.isNotEmpty) {
+      queryParams['product_id'] = productId;
+    }
+    final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
+    final res = await _authenticatedGet(uri);
 
     if (res.statusCode == 200) {
       return jsonDecode(res.body);
@@ -276,6 +280,7 @@ class ApiService {
     String inwardType = 'stock_in',
     Map<String, String>? unitTypes,
     String? remarks,
+    String? clientRequestId,
   }) async {
     final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/inward/batch'),
@@ -286,6 +291,35 @@ class ApiService {
         'serial_numbers': serialNumbers,
         'unit_types': unitTypes,
         'remarks': remarks,
+        if (clientRequestId != null) 'client_request_id': clientRequestId,
+      }),
+    );
+
+    if (res.statusCode == 200 || res.statusCode == 201) {
+      return jsonDecode(res.body);
+    } else {
+      String msg = 'Inward submission failed';
+      try {
+        final err = jsonDecode(res.body);
+        msg = err['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> submitInwardMultiBatch({
+    required List<Map<String, dynamic>> items,
+    String? invoiceReference,
+    String? remarks,
+    String? clientRequestId,
+  }) async {
+    final res = await _authenticatedPost(
+      Uri.parse('$_baseUrl/inward/multi-batch'),
+      body: jsonEncode({
+        'items': items,
+        'invoice_reference': invoiceReference,
+        'remarks': remarks,
+        if (clientRequestId != null) 'client_request_id': clientRequestId,
       }),
     );
 
@@ -367,6 +401,38 @@ class ApiService {
         'bill_number': billNumber?.trim().isEmpty == true ? null : billNumber?.trim(),
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks,
+      }),
+    );
+
+    if (res.statusCode == 200 || res.statusCode == 201) {
+      return jsonDecode(res.body);
+    } else {
+      String msg = 'Outward dispatch failed';
+      try {
+        final err = jsonDecode(res.body);
+        msg = err['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> submitOutwardMultiBatch({
+    required String shopId,
+    required List<Map<String, dynamic>> items,
+    String? billNumber,
+    String? deliveryReference,
+    String? remarks,
+    String? clientRequestId,
+  }) async {
+    final res = await _authenticatedPost(
+      Uri.parse('$_baseUrl/outward/multi-batch'),
+      body: jsonEncode({
+        'shop_id': shopId,
+        'items': items,
+        'bill_number': billNumber?.trim().isEmpty == true ? null : billNumber?.trim(),
+        'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
+        'remarks': remarks?.trim().isEmpty == true ? null : remarks?.trim(),
+        if (clientRequestId != null) 'client_request_id': clientRequestId,
       }),
     );
 

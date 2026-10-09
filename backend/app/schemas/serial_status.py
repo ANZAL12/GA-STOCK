@@ -45,6 +45,9 @@ class SerialDetailResponse(BaseModel):
     last_shop_city: Optional[str] = None
     status_label: str  # "Available" | "Dispatched" | "Damaged" | "Recorded only" | etc.
     history: list[SerialHistoryItem] = []
+    is_damaged: bool = False
+    is_dispatched_damaged: bool = False
+    flag_reason: Optional[str] = None
 
 
 class SerialListItem(BaseModel):
@@ -68,6 +71,9 @@ class SerialListItem(BaseModel):
     delivery_reference: Optional[str] = None
     is_matched: bool = True
     unit_type: Optional[str] = None
+    is_damaged: bool = False
+    is_dispatched_damaged: bool = False
+    flag_reason: Optional[str] = None
 
 
 class SerialListResponse(BaseModel):

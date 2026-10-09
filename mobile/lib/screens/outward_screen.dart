@@ -44,6 +44,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   String _activeFilterModelId = 'ALL';
   String _outwardUnitType = 'indoor';
   bool _submitting = false;
+  String? _dispatchRequestId;
 
   @override
   void initState() {
@@ -1438,47 +1439,67 @@ class _OutwardScreenState extends State<OutwardScreen> {
       byProduct.putIfAbsent(pid, () => []).add(item);
     }
 
-    int totalMatched = 0;
-    int totalRecorded = 0;
-    int totalUnits = 0;
-    final List<String> modelSummaries = [];
+    final List<Map<String, dynamic>> batchItems = [];
+    for (final entry in byProduct.entries) {
+      final prodId = entry.key;
+      final items = entry.value;
+      final serialList = items.map((e) => e.serialNumber).toList();
+
+      final Map<String, String> unitTypesMap = {};
+      for (final item in items) {
+        if (item.unitType != null) {
+          unitTypesMap[item.serialNumber] = item.unitType!;
+        }
+      }
+
+      batchItems.add({
+        'product_id': prodId,
+        'serials': serialList.map((s) => {
+          'serial_number': s,
+          'confirmed_warning': true,
+          if (unitTypesMap.containsKey(s)) 'unit_type': unitTypesMap[s],
+        }).toList(),
+        'serial_numbers': serialList,
+        if (unitTypesMap.isNotEmpty) 'unit_types': unitTypesMap,
+      });
+    }
+
+    // Preserve client request ID across retries of this dispatch attempt
+    _dispatchRequestId ??= const Uuid().v4();
 
     try {
-      for (final entry in byProduct.entries) {
-        final prodId = entry.key;
-        final items = entry.value;
-        final serialList = items.map((e) => e.serialNumber).toList();
-        final prodName = items.first.product?.name ?? _selectedProduct?.name ?? 'Appliance';
+      final result = await _api.submitOutwardMultiBatch(
+        shopId: _selectedShop!.id,
+        items: batchItems,
+        billNumber: billNumber.isEmpty ? null : billNumber,
+        deliveryReference: deliveryRef.isEmpty ? null : deliveryRef,
+        remarks: remarks.isEmpty ? null : remarks,
+        clientRequestId: _dispatchRequestId,
+      );
 
-        final Map<String, String> unitTypesMap = {};
-        for (final item in items) {
-          if (item.unitType != null) {
-            unitTypesMap[item.serialNumber] = item.unitType!;
-          }
-        }
-
-        final result = await _api.submitOutwardBatch(
-          shopId: _selectedShop!.id,
-          productId: prodId,
-          serialNumbers: serialList,
-          unitTypes: unitTypesMap.isNotEmpty ? unitTypesMap : null,
-          billNumber: billNumber.isEmpty ? null : billNumber,
-          deliveryReference: deliveryRef.isEmpty ? null : deliveryRef,
-          remarks: remarks.isEmpty ? null : remarks,
-        );
-
-        final mCount = (result['matched_count'] as num?)?.toInt() ?? 0;
-        final uCount = (result['unmatched_count'] as num?)?.toInt() ?? 0;
-        final qCount = (result['quantity'] as num?)?.toInt() ?? serialList.length;
-
-        totalMatched += mCount;
-        totalRecorded += uCount;
-        totalUnits += qCount;
-        modelSummaries.add('$prodName: $qCount unit(s)');
-      }
+      // Successfully processed: reset request ID
+      _dispatchRequestId = null;
 
       if (!mounted) return;
       setState(() => _submitting = false);
+
+      final totalUnits = (result['total_units'] as num?)?.toInt() ?? _scannedItems.length;
+      final totalMatched = (result['total_matched'] as num?)?.toInt() ?? 0;
+      final totalRecorded = (result['total_unmatched'] as num?)?.toInt() ?? 0;
+      final List<dynamic> batches = (result['batches'] as List<dynamic>?) ?? [];
+
+      final List<String> modelSummaries = [];
+      for (final b in batches) {
+        final mName = b['product_name'] ?? b['model'] ?? 'Appliance';
+        final q = b['quantity'] ?? 0;
+        modelSummaries.add('$mName: $q unit(s)');
+      }
+      if (modelSummaries.isEmpty) {
+        for (final entry in byProduct.entries) {
+          final prodName = entry.value.first.product?.name ?? 'Appliance';
+          modelSummaries.add('$prodName: ${entry.value.length} unit(s)');
+        }
+      }
 
       await showDialog(
         context: context,
@@ -1533,62 +1554,190 @@ class _OutwardScreenState extends State<OutwardScreen> {
       if (!mounted) return;
       setState(() => _submitting = false);
 
-      final queueOffline = await showDialog<bool>(
+      final errorStr = e.toString().replaceAll("Exception: ", "");
+
+      // Check if a specific serial was identified as already dispatched
+      final serialMatch = RegExp(r"Serial '([^']+)'").firstMatch(errorStr);
+      final conflictedSerial = serialMatch?.group(1);
+
+      if (conflictedSerial != null && _scannedItems.any((i) => i.serialNumber == conflictedSerial)) {
+        final removeAndRetry = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706)),
+                SizedBox(width: 8),
+                Text('Serial Already Dispatched'),
+              ],
+            ),
+            content: Text(
+              'Serial \'$conflictedSerial\' has already been dispatched.\n\nWould you like to remove this serial from your dispatch list and retry sending the remaining items?',
+              style: const TextStyle(fontSize: 13, height: 1.4),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Keep & Cancel'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD97706)),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text('Remove $conflictedSerial & Retry', style: const TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
+
+        if (removeAndRetry == true) {
+          setState(() {
+            _scannedItems.removeWhere((i) => i.serialNumber == conflictedSerial);
+          });
+          _submitOutwardBatch();
+          return;
+        }
+      }
+
+      if (!mounted) return;
+      final action = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Network Problem'),
+          title: const Text('Dispatch Problem'),
           content: Text(
-            'Dispatch submission failed: ${e.toString().replaceAll("Exception: ", "")}\n\nQueue this dispatch in local memory to sync when connection is restored?',
-            style: const TextStyle(fontSize: 13),
+            'Dispatch submission failed:\n$errorStr\n\nYou can retry the entire batch, queue it offline, or cancel to review.',
+            style: const TextStyle(fontSize: 13, height: 1.4),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(ctx, 'retry'),
+              child: const Text('Retry Now'),
+            ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB)),
-              onPressed: () => Navigator.pop(ctx, true),
+              onPressed: () => Navigator.pop(ctx, 'queue'),
               child: const Text('Queue Offline', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
       );
 
-      if (queueOffline == true) {
-        for (final entry in byProduct.entries) {
-          final prodId = entry.key;
-          final items = entry.value;
-          final serialList = items.map((e) => e.serialNumber).toList();
-          final Map<String, String> unitTypesMap = {};
-          for (final item in items) {
-            if (item.unitType != null) {
-              unitTypesMap[item.serialNumber] = item.unitType!;
-            }
-          }
-          final prodName = items.first.product?.name ?? _selectedProduct?.name ?? 'Appliance';
+      if (action == 'retry') {
+        _submitOutwardBatch();
+        return;
+      }
 
-          final batch = QueuedBatch(
-            id: const Uuid().v4(),
-            type: QueueType.outward,
-            createdAt: DateTime.now(),
-            payload: {
-              'shop_id': _selectedShop!.id,
-              'product_id': prodId,
-              'serial_numbers': serialList,
-              if (unitTypesMap.isNotEmpty) 'unit_types': unitTypesMap,
-              'bill_number': billNumber.isEmpty ? null : billNumber,
-              'delivery_reference': deliveryRef.isEmpty ? null : deliveryRef,
-              'remarks': remarks.isEmpty ? null : remarks,
-            },
-            description: 'Outward: ${_selectedShop!.name} - $prodName (${serialList.length} units)',
-          );
-          await _queue.enqueue(batch);
-        }
+      if (action == 'queue') {
+        final batch = QueuedBatch(
+          id: const Uuid().v4(),
+          type: QueueType.outward,
+          createdAt: DateTime.now(),
+          payload: {
+            'shop_id': _selectedShop!.id,
+            'items': batchItems,
+            'bill_number': billNumber.isEmpty ? null : billNumber,
+            'delivery_reference': deliveryRef.isEmpty ? null : deliveryRef,
+            'remarks': remarks.isEmpty ? null : remarks,
+          },
+          description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units, ${byProduct.length} models)',
+        );
+        await _queue.enqueue(batch);
+        _dispatchRequestId = null;
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('All model batches saved to Offline Queue!')),
+          const SnackBar(content: Text('Dispatch saved to Offline Queue!')),
         );
         Navigator.pop(context);
       }
+    }
+  }
+
+  Future<void> _handleRestartPress() async {
+    final int count = _scannedItems.length;
+
+    final bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.restart_alt_rounded, color: Color(0xFFD97706), size: 24),
+            SizedBox(width: 8),
+            Text(
+              'Restart Dispatch?',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              count > 0
+                  ? 'You have scanned $count serial number${count == 1 ? "" : "s"}. Restarting will clear all scanned items and return to shop selection.'
+                  : 'Are you sure you want to restart? This will reset your current selection and return to shop selection.',
+              style: const TextStyle(fontSize: 13, color: Color(0xFF475569), height: 1.4),
+            ),
+            if (count > 0) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFFBEB),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFDE68A)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, size: 16, color: Color(0xFFD97706)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '$count scanned item${count == 1 ? "" : "s"} will be discarded.',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFFB45309)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.w600)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Restart', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      HapticFeedback.mediumImpact();
+      setState(() {
+        _currentStep = 1;
+        _selectedProduct = null;
+        _scannedItems.clear();
+        _billNumberController.clear();
+        _deliveryRefController.clear();
+        _remarksController.clear();
+      });
     }
   }
 
@@ -1604,16 +1753,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         actions: [
           if (_currentStep > 1)
             TextButton(
-              onPressed: () {
-                setState(() {
-                  _currentStep = 1;
-                  _selectedProduct = null;
-                  _scannedItems.clear();
-                  _billNumberController.clear();
-                  _deliveryRefController.clear();
-                  _remarksController.clear();
-                });
-              },
+              onPressed: _handleRestartPress,
               child: const Text('Restart', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
             ),
         ],
@@ -2287,30 +2427,34 @@ class _OutwardScreenState extends State<OutwardScreen> {
           ),
         ),
 
-        // Continuous Scan Button (Clean, compact, no wasted margins or subtitles)
+        // Continuous Scan Button (Clean, wraps so full model name is always visible)
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          child: SizedBox(
-            width: double.infinity,
-            height: 42,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFD97706),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 44),
+            child: SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFD97706),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                ),
+                icon: const Icon(Icons.qr_code_scanner, size: 20),
+                label: Flexible(
+                  child: Text(
+                    _selectedProduct?.hasDualSerial == true
+                        ? 'Continuous Scan (${_selectedProduct?.model} - ${_outwardUnitType == "indoor" ? "Indoor" : "Outdoor"})'
+                        : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, height: 1.25),
+                    textAlign: TextAlign.center,
+                    softWrap: true,
+                  ),
+                ),
+                onPressed: _openContinuousScanner,
               ),
-              icon: const Icon(Icons.qr_code_scanner, size: 20),
-              label: Text(
-                _selectedProduct?.hasDualSerial == true
-                    ? 'Continuous Scan (${_selectedProduct?.model} - ${_outwardUnitType == "indoor" ? "Indoor" : "Outdoor"})'
-                    : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              onPressed: _openContinuousScanner,
             ),
           ),
         ),

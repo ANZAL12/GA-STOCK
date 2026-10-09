@@ -88,27 +88,49 @@ class OfflineQueueService {
     for (final item in list) {
       try {
         if (item.type == QueueType.inward) {
-          await api.submitInwardBatch(
-            productId: item.payload['product_id'],
-            serialNumbers: List<String>.from(item.payload['serial_numbers']),
-            unitTypes: item.payload['unit_types'] != null
-                ? Map<String, String>.from(item.payload['unit_types'])
-                : null,
-            inwardType: item.payload['inward_type'] ?? 'stock_in',
-            remarks: item.payload['remarks'],
-          );
+          if (item.payload.containsKey('items') && item.payload['items'] != null) {
+            await api.submitInwardMultiBatch(
+              items: List<Map<String, dynamic>>.from(
+                (item.payload['items'] as List).map((e) => Map<String, dynamic>.from(e as Map)),
+              ),
+              invoiceReference: item.payload['invoice_reference'],
+              remarks: item.payload['remarks'],
+            );
+          } else {
+            await api.submitInwardBatch(
+              productId: item.payload['product_id'],
+              serialNumbers: List<String>.from(item.payload['serial_numbers']),
+              unitTypes: item.payload['unit_types'] != null
+                  ? Map<String, String>.from(item.payload['unit_types'])
+                  : null,
+              inwardType: item.payload['inward_type'] ?? 'stock_in',
+              remarks: item.payload['remarks'],
+            );
+          }
         } else {
-          await api.submitOutwardBatch(
-            shopId: item.payload['shop_id'],
-            productId: item.payload['product_id'],
-            serialNumbers: List<String>.from(item.payload['serial_numbers']),
-            unitTypes: item.payload['unit_types'] != null
-                ? Map<String, String>.from(item.payload['unit_types'])
-                : null,
-            billNumber: item.payload['bill_number'],
-            deliveryReference: item.payload['delivery_reference'],
-            remarks: item.payload['remarks'],
-          );
+          if (item.payload.containsKey('items') && item.payload['items'] != null) {
+            await api.submitOutwardMultiBatch(
+              shopId: item.payload['shop_id'],
+              items: List<Map<String, dynamic>>.from(
+                (item.payload['items'] as List).map((e) => Map<String, dynamic>.from(e as Map)),
+              ),
+              billNumber: item.payload['bill_number'],
+              deliveryReference: item.payload['delivery_reference'],
+              remarks: item.payload['remarks'],
+            );
+          } else {
+            await api.submitOutwardBatch(
+              shopId: item.payload['shop_id'],
+              productId: item.payload['product_id'],
+              serialNumbers: List<String>.from(item.payload['serial_numbers']),
+              unitTypes: item.payload['unit_types'] != null
+                  ? Map<String, String>.from(item.payload['unit_types'])
+                  : null,
+              billNumber: item.payload['bill_number'],
+              deliveryReference: item.payload['delivery_reference'],
+              remarks: item.payload['remarks'],
+            );
+          }
         }
         await remove(item.id);
         synced++;

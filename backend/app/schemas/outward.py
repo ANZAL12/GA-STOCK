@@ -78,6 +78,37 @@ class OutwardBatchCreate(BaseModel):
         return data
 
 
+class OutwardProductBatchItem(BaseModel):
+    product_id: uuid.UUID
+    serials: list[OutwardSerialInput] = Field(default_factory=list, description="List of scanned serials with confirmation flags")
+    unit_types: Optional[dict[str, str]] = Field(default=None, description="Optional mapping of serial to unit_type")
+
+    @model_validator(mode="before")
+    @classmethod
+    def handle_serial_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "serials" not in data or not data["serials"]:
+                raw_list = data.get("serial_numbers") or []
+                converted = []
+                for item in raw_list:
+                    if isinstance(item, str):
+                        converted.append({"serial_number": item, "confirmed_warning": True})
+                    elif isinstance(item, dict):
+                        converted.append(item)
+                data["serials"] = converted
+        return data
+
+
+class OutwardMultiBatchCreate(BaseModel):
+    shop_id: uuid.UUID
+    bill_number: Optional[str] = Field(None, max_length=100)
+    delivery_reference: Optional[str] = Field(None, max_length=100)
+    transaction_date: date = Field(default_factory=date.today)
+    remarks: Optional[str] = None
+    items: list[OutwardProductBatchItem] = Field(..., min_length=1)
+    client_request_id: Optional[str] = Field(None, max_length=100)
+
+
 class OutwardLineResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -101,7 +132,7 @@ class OutwardBatchResponse(BaseModel):
     model: str
     shop_id: uuid.UUID
     shop_name: str
-    shop_city: str
+    shop_city: Optional[str] = None
     bill_number: Optional[str] = None
     delivery_reference: Optional[str] = None
     transaction_date: date
@@ -115,6 +146,16 @@ class OutwardBatchResponse(BaseModel):
     remarks: Optional[str] = None
     created_at: datetime
     lines: list[OutwardLineResponse] = []
+
+
+class OutwardMultiBatchResponse(BaseModel):
+    batches: list[OutwardBatchResponse] = []
+    total_units: int
+    total_matched: int
+    total_unmatched: int
+    total_flagged: int
+    bill_number: Optional[str] = None
+    delivery_reference: Optional[str] = None
 
 
 class BillBatchSummary(BaseModel):
@@ -134,7 +175,7 @@ class BillDetailResponse(BaseModel):
     bill_number: str
     shop_id: uuid.UUID
     shop_name: str
-    shop_city: str
+    shop_city: Optional[str] = None
     transaction_date: date
     created_at: datetime
     dispatched_by_name: str
@@ -149,7 +190,7 @@ class BillListItem(BaseModel):
     bill_number: str
     shop_id: uuid.UUID
     shop_name: str
-    shop_city: str
+    shop_city: Optional[str] = None
     transaction_date: date
     created_at: datetime
     dispatched_by_name: str

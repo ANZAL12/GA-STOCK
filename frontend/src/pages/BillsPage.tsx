@@ -420,19 +420,18 @@ export const BillsPage: React.FC = () => {
 
       {/* 5. Detailed Modal when clicked */}
       {selectedBill && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6">
           <div
-            className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs transition-opacity"
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs transition-opacity"
             onClick={() => setSelectedBill(null)}
           />
 
-          <div className="flex min-h-full items-center justify-center p-3 sm:p-4">
-            <div
-              className="relative w-full max-w-4xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden transform transition-all my-6"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Modal Header */}
-              <div className="bg-[#1E1B4B] text-white px-6 py-5 flex items-start justify-between">
+          <div
+            className="relative w-full max-w-4xl max-h-[92vh] flex flex-col bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="shrink-0 bg-[#1E1B4B] text-white px-5 sm:px-6 py-4 flex items-start justify-between">
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="px-2.5 py-0.5 rounded-md bg-white/20 text-white font-mono font-bold text-xs">
@@ -472,7 +471,7 @@ export const BillsPage: React.FC = () => {
               </div>
 
               {/* Modal Body */}
-              <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6 min-h-0">
                 {/* 1. Summary Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl">
@@ -618,7 +617,7 @@ export const BillsPage: React.FC = () => {
               </div>
 
               {/* Modal Footer */}
-              <div className="bg-slate-50 border-t border-slate-200 px-6 py-3.5 flex items-center justify-between">
+              <div className="shrink-0 bg-slate-50 border-t border-slate-200 px-5 sm:px-6 py-3.5 flex items-center justify-between">
                 <span className="text-xs text-slate-500">
                   Ready to print or share delivery challan with dealer.
                 </span>
@@ -636,7 +635,6 @@ export const BillsPage: React.FC = () => {
                     <FileDown size={14} />
                     Download PDF Challan
                   </button>
-                </div>
               </div>
             </div>
           </div>

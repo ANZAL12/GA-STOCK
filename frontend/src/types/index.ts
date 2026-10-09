@@ -186,6 +186,9 @@ export interface SerialDetail {
   last_shop_city?: string | null;
   status_label: string;
   history: SerialHistoryItem[];
+  is_damaged?: boolean;
+  is_dispatched_damaged?: boolean;
+  flag_reason?: string | null;
 }
 
 export interface SerialListItem {
@@ -207,6 +210,9 @@ export interface SerialListItem {
   delivery_reference?: string | null;
   is_matched: boolean;
   unit_type?: string | null;
+  is_damaged?: boolean;
+  is_dispatched_damaged?: boolean;
+  flag_reason?: string | null;
 }
 
 export interface SerialListResponse {

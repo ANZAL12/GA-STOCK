@@ -182,11 +182,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 // Card 1: Inward Stock Scan
                 _buildActionCard(
                   title: 'Inward Stock Scan',
-                  subtitle: 'Receive appliances from factory, scan serial numbers, and register onto godown shelves.',
+                  subtitle: 'Receive company shipments, customer returns, and damaged stock into godown inventory.',
                   icon: Icons.input_rounded,
                   iconColor: const Color(0xFF059669),
                   iconBg: const Color(0xFFECFDF5),
-                  badgeText: 'Step 1: Select Model',
+                  badgeText: 'Step 1: Choose Mode',
                   onTap: () async {
                     await Navigator.push(
                       context,

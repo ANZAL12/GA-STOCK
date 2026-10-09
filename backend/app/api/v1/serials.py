@@ -52,6 +52,8 @@ async def list_serials(
             OutwardBatch.delivery_reference.label("outward_ref"),
             OutwardLine.created_at.label("outward_created_at"),
             OutwardLine.unit_type.label("outward_unit_type"),
+            OutwardLine.is_flagged_for_review.label("outward_is_flagged"),
+            OutwardLine.flag_reason.label("outward_flag_reason"),
             Shop.name.label("outward_shop_name"),
             Shop.city.label("outward_shop_city"),
         )
@@ -61,6 +63,37 @@ async def list_serials(
         .order_by(OutwardLine.serial_number_id, OutwardLine.created_at.desc())
         .subquery()
     )
+
+    # 1b. Latest inward batch subquery per serial (prevents Cartesian product when inwarded/returned multiple times)
+    inward_subq = (
+        select(
+            InwardLine.serial_number_id,
+            InwardBatch.transaction_date.label("inward_date"),
+            InwardBatch.invoice_reference.label("inward_ref"),
+            InwardBatch.inward_type.label("inward_type"),
+            InwardLine.created_at.label("inward_created_at"),
+        )
+        .join(InwardBatch, InwardLine.batch_id == InwardBatch.id)
+        .distinct(InwardLine.serial_number_id)
+        .order_by(InwardLine.serial_number_id, InwardLine.created_at.desc())
+        .subquery()
+    )
+
+    # 1c. Damaged history lookup (serials with damaged history/remarks)
+    damaged_hist_query = (
+        select(SerialHistory.serial_number_id, func.lower(SerialHistory.serial_text))
+        .where(
+            or_(
+                SerialHistory.from_status == SerialStatus.damaged,
+                SerialHistory.to_status == SerialStatus.damaged,
+                func.lower(SerialHistory.remarks).contains("damage"),
+            )
+        )
+        .distinct()
+    )
+    damaged_hist_rows = (await db.execute(damaged_hist_query)).all()
+    damaged_sn_ids = {row[0] for row in damaged_hist_rows if row[0] is not None}
+    damaged_sn_texts = {row[1] for row in damaged_hist_rows if row[1]}
 
     # 2. Tracked serial numbers query
     tracked_query = (
@@ -76,21 +109,23 @@ async def list_serials(
             Category.name.label("cat_name"),
             Shop.name.label("shop_name"),
             Shop.city.label("shop_city"),
-            InwardBatch.transaction_date.label("inward_date"),
-            InwardBatch.invoice_reference.label("inward_ref"),
+            inward_subq.c.inward_date,
+            inward_subq.c.inward_ref,
+            inward_subq.c.inward_type,
             outward_subq.c.outward_date,
             outward_subq.c.outward_bill_no,
             outward_subq.c.outward_ref,
             outward_subq.c.outward_created_at,
             outward_subq.c.outward_unit_type,
+            outward_subq.c.outward_is_flagged,
+            outward_subq.c.outward_flag_reason,
             outward_subq.c.outward_shop_name,
             outward_subq.c.outward_shop_city,
         )
         .join(Product, SerialNumber.product_id == Product.id)
         .outerjoin(Category, Product.category_id == Category.id)
         .outerjoin(Shop, SerialNumber.last_shop_id == Shop.id)
-        .outerjoin(InwardLine, InwardLine.serial_number_id == SerialNumber.id)
-        .outerjoin(InwardBatch, InwardLine.batch_id == InwardBatch.id)
+        .outerjoin(inward_subq, inward_subq.c.serial_number_id == SerialNumber.id)
         .outerjoin(outward_subq, outward_subq.c.serial_number_id == SerialNumber.id)
         .order_by(SerialNumber.created_at.desc())
     )
@@ -100,9 +135,23 @@ async def list_serials(
     seen_serials = set()
 
     for r in tracked_rows:
+        if r.sn_text.lower() in seen_serials:
+            continue
         seen_serials.add(r.sn_text.lower())
         is_dispatched = (r.sn_status == SerialStatus.dispatched)
         flow_type = "outward" if is_dispatched else "inward"
+
+        has_dmg_hist = (r.sn_id in damaged_sn_ids) or (r.sn_text.lower() in damaged_sn_texts)
+        is_inward_dmg = (r.inward_type == "damaged")
+        is_currently_dmg = (r.sn_status == SerialStatus.damaged)
+        outward_flag_r = r.outward_flag_reason or ""
+        outward_had_dmg = ("damage" in outward_flag_r.lower()) or (is_dispatched and (has_dmg_hist or is_inward_dmg))
+
+        is_damaged = is_currently_dmg or is_inward_dmg or outward_had_dmg or has_dmg_hist
+        is_dispatched_damaged = is_dispatched and is_damaged
+        flag_r = r.outward_flag_reason if is_dispatched else None
+        if not flag_r and is_dispatched_damaged:
+            flag_r = "Product was damaged prior to or during dispatch"
 
         if is_dispatched:
             s_label = "Dispatched"
@@ -144,6 +193,9 @@ async def list_serials(
                 delivery_reference=deliv_ref,
                 is_matched=True,
                 unit_type=r.sn_unit_type or r.outward_unit_type,
+                is_damaged=is_damaged,
+                is_dispatched_damaged=is_dispatched_damaged,
+                flag_reason=flag_r,
             )
         )
 
@@ -154,6 +206,8 @@ async def list_serials(
             OutwardLine.created_at.label("created_at"),
             OutwardLine.transaction_date.label("outward_date"),
             OutwardLine.unit_type.label("unit_type"),
+            OutwardLine.is_flagged_for_review.label("outward_is_flagged"),
+            OutwardLine.flag_reason.label("outward_flag_reason"),
             Product.name.label("prod_name"),
             Product.brand.label("prod_brand"),
             Product.model.label("prod_model"),
@@ -178,6 +232,10 @@ async def list_serials(
         bill_no = (r.outward_bill_no or "").strip() or None
         deliv_ref = (r.outward_ref or "").strip() or None
         ref = bill_no if bill_no else deliv_ref
+        flag_r = r.outward_flag_reason or ""
+        has_dmg_hist = r.serial_text.lower() in damaged_sn_texts
+        unm_damaged = ("damage" in flag_r.lower()) or has_dmg_hist
+
         items.append(
             SerialListItem(
                 serial_number=r.serial_text,
@@ -198,6 +256,9 @@ async def list_serials(
                 delivery_reference=deliv_ref,
                 is_matched=False,
                 unit_type=r.unit_type,
+                is_damaged=unm_damaged,
+                is_dispatched_damaged=unm_damaged,
+                flag_reason=flag_r if unm_damaged else None,
             )
         )
 
@@ -207,7 +268,7 @@ async def list_serials(
     elif flow == "outward":
         items = [i for i in items if i.flow_type == "outward"]
     elif flow == "damaged":
-        items = [i for i in items if i.status in ("damaged", "under_repair", "lost")]
+        items = [i for i in items if i.is_damaged or i.status in ("damaged", "under_repair", "lost")]
 
     # 5. Search query filtering
     if q and q.strip():
@@ -321,6 +382,17 @@ async def lookup_serial(
             )
             disp_unit_type = ol_res.scalars().first()
 
+        is_currently_dmg = (sn.status == SerialStatus.damaged)
+        has_dmg_hist = any(
+            h.from_status == SerialStatus.damaged
+            or h.to_status == SerialStatus.damaged
+            or (h.remarks and "damage" in h.remarks.lower())
+            for h in history_items
+        )
+        is_dispatched = (sn.status == SerialStatus.dispatched)
+        is_damaged = is_currently_dmg or has_dmg_hist
+        is_dispatched_damaged = is_dispatched and is_damaged
+
         return SerialDetailResponse(
             serial_number=sn.serial_number,
             serial_number_id=sn.id,
@@ -337,6 +409,9 @@ async def lookup_serial(
             last_shop_city=s_city,
             status_label=status_label,
             history=history_items,
+            is_damaged=is_damaged,
+            is_dispatched_damaged=is_dispatched_damaged,
+            flag_reason="Product marked as damaged" if is_damaged else None,
         )
 
     # 2. If not tracked, check if dispatched as unmatched old stock
@@ -393,6 +468,13 @@ async def lookup_serial(
                 )
             )
 
+        unm_has_dmg = any(
+            h.from_status == SerialStatus.damaged
+            or h.to_status == SerialStatus.damaged
+            or (h.remarks and "damage" in h.remarks.lower())
+            for h in history_items
+        ) or (line.flag_reason and "damage" in line.flag_reason.lower())
+
         return SerialDetailResponse(
             serial_number=line.serial_text,
             serial_number_id=None,
@@ -409,6 +491,9 @@ async def lookup_serial(
             last_shop_city=s_city,
             status_label="Recorded only",
             history=history_items,
+            is_damaged=unm_has_dmg,
+            is_dispatched_damaged=unm_has_dmg,
+            flag_reason=line.flag_reason if unm_has_dmg else None,
         )
 
     raise HTTPException(status_code=404, detail=f"Serial number '{clean_serial}' not found in system.")

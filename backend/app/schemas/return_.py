@@ -47,7 +47,7 @@ class ReturnResponse(BaseModel):
     outward_line_id: Optional[uuid.UUID] = None
     shop_id: uuid.UUID
     shop_name: str
-    shop_city: str
+    shop_city: Optional[str] = None
     product_id: uuid.UUID
     product_name: str
     brand: str

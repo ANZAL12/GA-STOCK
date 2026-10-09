@@ -23,6 +23,9 @@ from app.models.user import User
 from app.schemas.inward import (
     InwardBatchCreate,
     InwardBatchResponse,
+    InwardMultiBatchCreate,
+    InwardMultiBatchResponse,
+    InwardProductBatchItem,
     InwardValidateSerialRequest,
     InwardValidateSerialResponse,
 )
@@ -55,10 +58,19 @@ async def validate_serial(
             message="Serial number cannot be blank.",
         )
 
+    target_product_id = req.product_id or product_id
+
     # Check database for existing serial
     query = (
-        select(SerialNumber, Product.name.label("product_name"), Product.model.label("product_model"))
+        select(
+            SerialNumber,
+            Product.name.label("product_name"),
+            Product.model.label("product_model"),
+            Product.brand.label("product_brand"),
+            Category.has_dual_serial.label("has_dual_serial"),
+        )
         .join(Product, SerialNumber.product_id == Product.id)
+        .join(Category, Product.category_id == Category.id)
         .where(SerialNumber.serial_number == clean_serial)
     )
     result = await db.execute(query)
@@ -66,8 +78,17 @@ async def validate_serial(
 
     # Also check if previously recorded in OutwardLine
     out_res = await db.execute(
-        select(OutwardLine, Shop.name.label("shop_name"))
+        select(
+            OutwardLine,
+            Shop.name.label("shop_name"),
+            Product.name.label("product_name"),
+            Product.model.label("product_model"),
+            Product.brand.label("product_brand"),
+            Category.has_dual_serial.label("has_dual_serial"),
+        )
         .join(Shop, OutwardLine.shop_id == Shop.id)
+        .outerjoin(Product, OutwardLine.product_id == Product.id)
+        .outerjoin(Category, Product.category_id == Category.id)
         .where(OutwardLine.serial_text == clean_serial)
     )
     out_row = out_res.first()
@@ -75,15 +96,19 @@ async def validate_serial(
     if inward_type == "return":
         # Case 2: Returned product
         if row:
-            sn, prod_name, prod_model = row
-            model_display = f"{prod_name} ({prod_model})"
-            if product_id and sn.product_id != product_id:
+            sn, prod_name, prod_model, prod_brand, has_dual = row
+            model_display = f"{prod_brand} {prod_name} ({prod_model})"
+            if target_product_id and sn.product_id != target_product_id:
                 return InwardValidateSerialResponse(
                     serial_number=clean_serial,
                     is_valid=False,
                     already_exists=True,
                     registered_model_name=model_display,
                     registered_model_id=sn.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=sn.unit_type,
+                    has_dual_serial=has_dual,
                     message=f"Serial '{clean_serial}' belongs to {model_display}, not the selected model.",
                 )
             if sn.status == SerialStatus.dispatched:
@@ -95,6 +120,10 @@ async def validate_serial(
                     warning_not_dispatched=False,
                     registered_model_name=model_display,
                     registered_model_id=sn.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=sn.unit_type,
+                    has_dual_serial=has_dual,
                     message=f"Returned unit verified ({model_display}). Will restore to Available stock.",
                 )
             else:
@@ -108,39 +137,70 @@ async def validate_serial(
                     warning_not_dispatched=True,
                     registered_model_name=model_display,
                     registered_model_id=sn.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=sn.unit_type,
+                    has_dual_serial=has_dual,
                     message=f"Serial '{clean_serial}' was previously not marked as dispatched (currently {st_label}). Confirm to process as return anyway?",
                 )
         elif out_row:
+            out_line, shop_name, prod_name, prod_model, prod_brand, has_dual = out_row
+            model_display = f"{prod_brand} {prod_name} ({prod_model})" if prod_name else "Unknown"
+            if target_product_id and out_line.product_id != target_product_id:
+                return InwardValidateSerialResponse(
+                    serial_number=clean_serial,
+                    is_valid=False,
+                    already_exists=True,
+                    registered_model_name=model_display,
+                    registered_model_id=out_line.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=out_line.unit_type,
+                    has_dual_serial=has_dual,
+                    message=f"Serial '{clean_serial}' belongs to {model_display}, not the selected model.",
+                )
             return InwardValidateSerialResponse(
                 serial_number=clean_serial,
                 is_valid=True,
                 already_exists=True,
                 requires_confirmation=False,
                 warning_not_dispatched=False,
-                message=f"Returned unit (previously dispatched to {out_row[1]}). Will restore to Available stock.",
+                registered_model_name=model_display,
+                registered_model_id=out_line.product_id,
+                brand=prod_brand,
+                model=prod_model,
+                unit_type=out_line.unit_type,
+                has_dual_serial=has_dual,
+                message=f"Returned unit (previously dispatched to {shop_name}). Will restore to Available stock.",
             )
         else:
             return InwardValidateSerialResponse(
                 serial_number=clean_serial,
                 is_valid=True,
                 already_exists=False,
-                requires_confirmation=True,
+                requires_confirmation=False,
                 warning_not_dispatched=True,
-                message=f"Serial '{clean_serial}' has no previous dispatch record in the system. Confirm to accept as return anyway?",
+                registered_model_name=None,
+                registered_model_id=None,
+                message=f"Serial '{clean_serial}' has no previous dispatch record in the system.",
             )
 
     elif inward_type == "damaged":
         # Case 3: Damaged product
         if row:
-            sn, prod_name, prod_model = row
-            model_display = f"{prod_name} ({prod_model})"
-            if product_id and sn.product_id != product_id:
+            sn, prod_name, prod_model, prod_brand, has_dual = row
+            model_display = f"{prod_brand} {prod_name} ({prod_model})"
+            if target_product_id and sn.product_id != target_product_id:
                 return InwardValidateSerialResponse(
                     serial_number=clean_serial,
                     is_valid=False,
                     already_exists=True,
                     registered_model_name=model_display,
                     registered_model_id=sn.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=sn.unit_type,
+                    has_dual_serial=has_dual,
                     message=f"Serial '{clean_serial}' belongs to {model_display}, not the selected model.",
                 )
             if sn.status == SerialStatus.damaged:
@@ -150,6 +210,10 @@ async def validate_serial(
                     already_exists=True,
                     registered_model_name=model_display,
                     registered_model_id=sn.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=sn.unit_type,
+                    has_dual_serial=has_dual,
                     message=f"Serial '{clean_serial}' is already registered as Damaged.",
                 )
             return InwardValidateSerialResponse(
@@ -158,20 +222,55 @@ async def validate_serial(
                 already_exists=True,
                 registered_model_name=model_display,
                 registered_model_id=sn.product_id,
+                brand=prod_brand,
+                model=prod_model,
+                unit_type=sn.unit_type,
+                has_dual_serial=has_dual,
                 message=f"Unit will be inwarded as Damaged (does not increase saleable stock).",
             )
-        return InwardValidateSerialResponse(
-            serial_number=clean_serial,
-            is_valid=True,
-            already_exists=False,
-            message="New unit will be recorded as Damaged (does not increase saleable stock).",
-        )
+        elif out_row:
+            out_line, shop_name, prod_name, prod_model, prod_brand, has_dual = out_row
+            model_display = f"{prod_brand} {prod_name} ({prod_model})" if prod_name else "Unknown"
+            if target_product_id and out_line.product_id != target_product_id:
+                return InwardValidateSerialResponse(
+                    serial_number=clean_serial,
+                    is_valid=False,
+                    already_exists=True,
+                    registered_model_name=model_display,
+                    registered_model_id=out_line.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=out_line.unit_type,
+                    has_dual_serial=has_dual,
+                    message=f"Serial '{clean_serial}' belongs to {model_display}, not the selected model.",
+                )
+            return InwardValidateSerialResponse(
+                serial_number=clean_serial,
+                is_valid=True,
+                already_exists=True,
+                registered_model_name=model_display,
+                registered_model_id=out_line.product_id,
+                brand=prod_brand,
+                model=prod_model,
+                unit_type=out_line.unit_type,
+                has_dual_serial=has_dual,
+                message=f"Previously dispatched unit (shop {shop_name}) will be inwarded as Damaged.",
+            )
+        else:
+            return InwardValidateSerialResponse(
+                serial_number=clean_serial,
+                is_valid=True,
+                already_exists=False,
+                registered_model_name=None,
+                registered_model_id=None,
+                message="New unit will be recorded as Damaged (does not increase saleable stock).",
+            )
 
     else:
         # Case 1: Standard Stock In (Direct from Company)
         if row:
-            sn, prod_name, prod_model = row
-            model_display = f"{prod_name} ({prod_model})"
+            sn, prod_name, prod_model, prod_brand, has_dual = row
+            model_display = f"{prod_brand} {prod_name} ({prod_model})"
             if sn.status == SerialStatus.dispatched:
                 return InwardValidateSerialResponse(
                     serial_number=clean_serial,
@@ -179,6 +278,10 @@ async def validate_serial(
                     already_exists=True,
                     registered_model_name=model_display,
                     registered_model_id=sn.product_id,
+                    brand=prod_brand,
+                    model=prod_model,
+                    unit_type=sn.unit_type,
+                    has_dual_serial=has_dual,
                     message=f"Serial '{clean_serial}' was previously dispatched. If receiving back, select 'Returned Product' mode.",
                 )
             return InwardValidateSerialResponse(
@@ -187,15 +290,27 @@ async def validate_serial(
                 already_exists=True,
                 registered_model_name=model_display,
                 registered_model_id=sn.product_id,
+                brand=prod_brand,
+                model=prod_model,
+                unit_type=sn.unit_type,
+                has_dual_serial=has_dual,
                 message=f"Serial '{clean_serial}' is already registered under {model_display}.",
             )
 
         if out_row:
+            out_line, shop_name, prod_name, prod_model, prod_brand, has_dual = out_row
+            model_display = f"{prod_brand} {prod_name} ({prod_model})" if prod_name else "Unknown"
             return InwardValidateSerialResponse(
                 serial_number=clean_serial,
                 is_valid=False,
                 already_exists=True,
-                message=f"Serial '{clean_serial}' was previously dispatched to shop '{out_row[1]}'. If receiving back, select 'Returned Product' mode.",
+                registered_model_name=model_display,
+                registered_model_id=out_line.product_id,
+                brand=prod_brand,
+                model=prod_model,
+                unit_type=out_line.unit_type,
+                has_dual_serial=has_dual,
+                message=f"Serial '{clean_serial}' was previously dispatched to shop '{shop_name}'. If receiving back, select 'Returned Product' mode.",
             )
 
         return InwardValidateSerialResponse(
@@ -214,7 +329,7 @@ async def validate_serial_get(
     product_id: Optional[uuid.UUID] = None,
     inward_type: Optional[str] = "stock_in",
 ) -> InwardValidateSerialResponse:
-    req = InwardValidateSerialRequest(serial_number=serial_number, inward_type=inward_type)
+    req = InwardValidateSerialRequest(serial_number=serial_number, inward_type=inward_type, product_id=product_id)
     return await validate_serial(req=req, current_user=current_user, db=db, product_id=product_id)
 
 
@@ -237,6 +352,58 @@ async def create_inward_batch(
     inward_type = (req.inward_type or "stock_in").lower()
     if inward_type not in ("stock_in", "return", "damaged"):
         inward_type = "stock_in"
+
+    # 0. Idempotency check: if client_request_id was already committed, return existing batch
+    if req.client_request_id:
+        existing_log_res = await db.execute(
+            select(AuditLog)
+            .where(AuditLog.action.in_(["INWARD_SUBMITTED", "INWARD_MULTI_BATCH"]))
+            .order_by(AuditLog.created_at.desc())
+            .limit(100)
+        )
+        for log in existing_log_res.scalars().all():
+            if log.details and log.details.get("client_request_id") == req.client_request_id:
+                batch_id_str = log.details.get("batch_id") or (log.details.get("batch_ids") and log.details["batch_ids"][0])
+                if batch_id_str:
+                    b_uuid = uuid.UUID(batch_id_str)
+                    existing_b = await db.execute(
+                        select(
+                            InwardBatch,
+                            Product.name.label("product_name"),
+                            Product.brand.label("product_brand"),
+                            Product.model.label("product_model"),
+                            User.full_name.label("receiver_name"),
+                        )
+                        .join(Product, InwardBatch.product_id == Product.id)
+                        .join(User, InwardBatch.received_by_user_id == User.id)
+                        .where(InwardBatch.id == b_uuid)
+                    )
+                    cached_b = existing_b.first()
+                    if cached_b:
+                        b_obj, p_name, p_brand, p_model, u_name = cached_b
+                        cached_lines = await db.execute(
+                            select(SerialNumber.serial_number)
+                            .join(InwardLine, InwardLine.serial_number_id == SerialNumber.id)
+                            .where(InwardLine.batch_id == b_obj.id)
+                        )
+                        sn_list = [row[0] for row in cached_lines.all()]
+                        return InwardBatchResponse(
+                            id=b_obj.id,
+                            product_id=b_obj.product_id,
+                            product_name=p_name,
+                            brand=p_brand,
+                            model=p_model,
+                            inward_type=b_obj.inward_type,
+                            invoice_reference=b_obj.invoice_reference,
+                            transaction_date=b_obj.transaction_date,
+                            quantity=b_obj.quantity,
+                            received_by_user_id=b_obj.received_by_user_id,
+                            received_by_name=u_name,
+                            device_id=b_obj.device_id,
+                            remarks=b_obj.remarks,
+                            created_at=b_obj.created_at,
+                            serials=sn_list,
+                        )
 
     # 1. Clean serial numbers
     raw_serials = [s.strip() for s in req.serials if s.strip()]
@@ -434,6 +601,8 @@ async def create_inward_batch(
         entity_type="inward_batch",
         entity_id=str(batch.id),
         details={
+            "batch_id": str(batch.id),
+            "client_request_id": req.client_request_id,
             "product_id": str(product.id),
             "product_name": product.name,
             "inward_type": inward_type,
@@ -475,6 +644,353 @@ async def create_inward_batch(
     })
 
     return resp
+
+
+@router.post("/multi-batch", response_model=InwardMultiBatchResponse, status_code=status.HTTP_201_CREATED)
+async def create_inward_multi_batch(
+    req: InwardMultiBatchCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    x_device_id: Annotated[Optional[str], Header(alias="X-Device-Id")] = None,
+) -> InwardMultiBatchResponse:
+    """
+    Record inward stock across multiple products inside a SINGLE atomic transaction.
+    - All models and serials are verified and recorded together.
+    - If any validation fails or network disconnects mid-flight, nothing is committed.
+    - Supports idempotency via client_request_id so retrying after network errors returns the saved result.
+    """
+    # 0. Idempotency check: if client_request_id was already committed, return existing batches
+    if req.client_request_id:
+        existing_log_res = await db.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "INWARD_MULTI_BATCH")
+            .order_by(AuditLog.created_at.desc())
+            .limit(100)
+        )
+        for log in existing_log_res.scalars().all():
+            if log.details and log.details.get("client_request_id") == req.client_request_id:
+                batch_id_strs = log.details.get("batch_ids", [])
+                if batch_id_strs:
+                    b_uuids = [uuid.UUID(bid) for bid in batch_id_strs]
+                    rows_res = await db.execute(
+                        select(
+                            InwardBatch,
+                            Product.name.label("product_name"),
+                            Product.brand.label("product_brand"),
+                            Product.model.label("product_model"),
+                            User.full_name.label("receiver_name"),
+                        )
+                        .join(Product, InwardBatch.product_id == Product.id)
+                        .join(User, InwardBatch.received_by_user_id == User.id)
+                        .where(InwardBatch.id.in_(b_uuids))
+                        .order_by(InwardBatch.created_at.asc())
+                    )
+                    cached_rows = rows_res.all()
+                    cached_batch_ids = [b.id for b, _, _, _, _ in cached_rows]
+                    cached_lines_res = await db.execute(
+                        select(InwardLine.batch_id, SerialNumber.serial_number)
+                        .join(SerialNumber, InwardLine.serial_number_id == SerialNumber.id)
+                        .where(InwardLine.batch_id.in_(cached_batch_ids))
+                    )
+                    serials_by_batch: dict[uuid.UUID, list[str]] = {}
+                    for b_id, s_text in cached_lines_res.all():
+                        serials_by_batch.setdefault(b_id, []).append(s_text)
+
+                    cached_responses = []
+                    tot_units = 0
+                    for b, p_name, p_brand, p_model, u_name in cached_rows:
+                        tot_units += b.quantity
+                        cached_responses.append(
+                            InwardBatchResponse(
+                                id=b.id,
+                                product_id=b.product_id,
+                                product_name=p_name,
+                                brand=p_brand,
+                                model=p_model,
+                                inward_type=b.inward_type,
+                                invoice_reference=b.invoice_reference,
+                                transaction_date=b.transaction_date,
+                                quantity=b.quantity,
+                                received_by_user_id=b.received_by_user_id,
+                                received_by_name=u_name,
+                                device_id=b.device_id,
+                                remarks=b.remarks,
+                                created_at=b.created_at,
+                                serials=serials_by_batch.get(b.id, []),
+                            )
+                        )
+                    return InwardMultiBatchResponse(
+                        batches=cached_responses,
+                        total_units=tot_units,
+                        invoice_reference=req.invoice_reference,
+                    )
+
+    # 1. Validate items
+    if not req.items:
+        raise HTTPException(status_code=400, detail="At least one product item is required.")
+
+    # 2. Check device
+    device = await get_current_device_optional(x_device_id=x_device_id, db=db)
+    device_id = device.id if device else None
+
+    # 3. Gather and validate all serial numbers across items
+    global_seen_serials: set[str] = set()
+    cleaned_items_per_product: list[tuple[uuid.UUID, str, list[str], dict[str, str]]] = []
+
+    for item in req.items:
+        inward_tp = (item.inward_type or "stock_in").lower()
+        if inward_tp not in ("stock_in", "return", "damaged"):
+            inward_tp = "stock_in"
+
+        unit_map = item.unit_types or {}
+        batch_serials: list[str] = []
+        for s in item.serials:
+            s_clean = s.strip()
+            if not s_clean:
+                continue
+            if s_clean in global_seen_serials:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate serial number in this batch: '{s_clean}'. Each serial must be unique.",
+                )
+            global_seen_serials.add(s_clean)
+            batch_serials.append(s_clean)
+
+        if not batch_serials:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid serial numbers provided for model with ID {item.product_id}.",
+            )
+        cleaned_items_per_product.append((item.product_id, inward_tp, batch_serials, unit_map))
+
+    if not global_seen_serials:
+        raise HTTPException(status_code=400, detail="No valid serial numbers provided in batch.")
+
+    # 4. Lock and query all Products
+    product_ids = list({pid for pid, _, _, _ in cleaned_items_per_product})
+    prod_res = await db.execute(
+        select(Product).where(Product.id.in_(product_ids)).with_for_update()
+    )
+    products_map = {p.id: p for p in prod_res.scalars().all()}
+    for pid in product_ids:
+        if pid not in products_map:
+            raise HTTPException(status_code=404, detail=f"Product with ID {pid} not found.")
+        if not products_map[pid].is_active:
+            raise HTTPException(status_code=400, detail=f"Product '{products_map[pid].name}' is deactivated.")
+
+    # 5. Fetch categories for dual-serial check
+    cat_ids = list({p.category_id for p in products_map.values() if p.category_id})
+    cat_res = await db.execute(select(Category).where(Category.id.in_(cat_ids)))
+    categories_map = {c.id: c for c in cat_res.scalars().all()}
+
+    # 5b. Dual-serial validation
+    for pid, _, batch_serials, unit_map in cleaned_items_per_product:
+        prod = products_map[pid]
+        cat = categories_map.get(prod.category_id)
+        if cat and cat.has_dual_serial:
+            in_cnt = sum(1 for s in batch_serials if unit_map.get(s) == "indoor")
+            out_cnt = sum(1 for s in batch_serials if unit_map.get(s) == "outdoor")
+            if in_cnt != out_cnt:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Indoor and Outdoor unit counts must match for dual-serial model '{prod.name}'. "
+                        f"Scanned: {in_cnt} Indoor unit(s), {out_cnt} Outdoor unit(s)."
+                    ),
+                )
+
+    # 6. Fetch all existing serial records
+    existing_res = await db.execute(
+        select(SerialNumber, Product.name.label("product_name"), Product.model.label("product_model"))
+        .join(Product, SerialNumber.product_id == Product.id)
+        .where(SerialNumber.serial_number.in_(list(global_seen_serials)))
+    )
+    existing_rows = {row[0].serial_number: row for row in existing_res.all()}
+
+    # Check OutwardLine for previous dispatches
+    existing_outward_res = await db.execute(
+        select(OutwardLine.serial_text, Shop.name.label("shop_name"))
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(OutwardLine.serial_text.in_(list(global_seen_serials)))
+    )
+    already_disp_lines = {row[0]: row[1] for row in existing_outward_res.all()}
+
+    # 7. Type-specific validation for all items
+    for pid, inward_tp, batch_serials, _ in cleaned_items_per_product:
+        product = products_map[pid]
+        if inward_tp == "stock_in":
+            for s in batch_serials:
+                if s in existing_rows:
+                    sn, pname, pmodel = existing_rows[s]
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Serial '{s}' is already registered under '{pname} ({pmodel})'. For returns, select 'Returned Product'.",
+                    )
+                if s in already_disp_lines:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Serial '{s}' was previously dispatched to '{already_disp_lines[s]}'. For returns, select 'Returned Product'.",
+                    )
+        elif inward_tp == "return":
+            for s in batch_serials:
+                if s in existing_rows:
+                    sn, pname, pmodel = existing_rows[s]
+                    if sn.product_id != product.id:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Cannot return serial '{s}' under this model: it belongs to '{pname} ({pmodel})'.",
+                        )
+        elif inward_tp == "damaged":
+            for s in batch_serials:
+                if s in existing_rows:
+                    sn, pname, pmodel = existing_rows[s]
+                    if sn.product_id != product.id:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Cannot record damaged serial '{s}' under this model: it belongs to '{pname} ({pmodel})'.",
+                        )
+                    if sn.status == SerialStatus.damaged:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Serial '{s}' is already registered as Damaged.",
+                        )
+
+    # 8. Create batches and lines atomically
+    created_batches: list[InwardBatch] = []
+    created_batch_responses: list[InwardBatchResponse] = []
+    total_units_inwarded = 0
+
+    for pid, inward_tp, batch_serials, unit_map in cleaned_items_per_product:
+        product = products_map[pid]
+        cat = categories_map.get(product.category_id)
+
+        batch = InwardBatch(
+            product_id=product.id,
+            inward_type=inward_tp,
+            invoice_reference=req.invoice_reference.strip() if req.invoice_reference else None,
+            transaction_date=req.transaction_date,
+            received_by_user_id=current_user.id,
+            device_id=device_id,
+            quantity=len(batch_serials),
+            remarks=req.remarks.strip() if req.remarks else None,
+        )
+        db.add(batch)
+        await db.flush()
+        created_batches.append(batch)
+
+        created_serials: list[str] = []
+        for sn_text in batch_serials:
+            u_type = unit_map.get(sn_text)
+            target_status = SerialStatus.damaged if inward_tp == "damaged" else SerialStatus.available
+            hist_action = (
+                HistoryAction.status_changed if inward_tp == "damaged"
+                else HistoryAction.returned if inward_tp == "return"
+                else HistoryAction.inward_recorded
+            )
+
+            if sn_text in existing_rows:
+                sn_record, _, _ = existing_rows[sn_text]
+                from_st = sn_record.status
+                sn_record.status = target_status
+                if inward_tp == "return":
+                    sn_record.last_shop_id = None
+                if u_type:
+                    sn_record.unit_type = u_type
+            else:
+                from_st = None
+                sn_record = SerialNumber(
+                    serial_number=sn_text,
+                    product_id=product.id,
+                    status=target_status,
+                    last_shop_id=None,
+                    unit_type=u_type,
+                )
+                db.add(sn_record)
+                await db.flush()
+
+            line = InwardLine(
+                batch_id=batch.id,
+                serial_number_id=sn_record.id,
+            )
+            db.add(line)
+
+            history = SerialHistory(
+                serial_number_id=sn_record.id,
+                serial_text=sn_text,
+                action=hist_action,
+                from_status=from_st,
+                to_status=target_status,
+                inward_batch_id=batch.id,
+                user_id=current_user.id,
+                device_id=device_id,
+                remarks=f"Inward [{inward_tp}]: {req.remarks or ''}".strip(),
+            )
+            db.add(history)
+            created_serials.append(sn_text)
+
+        inward_units_count = (len(batch_serials) // 2) if (cat and cat.has_dual_serial) else len(batch_serials)
+        if inward_tp in ("stock_in", "return"):
+            product.current_stock_qty += inward_units_count
+
+        product.has_had_inward = True
+        total_units_inwarded += len(batch_serials)
+
+        created_batch_responses.append(
+            InwardBatchResponse(
+                id=batch.id,
+                product_id=product.id,
+                product_name=product.name,
+                brand=product.brand,
+                model=product.model,
+                inward_type=inward_tp,
+                invoice_reference=batch.invoice_reference,
+                transaction_date=batch.transaction_date,
+                quantity=batch.quantity,
+                received_by_user_id=current_user.id,
+                received_by_name=current_user.full_name,
+                device_id=device_id,
+                remarks=batch.remarks,
+                created_at=batch.created_at,
+                serials=created_serials,
+            )
+        )
+
+    # 9. Audit Log for multi-batch
+    batch_ids_str = [str(b.id) for b in created_batches]
+    audit = AuditLog(
+        user_id=current_user.id,
+        device_id=device_id,
+        action="INWARD_MULTI_BATCH",
+        entity_type="inward_batch",
+        entity_id=batch_ids_str[0] if batch_ids_str else None,
+        details={
+            "client_request_id": req.client_request_id,
+            "batch_ids": batch_ids_str,
+            "total_units": total_units_inwarded,
+            "total_batches": len(created_batches),
+            "invoice_reference": req.invoice_reference,
+        },
+    )
+    db.add(audit)
+
+    # 10. Single atomic commit
+    await db.commit()
+
+    # 11. Broadcast WebSockets
+    for pid in product_ids:
+        p = products_map[pid]
+        await ws_manager.broadcast("stock_updated", {
+            "type": "inward",
+            "product_id": str(p.id),
+            "current_stock_qty": p.current_stock_qty,
+            "invoice_reference": req.invoice_reference,
+        })
+
+    return InwardMultiBatchResponse(
+        batches=created_batch_responses,
+        total_units=total_units_inwarded,
+        invoice_reference=req.invoice_reference,
+    )
 
 
 @router.get("/batches", response_model=list[InwardBatchResponse])

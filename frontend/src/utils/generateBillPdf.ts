@@ -203,14 +203,14 @@ export function generateBillPdf(bill: BillDetail): void {
   }
 
   doc.setDrawColor(203, 213, 225);
-  doc.line(14, signY + 15, 75, signY + 15);
-  doc.line(pageWidth - 75, signY + 15, pageWidth - 14, signY + 15);
+  doc.line(14, signY + 15, 80, signY + 15);
+  doc.line(pageWidth - 80, signY + 15, pageWidth - 14, signY + 15);
 
   doc.setFontSize(8.5);
   doc.setTextColor(71, 85, 105);
   doc.setFont("helvetica", "normal");
   doc.text("Receiver's Signature & Seal", 14, signY + 20);
-  doc.text(`Authorized Signatory (Global Logistics)`, pageWidth - 75, signY + 20);
+  doc.text("Authorized Signatory (Global Logistics)", pageWidth - 14, signY + 20, { align: "right" });
 
   // Footer page numbers
   const pageCount = (doc.internal as any).getNumberOfPages();
