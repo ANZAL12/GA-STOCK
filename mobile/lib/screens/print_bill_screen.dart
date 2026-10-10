@@ -558,55 +558,106 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   }
 
   List<pw.Widget> _pdfSerialsTable(BillDetail bill) {
-    final rows = <List<String>>[];
-    int idx = 1;
-    for (final b in bill.batches) {
-      for (final l in b.lines) {
-        rows.add([
-          '${idx++}',
-          b.brand,
-          b.model,
-          l.serialText,
-          l.unitType != null && l.unitType!.isNotEmpty ? l.unitType!.toUpperCase() : '-',
-        ]);
-      }
-    }
-
-    return [
+    final widgets = <pw.Widget>[
       pw.Text(
-        '2. Scanned Serial Number Register',
+        '2.Serial Number Register',
         style: pw.TextStyle(
           fontSize: 10,
           fontWeight: pw.FontWeight.bold,
           color: const PdfColor.fromInt(0xFF0F172A),
         ),
       ),
-      pw.SizedBox(height: 4),
-      pw.TableHelper.fromTextArray(
-        headers: ['#', 'Brand', 'Model', 'Serial Number', 'Unit Type'],
-        data: rows,
-        headerStyle: pw.TextStyle(
-          color: PdfColors.white,
-          fontWeight: pw.FontWeight.bold,
-          fontSize: 8.5,
-        ),
-        headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF4F46E5)),
-        cellStyle: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF1E293B)),
-        columnWidths: {
-          0: const pw.FixedColumnWidth(26),
-          1: const pw.FlexColumnWidth(2),
-          2: const pw.FlexColumnWidth(2.5),
-          3: const pw.FlexColumnWidth(3.5),
-          4: const pw.FixedColumnWidth(55),
-        },
-        cellAlignments: {
-          0: pw.Alignment.center,
-          4: pw.Alignment.center,
-        },
-        border: pw.TableBorder.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
-        oddRowDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF8FAFC)),
-      ),
+      pw.SizedBox(height: 6),
     ];
+
+    for (int i = 0; i < bill.batches.length; i++) {
+      final b = bill.batches[i];
+      final descText = (b.productName.isNotEmpty && b.productName != '${b.brand} ${b.model}')
+          ? '  |  ${b.productName}'
+          : '';
+
+      final serialStrings = <String>[];
+      for (int j = 0; j < b.lines.length; j++) {
+        final l = b.lines[j];
+        final uType = l.unitType != null && l.unitType!.trim().isNotEmpty
+            ? ' [${l.unitType!.toUpperCase()}]'
+            : '';
+        serialStrings.add('${j + 1}. ${l.serialText}$uType');
+      }
+
+      final lines = <String>[];
+      for (int k = 0; k < serialStrings.length; k += 3) {
+        final end = (k + 3 < serialStrings.length) ? k + 3 : serialStrings.length;
+        lines.add(serialStrings.sublist(k, end).join('        '));
+      }
+
+      widgets.add(
+        pw.Container(
+          margin: const pw.EdgeInsets.only(bottom: 6),
+          decoration: pw.BoxDecoration(
+            border: pw.Border.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
+            borderRadius: const pw.BorderRadius.all(pw.Radius.circular(3)),
+          ),
+          child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
+                color: const PdfColor.fromInt(0xFFF1F5F9),
+                child: pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                  children: [
+                    pw.Expanded(
+                      child: pw.Text(
+                        '${i + 1}. ${b.brand} - ${b.model}$descText',
+                        style: pw.TextStyle(
+                          fontSize: 8.5,
+                          fontWeight: pw.FontWeight.bold,
+                          color: const PdfColor.fromInt(0xFF0F172A),
+                        ),
+                      ),
+                    ),
+                    pw.Text(
+                      '${b.quantity} ${b.quantity == 1 ? "Unit" : "Units"}',
+                      style: pw.TextStyle(
+                        fontSize: 8.5,
+                        fontWeight: pw.FontWeight.bold,
+                        color: const PdfColor.fromInt(0xFF3C3489),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              pw.Container(
+                width: double.infinity,
+                padding: const pw.EdgeInsets.all(7),
+                color: PdfColors.white,
+                child: lines.isNotEmpty
+                    ? pw.Text(
+                        lines.join('\n'),
+                        style: const pw.TextStyle(
+                          fontSize: 7.5,
+                          color: PdfColor.fromInt(0xFF1E293B),
+                          lineSpacing: 3,
+                        ),
+                      )
+                    : pw.Text(
+                        'No scanned serial numbers recorded',
+                        style: const pw.TextStyle(
+                          fontSize: 7.5,
+                          color: PdfColor.fromInt(0xFF94A3B8),
+                          fontStyle: pw.FontStyle.italic,
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return widgets;
   }
 
   pw.Widget _pdfSignatureBlock() {

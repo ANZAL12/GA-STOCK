@@ -148,47 +148,88 @@ export function generateBillPdf(bill: BillDetail): void {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(10);
   doc.setTextColor(15, 23, 42);
-  doc.text("2. Scanned Serial Number Register", 14, serialsHeaderY);
+  doc.text("2.Serial Number Register", 14, serialsHeaderY);
 
-  const serialRows: string[][] = [];
-  let sIndex = 1;
-  for (const b of bill.batches) {
-    for (const l of b.lines) {
-      const uTypeDisplay = l.unit_type
-        ? l.unit_type.toUpperCase()
-        : "-";
+  const serialRows: any[] = [];
+  bill.batches.forEach((b, bIdx) => {
+    // Model Header Row (Model shown once)
+    const descText = b.product_name && b.product_name !== `${b.brand} ${b.model}` ? `  |  ${b.product_name}` : "";
+    serialRows.push([
+      {
+        content: `${bIdx + 1}.  ${b.brand} - ${b.model}${descText}`,
+        styles: {
+          fillColor: [241, 245, 249],
+          textColor: [15, 23, 42],
+          fontStyle: "bold",
+          fontSize: 8.5,
+        },
+      },
+      {
+        content: `${b.quantity} ${b.quantity === 1 ? "Unit" : "Units"}`,
+        styles: {
+          fillColor: [241, 245, 249],
+          textColor: [60, 52, 137],
+          fontStyle: "bold",
+          fontSize: 8.5,
+          halign: "right",
+        },
+      },
+    ]);
+
+    // Format serial numbers neatly below this model
+    if (!b.lines || b.lines.length === 0) {
       serialRows.push([
-        sIndex.toString(),
-        b.brand,
-        b.model,
-        l.serial_text,
-        uTypeDisplay,
+        {
+          content: "   No scanned serial numbers recorded",
+          colSpan: 2,
+          styles: {
+            fontStyle: "italic",
+            textColor: [148, 163, 184],
+            fontSize: 8,
+          },
+        },
       ]);
-      sIndex++;
+    } else {
+      const serialStrings = b.lines.map((l, lIdx) => {
+        const uType = l.unit_type && l.unit_type.trim() ? ` [${l.unit_type.toUpperCase()}]` : "";
+        return `${lIdx + 1}. ${l.serial_text}${uType}`;
+      });
+
+      // Group serial numbers 3 per line for clean reading
+      const lines: string[] = [];
+      for (let i = 0; i < serialStrings.length; i += 3) {
+        lines.push(serialStrings.slice(i, i + 3).join("         "));
+      }
+
+      serialRows.push([
+        {
+          content: lines.join("\n"),
+          colSpan: 2,
+          styles: {
+            font: "courier",
+            fontSize: 8,
+            textColor: [30, 41, 59],
+            cellPadding: { top: 2.5, bottom: 3.5, left: 6, right: 6 },
+          },
+        },
+      ]);
     }
-  }
+  });
 
   autoTable(doc, {
     startY: serialsHeaderY + 3,
-    head: [["#", "Brand", "Model", "Serial Number", "Unit Type"]],
+    head: [["Model Details", "Quantity"]],
     body: serialRows,
-    theme: "striped",
+    theme: "grid",
     headStyles: {
       fillColor: [79, 70, 229],
       textColor: [255, 255, 255],
       fontStyle: "bold",
       fontSize: 8.5,
     },
-    bodyStyles: {
-      fontSize: 8.5,
-      textColor: [30, 41, 59],
-    },
     columnStyles: {
-      0: { cellWidth: 10, halign: "center" },
-      1: { fontStyle: "bold", cellWidth: 35 },
-      2: { fontStyle: "bold", cellWidth: 45 },
-      3: { fontStyle: "bold", cellWidth: 62 },
-      4: { cellWidth: 30, halign: "center" },
+      0: { cellWidth: pageWidth - 28 - 28 },
+      1: { cellWidth: 28, halign: "right" },
     },
     margin: { left: 14, right: 14 },
   });
