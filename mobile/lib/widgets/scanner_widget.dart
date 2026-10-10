@@ -48,6 +48,9 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   static const double _boxWidth = 290.0;
   static const double _boxHeight = 190.0;
 
+  static const MethodChannel _volumeChannel =
+      MethodChannel('com.globalagencies.godown_scanner/volume_key');
+
   @override
   void initState() {
     super.initState();
@@ -65,10 +68,64 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     if (!_holdToScanMode) {
       _animController.repeat(reverse: true);
     }
+
+    _initVolumeKeyListener();
+  }
+
+  void _initVolumeKeyListener() {
+    try {
+      _volumeChannel.setMethodCallHandler((call) async {
+        if (!mounted) return;
+        switch (call.method) {
+          case 'onVolumeKeyDown':
+            _setTriggerHeld(true);
+            break;
+          case 'onVolumeKeyUp':
+            _setTriggerHeld(false);
+            break;
+        }
+      });
+      _volumeChannel.invokeMethod('enable');
+    } catch (_) {}
+
+    HardwareKeyboard.instance.addHandler(_handleHardwareKeyEvent);
+  }
+
+  bool _handleHardwareKeyEvent(KeyEvent event) {
+    if (!_holdToScanMode) return false;
+    if (event.logicalKey == LogicalKeyboardKey.audioVolumeUp ||
+        event.logicalKey == LogicalKeyboardKey.audioVolumeDown) {
+      if (event is KeyDownEvent) {
+        _setTriggerHeld(true);
+        return true;
+      } else if (event is KeyUpEvent) {
+        _setTriggerHeld(false);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _setTriggerHeld(bool isHeld) {
+    if (!mounted || !_holdToScanMode || _isHoldingTrigger == isHeld) return;
+    HapticFeedback.lightImpact();
+    setState(() => _isHoldingTrigger = isHeld);
+    if (isHeld) {
+      if (!_animController.isAnimating) {
+        _animController.repeat(reverse: true);
+      }
+    } else {
+      _animController.stop();
+      _animController.reset();
+    }
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleHardwareKeyEvent);
+    try {
+      _volumeChannel.invokeMethod('disable');
+    } catch (_) {}
     _animController.dispose();
     _controller.dispose();
     _manualTextController.dispose();
@@ -564,23 +621,9 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                 if (_holdToScanMode) ...[
                   Listener(
                     behavior: HitTestBehavior.opaque,
-                    onPointerDown: (_) {
-                      HapticFeedback.lightImpact();
-                      setState(() => _isHoldingTrigger = true);
-                      if (!_animController.isAnimating) {
-                        _animController.repeat(reverse: true);
-                      }
-                    },
-                    onPointerUp: (_) {
-                      setState(() => _isHoldingTrigger = false);
-                      _animController.stop();
-                      _animController.reset();
-                    },
-                    onPointerCancel: (_) {
-                      setState(() => _isHoldingTrigger = false);
-                      _animController.stop();
-                      _animController.reset();
-                    },
+                    onPointerDown: (_) => _setTriggerHeld(true),
+                    onPointerUp: (_) => _setTriggerHeld(false),
+                    onPointerCancel: (_) => _setTriggerHeld(false),
                     child: AnimatedScale(
                       scale: _isHoldingTrigger ? 0.96 : 1.0,
                       duration: const Duration(milliseconds: 100),
