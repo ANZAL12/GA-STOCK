@@ -141,7 +141,7 @@ async def validate_serial(
                     model=prod_model,
                     unit_type=sn.unit_type,
                     has_dual_serial=has_dual,
-                    message=f"Serial '{clean_serial}' was previously not marked as dispatched (currently {st_label}). Confirm to process as return anyway?",
+                    message=f"Serial '{clean_serial}' was previously dispatched (currently {st_label}). Confirm to process as return anyway?",
                 )
         elif out_row:
             out_line, shop_name, prod_name, prod_model, prod_brand, has_dual = out_row
