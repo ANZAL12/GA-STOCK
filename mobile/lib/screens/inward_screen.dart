@@ -53,12 +53,18 @@ class _InwardScreenState extends State<InwardScreen> {
   String _inwardUnitType = 'indoor'; // Used when scanning dual-serial in stock_in mode
   final TextEditingController _remarksController = TextEditingController();
   bool _submitting = false;
-  bool _isHandlingScan = false;
+  final Set<String> _inFlightSerials = <String>{};
   String? _inwardRequestId;
 
   @override
   void initState() {
     super.initState();
+    // Instant 0ms render from cache
+    final cached = _api.cachedProducts;
+    if (cached != null && cached.isNotEmpty) {
+      _products = List<Product>.from(cached);
+      _loadingProducts = false;
+    }
     _loadProducts();
     _initWebSocket();
   }
@@ -73,6 +79,7 @@ class _InwardScreenState extends State<InwardScreen> {
       if (type == 'product_created' && data is Map<String, dynamic>) {
         try {
           final newProd = Product.fromJson(data);
+          _api.updateCachedProduct(newProd);
           setState(() {
             _products.removeWhere((p) => p.id == newProd.id);
             _products.insert(0, newProd);
@@ -81,6 +88,7 @@ class _InwardScreenState extends State<InwardScreen> {
       } else if (type == 'product_updated' && data is Map<String, dynamic>) {
         try {
           final updatedProd = Product.fromJson(data);
+          _api.updateCachedProduct(updatedProd);
           setState(() {
             final idx = _products.indexWhere((p) => p.id == updatedProd.id);
             if (idx != -1) {
@@ -298,6 +306,10 @@ class _InwardScreenState extends State<InwardScreen> {
           prompt: prompt,
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
+          existingSerials: _scannedItems.map((e) => e.serialNumber).toSet(),
+          isDuplicate: (s) =>
+              _scannedItems.any((e) => e.serialNumber == s.trim().toUpperCase()) ||
+              _inFlightSerials.contains(s.trim().toUpperCase()),
           onScanned: (serial) => _handleScannedSerial(serial),
         ),
       ),
@@ -308,16 +320,17 @@ class _InwardScreenState extends State<InwardScreen> {
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
 
-    if (_isHandlingScan) return;
-    _isHandlingScan = true;
+    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in-flight
+    if (_scannedItems.any((it) => it.serialNumber == cleanSerial) ||
+        _inFlightSerials.contains(cleanSerial)) {
+      HapticFeedback.heavyImpact();
+      _showWarningDialog('Duplicate in Current Batch', 'Serial "$cleanSerial" is already scanned in this batch.');
+      return;
+    }
+
+    _inFlightSerials.add(cleanSerial);
 
     try {
-      // 1. Check duplicate in current session batch
-      if (_scannedItems.any((it) => it.serialNumber == cleanSerial)) {
-        HapticFeedback.heavyImpact();
-        _showWarningDialog('Duplicate in Current Batch', 'Serial "$cleanSerial" is already scanned in this batch.');
-        return;
-      }
 
       // 2. Live validation against backend
       final String? reqProdId = _inwardType == 'stock_in' ? _selectedProduct?.id : null;
@@ -411,32 +424,34 @@ class _InwardScreenState extends State<InwardScreen> {
         return;
       }
 
-      // 4. Add to scanned items list
-      setState(() {
-        _scannedItems.insert(
-          0,
-          InwardScannedItem(
-            serialNumber: cleanSerial,
-            product: targetProduct!,
-            unitType: unitType,
-            isAutoDetected: isAutoDetected,
-          ),
-        );
-      });
-      HapticFeedback.lightImpact();
+      // 4. Add to scanned items list (with safety duplicate check)
+      if (!_scannedItems.any((it) => it.serialNumber == cleanSerial)) {
+        setState(() {
+          _scannedItems.insert(
+            0,
+            InwardScannedItem(
+              serialNumber: cleanSerial,
+              product: targetProduct!,
+              unitType: unitType,
+              isAutoDetected: isAutoDetected,
+            ),
+          );
+        });
+        HapticFeedback.lightImpact();
 
-      if (mounted) {
-        TopToast.show(
-          context,
-          message: '✓ Scanned $cleanSerial • ${targetProduct.brand} ${targetProduct.model} (${_scannedItems.length} total)',
-          backgroundColor: _getInwardTypeColor(_inwardType),
-        );
+        if (mounted) {
+          TopToast.show(
+            context,
+            message: '✓ Scanned $cleanSerial • ${targetProduct.brand} ${targetProduct.model} (${_scannedItems.length} total)',
+            backgroundColor: _getInwardTypeColor(_inwardType),
+          );
+        }
       }
     } catch (e) {
       HapticFeedback.heavyImpact();
       _showWarningDialog('Validation Error', 'Failed to validate serial "$cleanSerial": $e');
     } finally {
-      _isHandlingScan = false;
+      _inFlightSerials.remove(cleanSerial);
     }
   }
 

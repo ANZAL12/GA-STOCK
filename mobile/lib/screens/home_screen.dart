@@ -26,6 +26,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _refreshQueueCount();
     WebSocketService().connect();
+    _api.preWarmCache();
   }
 
   Future<void> _refreshQueueCount() async {

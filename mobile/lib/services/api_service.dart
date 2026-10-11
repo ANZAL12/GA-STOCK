@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -11,7 +12,14 @@ class ApiService {
 
   static const String defaultBaseUrl = 'http://100.66.97.14:8000/api/v1';
 
-  final http.Client _client = http.Client();
+  http.Client _client = http.Client();
+
+  void _resetClient() {
+    try {
+      _client.close();
+    } catch (_) {}
+    _client = http.Client();
+  }
 
   String _baseUrl = defaultBaseUrl;
   String? _accessToken;
@@ -20,11 +28,27 @@ class ApiService {
   String? _deviceUid;
   bool _isDeviceApproved = false;
 
+  // --- TWO-TIER CACHE (RAM + PERSISTENT DISK) ---
+  List<Product>? _cachedProducts;
+  List<Shop>? _cachedShops;
+  List<BillListItem>? _cachedBills;
+  DateTime? _productsCacheTime;
+  DateTime? _shopsCacheTime;
+  DateTime? _billsCacheTime;
+
+  // Recent serial check cache: key is "$productId:$serial" -> response Map
+  final Map<String, Map<String, dynamic>> _outwardSerialCheckCache = {};
+  final Map<String, Map<String, dynamic>> _inwardSerialValidateCache = {};
+
   String get baseUrl => _baseUrl;
   User? get currentUser => _currentUser;
   String? get deviceUid => _deviceUid;
   bool get isDeviceApproved => _isDeviceApproved;
   bool get isAuthenticated => _accessToken != null && _currentUser != null;
+
+  List<Product>? get cachedProducts => _cachedProducts;
+  List<Shop>? get cachedShops => _cachedShops;
+  List<BillListItem>? get cachedBills => _cachedBills;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -53,6 +77,25 @@ class ApiService {
     if (userJson != null) {
       try {
         _currentUser = User.fromJson(jsonDecode(userJson));
+      } catch (_) {}
+    }
+
+    // 4. Load persisted catalogs from disk for 0ms cold start
+    final productsJson = prefs.getString('cache_products_json');
+    if (productsJson != null) {
+      try {
+        final List list = jsonDecode(productsJson);
+        _cachedProducts = list.map((p) => Product.fromJson(p)).toList();
+        _productsCacheTime = DateTime.now();
+      } catch (_) {}
+    }
+
+    final shopsJson = prefs.getString('cache_shops_json');
+    if (shopsJson != null) {
+      try {
+        final List list = jsonDecode(shopsJson);
+        _cachedShops = list.map((s) => Shop.fromJson(s)).toList();
+        _shopsCacheTime = DateTime.now();
       } catch (_) {}
     }
   }
@@ -187,65 +230,203 @@ class ApiService {
     return false;
   }
 
-  Future<http.Response> _authenticatedGet(Uri uri) async {
-    var res = await _client.get(uri, headers: _headers());
-    if (res.statusCode == 401 && _refreshToken != null) {
-      final refreshed = await _refreshTokenNow();
-      if (refreshed) {
-        res = await _client.get(uri, headers: _headers());
+  bool _isTransientNetworkError(dynamic e) {
+    if (e is TimeoutException) return true;
+    final msg = e.toString().toLowerCase();
+    return msg.contains('socketexception') ||
+        msg.contains('connection closed') ||
+        msg.contains('connection reset') ||
+        msg.contains('broken pipe') ||
+        msg.contains('failed host lookup') ||
+        msg.contains('network is unreachable') ||
+        msg.contains('clientexception') ||
+        msg.contains('software caused connection abort');
+  }
+
+  String formatNetworkError(dynamic e) {
+    if (e is TimeoutException) {
+      return 'Connection timed out. Server response took too long.';
+    }
+    final msg = e.toString().toLowerCase();
+    if (msg.contains('socketexception') ||
+        msg.contains('connection refused') ||
+        msg.contains('failed host lookup') ||
+        msg.contains('network is unreachable')) {
+      return 'Cannot reach server at $_baseUrl. Please check your Wi-Fi or VPN connection.';
+    }
+    return e.toString().replaceAll('Exception: ', '');
+  }
+
+  Future<http.Response> _authenticatedGet(Uri uri, {int maxRetries = 2}) async {
+    int attempts = 0;
+    while (true) {
+      attempts++;
+      try {
+        var res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
+        if (res.statusCode == 401 && _refreshToken != null) {
+          final refreshed = await _refreshTokenNow();
+          if (refreshed) {
+            res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
+          }
+        }
+        return res;
+      } catch (e) {
+        if (attempts <= maxRetries && _isTransientNetworkError(e)) {
+          _resetClient(); // Discard dead socket pool
+          await Future.delayed(Duration(milliseconds: 200 * attempts));
+          continue;
+        }
+        throw Exception(formatNetworkError(e));
       }
     }
-    return res;
   }
 
-  Future<http.Response> _authenticatedPost(Uri uri, {Object? body}) async {
-    var res = await _client.post(uri, headers: _headers(), body: body);
-    if (res.statusCode == 401 && _refreshToken != null) {
-      final refreshed = await _refreshTokenNow();
-      if (refreshed) {
-        res = await _client.post(uri, headers: _headers(), body: body);
+  Future<http.Response> _authenticatedPost(Uri uri, {Object? body, int maxRetries = 1}) async {
+    int attempts = 0;
+    while (true) {
+      attempts++;
+      try {
+        var res = await _client.post(uri, headers: _headers(), body: body).timeout(const Duration(seconds: 14));
+        if (res.statusCode == 401 && _refreshToken != null) {
+          final refreshed = await _refreshTokenNow();
+          if (refreshed) {
+            res = await _client.post(uri, headers: _headers(), body: body).timeout(const Duration(seconds: 14));
+          }
+        }
+        return res;
+      } catch (e) {
+        if (attempts <= maxRetries && _isTransientNetworkError(e)) {
+          _resetClient(); // Discard dead socket pool
+          await Future.delayed(Duration(milliseconds: 250 * attempts));
+          continue;
+        }
+        throw Exception(formatNetworkError(e));
       }
     }
-    return res;
   }
 
-  // --- PRODUCTS & SHOPS ---
-  Future<List<Product>> getProducts() async {
-    final res = await _authenticatedGet(
-      Uri.parse('$_baseUrl/products?active_only=true'),
-    );
-    if (res.statusCode == 200) {
-      final List list = jsonDecode(res.body);
-      return list.map((p) => Product.fromJson(p)).toList();
+  // --- PRODUCTS & SHOPS CACHED METHODS ---
+
+  /// Pre-warms the catalog caches in background so screens open in 0ms
+  void preWarmCache() {
+    if (_cachedProducts == null) {
+      _fetchAndCacheProducts().catchError((_) => <Product>[]);
     }
-    if (res.statusCode == 401) {
-      throw Exception('Session expired. Please log in again.');
+    if (_cachedShops == null) {
+      _fetchAndCacheShops().catchError((_) => <Shop>[]);
     }
-    String msg = 'Failed to load products';
-    try {
-      final err = jsonDecode(res.body);
-      msg = err['detail'] ?? msg;
-    } catch (_) {}
-    throw Exception(msg);
   }
 
-  Future<List<Shop>> getShops() async {
-    final res = await _authenticatedGet(
-      Uri.parse('$_baseUrl/shops?active_only=true'),
-    );
-    if (res.statusCode == 200) {
-      final List list = jsonDecode(res.body);
-      return list.map((s) => Shop.fromJson(s)).toList();
+  /// Live update of single product in cache (e.g. from WebSocket push)
+  void updateCachedProduct(Product product) {
+    if (_cachedProducts == null) {
+      _cachedProducts = [product];
+    } else {
+      final idx = _cachedProducts!.indexWhere((p) => p.id == product.id);
+      if (idx != -1) {
+        _cachedProducts![idx] = product;
+      } else {
+        _cachedProducts!.insert(0, product);
+      }
     }
-    if (res.statusCode == 401) {
-      throw Exception('Session expired. Please log in again.');
+    // Update disk cache asynchronously
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('cache_products_json', jsonEncode(_cachedProducts!.map((p) => p.toJson()).toList()));
+    }).catchError((_) {});
+  }
+
+  /// Stale-while-revalidate for products: returns instant cached if available
+  Future<List<Product>> getProducts({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedProducts != null && _cachedProducts!.isNotEmpty) {
+      final age = _productsCacheTime != null ? DateTime.now().difference(_productsCacheTime!) : Duration.zero;
+      if (age < const Duration(minutes: 10)) {
+        return _cachedProducts!;
+      }
+      // Stale cache: trigger background refresh silently, return cached immediately
+      _refreshProductsInBackground();
+      return _cachedProducts!;
     }
-    String msg = 'Failed to load shops';
+    return await _fetchAndCacheProducts();
+  }
+
+  Future<List<Product>> _fetchAndCacheProducts() async {
     try {
-      final err = jsonDecode(res.body);
-      msg = err['detail'] ?? msg;
-    } catch (_) {}
-    throw Exception(msg);
+      final res = await _authenticatedGet(
+        Uri.parse('$_baseUrl/products?active_only=true'),
+      );
+      if (res.statusCode == 200) {
+        final List list = jsonDecode(res.body);
+        final prods = list.map((p) => Product.fromJson(p)).toList();
+        _cachedProducts = prods;
+        _productsCacheTime = DateTime.now();
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cache_products_json', res.body);
+        return prods;
+      }
+      if (res.statusCode == 401) {
+        throw Exception('Session expired. Please log in again.');
+      }
+    } catch (e) {
+      if (_cachedProducts != null && _cachedProducts!.isNotEmpty) {
+        return _cachedProducts!;
+      }
+      rethrow;
+    }
+    return _cachedProducts ?? [];
+  }
+
+  void _refreshProductsInBackground() {
+    _fetchAndCacheProducts().catchError((_) => <Product>[]);
+  }
+
+  /// Stale-while-revalidate for shops: returns instant cached if available
+  Future<List<Shop>> getShops({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedShops != null && _cachedShops!.isNotEmpty) {
+      final age = _shopsCacheTime != null ? DateTime.now().difference(_shopsCacheTime!) : Duration.zero;
+      if (age < const Duration(minutes: 15)) {
+        return _cachedShops!;
+      }
+      _refreshShopsInBackground();
+      return _cachedShops!;
+    }
+    return await _fetchAndCacheShops();
+  }
+
+  Future<List<Shop>> _fetchAndCacheShops() async {
+    try {
+      final res = await _authenticatedGet(
+        Uri.parse('$_baseUrl/shops?active_only=true'),
+      );
+      if (res.statusCode == 200) {
+        final List list = jsonDecode(res.body);
+        final shops = list.map((s) => Shop.fromJson(s)).toList();
+        _cachedShops = shops;
+        _shopsCacheTime = DateTime.now();
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cache_shops_json', res.body);
+        return shops;
+      }
+      if (res.statusCode == 401) {
+        throw Exception('Session expired. Please log in again.');
+      }
+    } catch (e) {
+      if (_cachedShops != null && _cachedShops!.isNotEmpty) {
+        return _cachedShops!;
+      }
+      rethrow;
+    }
+    return _cachedShops ?? [];
+  }
+
+  void _refreshShopsInBackground() {
+    _fetchAndCacheShops().catchError((_) => <Shop>[]);
+  }
+
+  void clearSerialCheckCache() {
+    _outwardSerialCheckCache.clear();
+    _inwardSerialValidateCache.clear();
   }
 
   // --- INWARD API ---
@@ -254,8 +435,15 @@ class ApiService {
     String serialNumber, {
     String inwardType = 'stock_in',
   }) async {
+    final cleanSerial = serialNumber.trim().toUpperCase();
+    final cacheKey = '$productId:$cleanSerial:$inwardType';
+
+    if (_inwardSerialValidateCache.containsKey(cacheKey)) {
+      return _inwardSerialValidateCache[cacheKey]!;
+    }
+
     final queryParams = <String, String>{
-      'serial_number': serialNumber.trim(),
+      'serial_number': cleanSerial,
       'inward_type': inwardType,
     };
     if (productId != null && productId.isNotEmpty) {
@@ -265,7 +453,9 @@ class ApiService {
     final res = await _authenticatedGet(uri);
 
     if (res.statusCode == 200) {
-      return jsonDecode(res.body);
+      final data = jsonDecode(res.body);
+      _inwardSerialValidateCache[cacheKey] = data;
+      return data;
     } else {
       String msg = 'Validation error';
       try {
@@ -284,6 +474,7 @@ class ApiService {
     String? remarks,
     String? clientRequestId,
   }) async {
+    clearSerialCheckCache();
     final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/inward/batch'),
       body: jsonEncode({
@@ -315,6 +506,7 @@ class ApiService {
     String? remarks,
     String? clientRequestId,
   }) async {
+    clearSerialCheckCache();
     final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/inward/multi-batch'),
       body: jsonEncode({
@@ -342,14 +534,23 @@ class ApiService {
     String productId,
     String serialNumber,
   ) async {
+    final cleanSerial = serialNumber.trim().toUpperCase();
+    final cacheKey = '$productId:$cleanSerial';
+
+    if (_outwardSerialCheckCache.containsKey(cacheKey)) {
+      return _outwardSerialCheckCache[cacheKey]!;
+    }
+
     final res = await _authenticatedGet(
       Uri.parse(
-        '$_baseUrl/outward/check-serial?product_id=$productId&serial_number=${Uri.encodeComponent(serialNumber.trim())}',
+        '$_baseUrl/outward/check-serial?product_id=$productId&serial_number=${Uri.encodeComponent(cleanSerial)}',
       ),
     );
 
     if (res.statusCode == 200) {
-      return jsonDecode(res.body);
+      final data = jsonDecode(res.body);
+      _outwardSerialCheckCache[cacheKey] = data;
+      return data;
     } else {
       String msg = 'Serial check failed';
       try {
@@ -388,6 +589,7 @@ class ApiService {
     String? deliveryReference,
     String? remarks,
   }) async {
+    clearSerialCheckCache();
     final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/outward/batch'),
       body: jsonEncode({
@@ -426,6 +628,7 @@ class ApiService {
     String? remarks,
     String? clientRequestId,
   }) async {
+    clearSerialCheckCache();
     final res = await _authenticatedPost(
       Uri.parse('$_baseUrl/outward/multi-batch'),
       body: jsonEncode({
@@ -471,7 +674,15 @@ class ApiService {
   }
 
   // --- BILL LOOKUP ---
-  Future<List<BillListItem>> listBills({String? search, int limit = 50}) async {
+  Future<List<BillListItem>> listBills({String? search, int limit = 50, bool forceRefresh = false}) async {
+    final isUnfiltered = search == null || search.trim().isEmpty;
+    if (isUnfiltered && !forceRefresh && _cachedBills != null && _cachedBills!.isNotEmpty) {
+      final age = _billsCacheTime != null ? DateTime.now().difference(_billsCacheTime!) : Duration.zero;
+      if (age < const Duration(minutes: 5)) {
+        return _cachedBills!;
+      }
+    }
+
     final uri = Uri.parse('$_baseUrl/outward/bills').replace(queryParameters: {
       if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
       'limit': limit.toString(),
@@ -479,8 +690,14 @@ class ApiService {
     final res = await _authenticatedGet(uri);
     if (res.statusCode == 200) {
       final List<dynamic> data = jsonDecode(res.body);
-      return data.map((j) => BillListItem.fromJson(j as Map<String, dynamic>)).toList();
+      final bills = data.map((j) => BillListItem.fromJson(j as Map<String, dynamic>)).toList();
+      if (isUnfiltered) {
+        _cachedBills = bills;
+        _billsCacheTime = DateTime.now();
+      }
+      return bills;
     } else {
+      if (isUnfiltered && _cachedBills != null) return _cachedBills!;
       throw Exception('Failed to load bills');
     }
   }

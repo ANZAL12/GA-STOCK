@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:intl/intl.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -30,6 +29,11 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
   @override
   void initState() {
     super.initState();
+    final cached = _api.cachedBills;
+    if (cached != null && cached.isNotEmpty) {
+      _bills = List<BillListItem>.from(cached);
+      _loading = false;
+    }
     _loadBills();
   }
 
@@ -39,13 +43,15 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
     super.dispose();
   }
 
-  Future<void> _loadBills({String? search}) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  Future<void> _loadBills({String? search, bool forceRefresh = false}) async {
+    if (_bills.isEmpty) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
-      final bills = await _api.listBills(search: search);
+      final bills = await _api.listBills(search: search, forceRefresh: forceRefresh);
       if (mounted) setState(() { _bills = bills; _loading = false; });
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _loading = false; });
@@ -293,22 +299,18 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       logoImage = pw.MemoryImage(bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
     } catch (_) {}
 
-    final nowFormatted = DateFormat('M/d/yyyy, h:mm:ss a').format(DateTime.now());
-
     doc.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.symmetric(horizontal: 39.69, vertical: 34.0),
-        footer: (ctx) => _pdfFooter(ctx, bill, nowFormatted),
+        margin: const pw.EdgeInsets.all(12 * PdfPageFormat.mm),
+        footer: (ctx) => _pdfFooter(ctx, bill),
         build: (ctx) => [
           _pdfHeader(bill, logoImage),
-          pw.SizedBox(height: 12),
-          _pdfBillInfoCard(bill),
-          pw.SizedBox(height: 14),
+          pw.SizedBox(height: 10),
           ..._pdfModelsTable(bill),
-          pw.SizedBox(height: 14),
+          pw.SizedBox(height: 12),
           ..._pdfSerialsTable(bill),
-          pw.SizedBox(height: 40),
+          pw.SizedBox(height: 12),
           _pdfSignatureBlock(),
         ],
       ),
@@ -319,255 +321,337 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   // ── PDF widgets ─────────────────────────────────────────────────────────
 
   pw.Widget _pdfHeader(BillDetail bill, pw.MemoryImage? logoImage) {
+    const black = PdfColors.black;
+    final divider = pw.Container(height: 0.25, color: black);
+
+    final destinationVal = bill.shopCity.trim().isNotEmpty
+        ? bill.shopCity.trim()
+        : bill.shopName;
+
     return pw.Container(
-      padding: const pw.EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: const pw.BoxDecoration(
-        color: PdfColor.fromInt(0xFF1E1B4B),
-        borderRadius: pw.BorderRadius.all(pw.Radius.circular(3)),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: black, width: 0.25),
       ),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: pw.CrossAxisAlignment.center,
+      child: pw.Column(
+        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
         children: [
-          pw.Row(
-            crossAxisAlignment: pw.CrossAxisAlignment.center,
-            children: [
-              if (logoImage != null)
-                pw.Container(
-                  width: 38,
-                  height: 38,
-                  margin: const pw.EdgeInsets.only(right: 12),
-                  child: pw.Image(logoImage),
+          // Title Banner
+          pw.Padding(
+            padding: const pw.EdgeInsets.symmetric(vertical: 4),
+            child: pw.Column(
+              children: [
+                pw.Text(
+                  'DELIVERY CHALLAN',
+                  style: pw.TextStyle(
+                    fontSize: 12,
+                    fontWeight: pw.FontWeight.bold,
+                    color: black,
+                  ),
                 ),
-              pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                pw.SizedBox(height: 1.5),
+                pw.Text(
+                  '(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)',
+                  style: const pw.TextStyle(
+                    fontSize: 7.5,
+                    color: black,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          divider,
+          // Split Row: Consignor/Consignee (left) vs Voucher Meta (right)
+          pw.Table(
+            border: const pw.TableBorder(
+              verticalInside: pw.BorderSide(color: black, width: 0.25),
+            ),
+            columnWidths: const {
+              0: pw.FlexColumnWidth(98),
+              1: pw.FlexColumnWidth(88),
+            },
+            children: [
+              pw.TableRow(
                 children: [
-                  pw.Text(
-                    'GLOBAL LOGISTICS',
-                    style: pw.TextStyle(
-                      color: PdfColors.white,
-                      fontSize: 16,
-                      fontWeight: pw.FontWeight.bold,
+                  // Left Column: Consignor & Consignee
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+                    children: [
+                      // Consignor / Dispatcher
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.fromLTRB(6, 4, 6, 4),
+                        child: pw.Column(
+                          crossAxisAlignment: pw.CrossAxisAlignment.start,
+                          children: [
+                            pw.Text(
+                              'Consignor / Dispatcher:',
+                              style: pw.TextStyle(
+                                fontSize: 7,
+                                fontWeight: pw.FontWeight.bold,
+                                color: black,
+                              ),
+                            ),
+                            pw.SizedBox(height: 3),
+                            pw.Row(
+                              crossAxisAlignment: pw.CrossAxisAlignment.center,
+                              children: [
+                                if (logoImage != null)
+                                  pw.Container(
+                                    width: 34,
+                                    height: 34,
+                                    margin: const pw.EdgeInsets.only(right: 7),
+                                    child: pw.Image(logoImage),
+                                  ),
+                                pw.Expanded(
+                                  child: pw.Column(
+                                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                                    children: [
+                                      pw.Text(
+                                        'GLOBAL LOGISTICS',
+                                        style: pw.TextStyle(
+                                          fontSize: 10.5,
+                                          fontWeight: pw.FontWeight.bold,
+                                          color: black,
+                                        ),
+                                      ),
+                                      pw.SizedBox(height: 1),
+                                      pw.Text(
+                                        'Central Warehouse & Distribution',
+                                        style: const pw.TextStyle(fontSize: 7.2, color: black),
+                                      ),
+                                      pw.Text(
+                                        'Stock Management & Automated Serial Register',
+                                        style: const pw.TextStyle(fontSize: 7.2, color: black),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      divider,
+                      // Consignee / Buyer (Dispatch To)
+                      pw.Padding(
+                        padding: const pw.EdgeInsets.fromLTRB(6, 4, 6, 4),
+                        child: pw.Column(
+                          crossAxisAlignment: pw.CrossAxisAlignment.start,
+                          children: [
+                            pw.Text(
+                              'Consignee / Buyer (Dispatch To):',
+                              style: pw.TextStyle(
+                                fontSize: 7,
+                                fontWeight: pw.FontWeight.bold,
+                                color: black,
+                              ),
+                            ),
+                            pw.SizedBox(height: 2),
+                            pw.Text(
+                              bill.shopName,
+                              style: pw.TextStyle(
+                                fontSize: 9,
+                                fontWeight: pw.FontWeight.bold,
+                                color: black,
+                              ),
+                            ),
+                            if (bill.shopCity.trim().isNotEmpty) ...[
+                              pw.SizedBox(height: 1),
+                              pw.Text(
+                                'Location: ${bill.shopCity.trim()}',
+                                style: const pw.TextStyle(fontSize: 7.2, color: black),
+                              ),
+                            ],
+                            if (bill.remarks != null && bill.remarks!.trim().isNotEmpty) ...[
+                              pw.SizedBox(height: 1),
+                              pw.Text(
+                                'Remarks: ${bill.remarks!.trim()}',
+                                style: const pw.TextStyle(fontSize: 7.2, color: black),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  // Right Column: Voucher Details
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.fromLTRB(7, 4, 6, 4),
+                    child: pw.Column(
+                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      children: [
+                        _pdfMetaRow('Challan / Bill No.:', bill.billNumber, boldVal: true),
+                        _pdfMetaRow('Dated:', bill.transactionDate, boldVal: true),
+                        _pdfMetaRow('Dispatched By:', bill.dispatchedByName, boldVal: true),
+                        _pdfMetaRow('Vehicle / Ref:', bill.deliveryReference ?? 'Direct / Local', boldVal: true),
+                        _pdfMetaRow('Mode of Transport:', 'Road / Local Delivery', boldVal: false),
+                        _pdfMetaRow('Destination:', destinationVal, boldVal: false),
+                      ],
                     ),
-                  ),
-                  pw.SizedBox(height: 2),
-                  pw.Text(
-                    'CENTRAL WAREHOUSE DISPATCH BILL / DELIVERY CHALLAN',
-                    style: const pw.TextStyle(color: PdfColor.fromInt(0xFFE0E7FF), fontSize: 8),
-                  ),
-                  pw.SizedBox(height: 1),
-                  pw.Text(
-                    'Stock Management & Automated Serial Tracking System',
-                    style: const pw.TextStyle(color: PdfColor.fromInt(0xFFE0E7FF), fontSize: 7.5),
                   ),
                 ],
               ),
             ],
           ),
-          pw.Container(
-            padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: const pw.BoxDecoration(
-              color: PdfColors.white,
-              borderRadius: pw.BorderRadius.all(pw.Radius.circular(3)),
-            ),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(
-                  'BILL NO:',
-                  style: pw.TextStyle(
-                    fontSize: 7.5,
-                    fontWeight: pw.FontWeight.bold,
-                    color: const PdfColor.fromInt(0xFF1E1B4B),
-                  ),
-                ),
-                pw.SizedBox(height: 1),
-                pw.Text(
-                  bill.billNumber,
-                  style: pw.TextStyle(
-                    fontSize: 10,
-                    fontWeight: pw.FontWeight.bold,
-                    color: const PdfColor.fromInt(0xFF1E1B4B),
-                  ),
-                ),
-              ],
-            ),
-          ),
         ],
       ),
     );
   }
 
-  pw.Widget _pdfFooter(pw.Context ctx, BillDetail bill, String nowFormatted) {
-    return pw.Container(
-      alignment: pw.Alignment.center,
-      margin: const pw.EdgeInsets.only(top: 8),
-      child: pw.Text(
-        'Generated on $nowFormatted  |  Bill #${bill.billNumber}  |  Page ${ctx.pageNumber} of ${ctx.pagesCount}',
-        style: const pw.TextStyle(fontSize: 7.5, color: PdfColor.fromInt(0xFF94A3B8)),
-      ),
-    );
-  }
-
-  pw.Widget _pdfBillInfoCard(BillDetail bill) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.all(12),
-      decoration: pw.BoxDecoration(
-        color: const PdfColor.fromInt(0xFFF8FAFC),
-        border: pw.Border.all(color: const PdfColor.fromInt(0xFFE2E8F0)),
-        borderRadius: const pw.BorderRadius.all(pw.Radius.circular(3)),
-      ),
+  pw.Widget _pdfMetaRow(String label, String value, {bool boldVal = true}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 1.6),
       child: pw.Row(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          pw.Expanded(
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(
-                  'DISPATCH TO (CONSIGNEE):',
-                  style: pw.TextStyle(
-                    fontSize: 8.5,
-                    fontWeight: pw.FontWeight.bold,
-                    color: const PdfColor.fromInt(0xFF64748B),
-                  ),
-                ),
-                pw.SizedBox(height: 3),
-                pw.Text(
-                  bill.shopName,
-                  style: pw.TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: pw.FontWeight.bold,
-                    color: const PdfColor.fromInt(0xFF0F172A),
-                  ),
-                ),
-                if (bill.shopCity.trim().isNotEmpty) ...[
-                  pw.SizedBox(height: 2),
-                  pw.Text(
-                    'City / Location: ${bill.shopCity.trim()}',
-                    style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
-                  ),
-                ],
-                if (bill.remarks != null && bill.remarks!.trim().isNotEmpty) ...[
-                  pw.SizedBox(height: 2),
-                  pw.Text(
-                    'Remarks: ${bill.remarks}',
-                    style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
-                  ),
-                ],
-              ],
+          pw.SizedBox(
+            width: 78,
+            child: pw.Text(
+              label,
+              style: const pw.TextStyle(fontSize: 7.5, color: PdfColors.black),
             ),
           ),
-          pw.SizedBox(width: 24),
           pw.Expanded(
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(
-                  'DISPATCH DETAILS:',
-                  style: pw.TextStyle(
-                    fontSize: 8.5,
-                    fontWeight: pw.FontWeight.bold,
-                    color: const PdfColor.fromInt(0xFF64748B),
-                  ),
-                ),
-                pw.SizedBox(height: 3),
-                pw.Text(
-                  'Date: ${bill.transactionDate}',
-                  style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
-                ),
-                pw.SizedBox(height: 2),
-                pw.Text(
-                  'Vehicle / Ref: ${bill.deliveryReference ?? "Direct / Local"}',
-                  style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
-                ),
-                pw.SizedBox(height: 2),
-                pw.Text(
-                  'Dispatched By: ${bill.dispatchedByName}',
-                  style: const pw.TextStyle(fontSize: 9, color: PdfColor.fromInt(0xFF475569)),
-                ),
-              ],
+            child: pw.Text(
+              value,
+              style: pw.TextStyle(
+                fontSize: 7.8,
+                fontWeight: boldVal ? pw.FontWeight.bold : pw.FontWeight.normal,
+                color: PdfColors.black,
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  pw.Widget _tableCell(
+    String text, {
+    bool bold = false,
+    pw.Alignment align = pw.Alignment.centerLeft,
+  }) {
+    return pw.Container(
+      alignment: align,
+      padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 3.5),
+      child: pw.Text(
+        text,
+        style: pw.TextStyle(
+          fontSize: 8,
+          fontWeight: bold ? pw.FontWeight.bold : pw.FontWeight.normal,
+          color: PdfColors.black,
+        ),
       ),
     );
   }
 
   List<pw.Widget> _pdfModelsTable(BillDetail bill) {
-    final modelRows = bill.batches.asMap().entries.map((e) {
-      final b = e.value;
-      return [
-        '${e.key + 1}',
-        b.brand,
-        b.model,
-        b.productName,
-        '${b.quantity}',
-      ];
-    }).toList();
+    const headerBg = PdfColor.fromInt(0xFFF2F2F2);
+    const border = pw.TableBorder(
+      top: pw.BorderSide(color: PdfColors.black, width: 0.25),
+      bottom: pw.BorderSide(color: PdfColors.black, width: 0.25),
+      left: pw.BorderSide(color: PdfColors.black, width: 0.25),
+      right: pw.BorderSide(color: PdfColors.black, width: 0.25),
+      horizontalInside: pw.BorderSide(color: PdfColors.black, width: 0.2),
+      verticalInside: pw.BorderSide(color: PdfColors.black, width: 0.2),
+    );
 
-    // Total row matching web dashboard
-    modelRows.add([
-      '',
-      'TOTAL',
-      '${bill.batches.length} Model(s)',
-      '',
-      '${bill.totalUnits}',
-    ]);
+    final rows = <pw.TableRow>[
+      // Table Header
+      pw.TableRow(
+        decoration: const pw.BoxDecoration(color: headerBg),
+        children: [
+          _tableCell('SI No.', bold: true, align: pw.Alignment.center),
+          _tableCell('Brand', bold: true),
+          _tableCell('Model', bold: true),
+          _tableCell('Description / Specification', bold: true),
+          _tableCell('Quantity', bold: true, align: pw.Alignment.centerRight),
+        ],
+      ),
+      // Batches
+      ...bill.batches.asMap().entries.map((e) {
+        final b = e.value;
+        return pw.TableRow(
+          children: [
+            _tableCell('${e.key + 1}', align: pw.Alignment.center),
+            _tableCell(b.brand, bold: true),
+            _tableCell(b.model, bold: true),
+            _tableCell(b.productName.isNotEmpty ? b.productName : '-'),
+            _tableCell('${b.quantity} Units', align: pw.Alignment.centerRight, bold: true),
+          ],
+        );
+      }),
+      // Total Row
+      pw.TableRow(
+        decoration: const pw.BoxDecoration(color: headerBg),
+        children: [
+          _tableCell(''),
+          _tableCell('TOTAL', bold: true),
+          _tableCell('${bill.batches.length} Model(s)', bold: true),
+          _tableCell(''),
+          _tableCell('${bill.totalUnits} Units', align: pw.Alignment.centerRight, bold: true),
+        ],
+      ),
+    ];
 
     return [
       pw.Text(
-        '1. Models & Quantities Dispatched',
+        '1. Description of Goods Dispatched',
         style: pw.TextStyle(
-          fontSize: 10,
+          fontSize: 9,
           fontWeight: pw.FontWeight.bold,
-          color: const PdfColor.fromInt(0xFF0F172A),
+          color: PdfColors.black,
         ),
       ),
-      pw.SizedBox(height: 4),
-      pw.TableHelper.fromTextArray(
-        headers: ['#', 'Brand', 'Model', 'Description', 'Quantity'],
-        data: modelRows,
-        headerStyle: pw.TextStyle(
-          color: PdfColors.white,
-          fontWeight: pw.FontWeight.bold,
-          fontSize: 8.5,
-        ),
-        headerDecoration: const pw.BoxDecoration(color: PdfColor.fromInt(0xFF3C3489)),
-        cellStyle: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF1E293B)),
-        cellDecoration: (index, data, rowNum) {
-          if (rowNum == modelRows.length) {
-            return const pw.BoxDecoration(color: PdfColor.fromInt(0xFFF1F5F9));
-          }
-          return const pw.BoxDecoration();
-        },
+      pw.SizedBox(height: 3),
+      pw.Table(
+        border: border,
         columnWidths: {
-          0: const pw.FixedColumnWidth(26),
+          0: const pw.FixedColumnWidth(32),
           1: const pw.FlexColumnWidth(2),
-          2: const pw.FlexColumnWidth(2.5),
-          3: const pw.FlexColumnWidth(3.5),
-          4: const pw.FixedColumnWidth(55),
+          2: const pw.FlexColumnWidth(2.6),
+          3: const pw.FlexColumnWidth(3.8),
+          4: const pw.FixedColumnWidth(65),
         },
-        cellAlignments: {
-          0: pw.Alignment.center,
-          4: pw.Alignment.center,
-        },
-        border: pw.TableBorder.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
+        children: rows,
       ),
     ];
   }
 
   List<pw.Widget> _pdfSerialsTable(BillDetail bill) {
+    const headerBg = PdfColor.fromInt(0xFFF2F2F2);
+    const black = PdfColors.black;
+
     final widgets = <pw.Widget>[
       pw.Text(
         '2.Serial Number Register',
         style: pw.TextStyle(
-          fontSize: 10,
+          fontSize: 9,
           fontWeight: pw.FontWeight.bold,
-          color: const PdfColor.fromInt(0xFF0F172A),
+          color: black,
         ),
       ),
-      pw.SizedBox(height: 6),
+      pw.SizedBox(height: 3),
+      // Table Header Row
+      pw.Container(
+        decoration: pw.BoxDecoration(
+          color: headerBg,
+          border: pw.Border.all(color: black, width: 0.25),
+        ),
+        padding: const pw.EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
+        child: pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text(
+              'Model Details & Serial Number Register',
+              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+            ),
+            pw.Text(
+              'Quantity',
+              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+            ),
+          ],
+        ),
+      ),
     ];
 
     for (int i = 0; i < bill.batches.length; i++) {
@@ -579,7 +663,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       final serialStrings = <String>[];
       for (int j = 0; j < b.lines.length; j++) {
         final l = b.lines[j];
-        final uType = l.unitType != null && l.unitType!.trim().isNotEmpty
+        final uType = (l.unitType != null && l.unitType!.trim().isNotEmpty)
             ? ' [${l.unitType!.toUpperCase()}]'
             : '';
         serialStrings.add('${j + 1}. ${l.serialText}$uType');
@@ -588,33 +672,35 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       final lines = <String>[];
       for (int k = 0; k < serialStrings.length; k += 3) {
         final end = (k + 3 < serialStrings.length) ? k + 3 : serialStrings.length;
-        lines.add(serialStrings.sublist(k, end).join('        '));
+        lines.add(serialStrings.sublist(k, end).join('          '));
       }
 
       widgets.add(
         pw.Container(
-          margin: const pw.EdgeInsets.only(bottom: 6),
           decoration: pw.BoxDecoration(
-            border: pw.Border.all(color: const PdfColor.fromInt(0xFFE2E8F0), width: 0.5),
-            borderRadius: const pw.BorderRadius.all(pw.Radius.circular(3)),
+            border: pw.Border(
+              left: pw.BorderSide(color: black, width: 0.25),
+              right: pw.BorderSide(color: black, width: 0.25),
+              bottom: pw.BorderSide(color: black, width: 0.25),
+            ),
           ),
           child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
             children: [
+              // Model Header Row (Shown once per model)
               pw.Container(
-                width: double.infinity,
-                padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 4.5),
-                color: const PdfColor.fromInt(0xFFF1F5F9),
+                color: headerBg,
+                padding: const pw.EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
                 child: pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
                     pw.Expanded(
                       child: pw.Text(
-                        '${i + 1}. ${b.brand} - ${b.model}$descText',
+                        '${i + 1}.  ${b.brand} - ${b.model}$descText',
                         style: pw.TextStyle(
                           fontSize: 8.5,
                           fontWeight: pw.FontWeight.bold,
-                          color: const PdfColor.fromInt(0xFF0F172A),
+                          color: black,
                         ),
                       ),
                     ),
@@ -623,30 +709,33 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                       style: pw.TextStyle(
                         fontSize: 8.5,
                         fontWeight: pw.FontWeight.bold,
-                        color: const PdfColor.fromInt(0xFF3C3489),
+                        color: black,
                       ),
                     ),
                   ],
                 ),
               ),
+              // Divider between model header and serials
+              pw.Container(height: 0.2, color: black),
+              // Serial list
               pw.Container(
-                width: double.infinity,
-                padding: const pw.EdgeInsets.all(7),
                 color: PdfColors.white,
+                padding: const pw.EdgeInsets.fromLTRB(8, 5, 8, 5),
                 child: lines.isNotEmpty
                     ? pw.Text(
                         lines.join('\n'),
-                        style: const pw.TextStyle(
-                          fontSize: 7.5,
-                          color: PdfColor.fromInt(0xFF1E293B),
+                        style: pw.TextStyle(
+                          font: pw.Font.courier(),
+                          fontSize: 8,
+                          color: black,
                           lineSpacing: 3,
                         ),
                       )
                     : pw.Text(
-                        'No scanned serial numbers recorded',
-                        style: const pw.TextStyle(
+                        '   No scanned serial numbers recorded for this batch',
+                        style: pw.TextStyle(
                           fontSize: 7.5,
-                          color: PdfColor.fromInt(0xFF94A3B8),
+                          color: const PdfColor.fromInt(0xFF505050),
                           fontStyle: pw.FontStyle.italic,
                         ),
                       ),
@@ -661,35 +750,90 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   }
 
   pw.Widget _pdfSignatureBlock() {
+    const black = PdfColors.black;
+    return pw.Table(
+      border: pw.TableBorder.all(color: black, width: 0.25),
+      columnWidths: const {
+        0: pw.FlexColumnWidth(105),
+        1: pw.FlexColumnWidth(81),
+      },
+      children: [
+        pw.TableRow(
+          children: [
+            // Left Box: Declaration & Receiver
+            pw.Container(
+              height: 72,
+              padding: const pw.EdgeInsets.fromLTRB(7, 5, 7, 5),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'Declaration:',
+                        style: pw.TextStyle(fontSize: 7.5, fontWeight: pw.FontWeight.bold, color: black),
+                      ),
+                      pw.SizedBox(height: 2),
+                      pw.Text(
+                        'We declare that this Delivery Challan shows the actual quantity of goods\ndispatched and all serial numbers listed have been physically scanned\nand verified prior to warehouse release.',
+                        style: const pw.TextStyle(fontSize: 6.8, color: black),
+                      ),
+                    ],
+                  ),
+                  pw.Text(
+                    "Customer / Receiver's Signature & Seal",
+                    style: pw.TextStyle(fontSize: 7.5, fontWeight: pw.FontWeight.bold, color: black),
+                  ),
+                ],
+              ),
+            ),
+            // Right Box: Authorized Signatory
+            pw.Container(
+              height: 72,
+              padding: const pw.EdgeInsets.fromLTRB(7, 5, 7, 5),
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+                children: [
+                  pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        'for GLOBAL LOGISTICS',
+                        style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                      ),
+                      pw.SizedBox(height: 1),
+                      pw.Text(
+                        '(Central Warehouse Dispatch Authority)',
+                        style: const pw.TextStyle(fontSize: 6.8, color: black),
+                      ),
+                    ],
+                  ),
+                  pw.Align(
+                    alignment: pw.Alignment.bottomRight,
+                    child: pw.Text(
+                      'Authorised Signatory',
+                      style: pw.TextStyle(fontSize: 7.5, fontWeight: pw.FontWeight.bold, color: black),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  pw.Widget _pdfFooter(pw.Context ctx, BillDetail bill) {
     return pw.Container(
-      margin: const pw.EdgeInsets.only(top: 25),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: pw.CrossAxisAlignment.end,
-        children: [
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              pw.Container(width: 150, height: 0.75, color: const PdfColor.fromInt(0xFFCBD5E1)),
-              pw.SizedBox(height: 6),
-              pw.Text(
-                "Receiver's Signature & Seal",
-                style: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF475569)),
-              ),
-            ],
-          ),
-          pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.end,
-            children: [
-              pw.Container(width: 180, height: 0.75, color: const PdfColor.fromInt(0xFFCBD5E1)),
-              pw.SizedBox(height: 6),
-              pw.Text(
-                'Authorized Signatory (Global Logistics)',
-                style: const pw.TextStyle(fontSize: 8.5, color: PdfColor.fromInt(0xFF475569)),
-              ),
-            ],
-          ),
-        ],
+      alignment: pw.Alignment.center,
+      margin: const pw.EdgeInsets.only(top: 6),
+      child: pw.Text(
+        'This is a Computer Generated Delivery Challan • Bill #${bill.billNumber} • Page ${ctx.pageNumber} of ${ctx.pagesCount}',
+        style: const pw.TextStyle(fontSize: 7, color: PdfColor.fromInt(0xFF3C3C3C)),
       ),
     );
   }

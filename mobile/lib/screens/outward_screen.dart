@@ -46,11 +46,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
   String _activeFilterModelId = 'ALL';
   String _outwardUnitType = 'indoor';
   bool _submitting = false;
+  final Set<String> _inFlightSerials = <String>{};
   String? _dispatchRequestId;
 
   @override
   void initState() {
     super.initState();
+    // Instant 0ms render from cache
+    final cachedProds = _api.cachedProducts;
+    final cachedShops = _api.cachedShops;
+    if (cachedProds != null && cachedProds.isNotEmpty) {
+      _products = List<Product>.from(cachedProds);
+      _loadingProducts = false;
+    }
+    if (cachedShops != null && cachedShops.isNotEmpty) {
+      _shops = List<Shop>.from(cachedShops);
+      _loadingShops = false;
+    }
     _loadMetadata();
     _initWebSocket();
   }
@@ -65,6 +77,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       if (type == 'product_created' && data is Map<String, dynamic>) {
         try {
           final newProd = Product.fromJson(data);
+          _api.updateCachedProduct(newProd);
           setState(() {
             _products.removeWhere((p) => p.id == newProd.id);
             _products.insert(0, newProd);
@@ -92,6 +105,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       } else if (type == 'product_updated' && data is Map<String, dynamic>) {
         try {
           final updatedProd = Product.fromJson(data);
+          _api.updateCachedProduct(updatedProd);
           setState(() {
             final idx = _products.indexWhere((p) => p.id == updatedProd.id);
             if (idx != -1) {
@@ -232,6 +246,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
           prompt: 'Scanning: ${_selectedProduct!.brand} ${_selectedProduct!.model}',
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
+          existingSerials: _scannedItems.map((e) => e.serialNumber).toSet(),
+          isDuplicate: (s) =>
+              _scannedItems.any((e) => e.serialNumber == s.trim().toUpperCase()) ||
+              _inFlightSerials.contains(s.trim().toUpperCase()),
           onScanned: (serial) => _handleOutwardScan(serial),
         ),
       ),
@@ -239,15 +257,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
   }
 
   Future<void> _handleOutwardScan(String serial) async {
-    final cleanSerial = serial.trim();
+    final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
 
-    // Check duplicate in current batch
-    if (_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in-flight
+    if (_scannedItems.any((item) => item.serialNumber == cleanSerial) ||
+        _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       _showSimpleAlert('Duplicate Serial', 'Serial "$cleanSerial" is already in this dispatch batch.');
       return;
     }
+
+    _inFlightSerials.add(cleanSerial);
 
     try {
       final res = await _api.checkOutwardSerial(_selectedProduct!.id, cleanSerial);
@@ -293,40 +314,44 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
         HapticFeedback.lightImpact();
         final unitType = (res['unit_type'] as String?) ?? (_selectedProduct?.hasDualSerial == true ? _outwardUnitType : null);
-        setState(() {
-          _scannedItems.insert(
-            0,
-            OutwardScanResult(
-              serialNumber: cleanSerial,
-              product: _selectedProduct,
-              caseType: OutwardCase.matched,
-              isMatched: true,
-              warningMessage: msg,
-              unitType: unitType,
-            ),
-          );
-        });
-        _showToast('Matched: $cleanSerial (${_selectedProduct!.model})', const Color(0xFF059669));
+        if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+          setState(() {
+            _scannedItems.insert(
+              0,
+              OutwardScanResult(
+                serialNumber: cleanSerial,
+                product: _selectedProduct,
+                caseType: OutwardCase.matched,
+                isMatched: true,
+                warningMessage: msg,
+                unitType: unitType,
+              ),
+            );
+          });
+          _showToast('Matched: $cleanSerial (${_selectedProduct!.model})', const Color(0xFF059669));
+        }
       }
 
       // --- CASE 2: RECORDED ONLY (Unmatched pre-go-live stock) ---
       else if (caseVal == 2 || caseName == 'unmatched') {
         HapticFeedback.mediumImpact();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
-        setState(() {
-          _scannedItems.insert(
-            0,
-            OutwardScanResult(
-              serialNumber: cleanSerial,
-              product: _selectedProduct,
-              caseType: OutwardCase.recordedOnly,
-              isMatched: false,
-              warningMessage: 'Old pre-go-live stock recorded. Never blocked.',
-              unitType: unitType,
-            ),
-          );
-        });
-        _showToast('Recorded only: $cleanSerial (${_selectedProduct!.model})', const Color(0xFF475569));
+        if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+          setState(() {
+            _scannedItems.insert(
+              0,
+              OutwardScanResult(
+                serialNumber: cleanSerial,
+                product: _selectedProduct,
+                caseType: OutwardCase.recordedOnly,
+                isMatched: false,
+                warningMessage: 'Old pre-go-live stock recorded. Never blocked.',
+                unitType: unitType,
+              ),
+            );
+          });
+          _showToast('Recorded only: $cleanSerial (${_selectedProduct!.model})', const Color(0xFF475569));
+        }
       }
 
       // --- CASE 3: STATUS WARNING (Damaged, reserved, etc. NOT dispatched!) ---
@@ -391,6 +416,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           );
           if (dialogResult != null && dialogResult['action'] == 'add') {
             final String? chosenUnitType = dialogResult['unit_type'];
+          if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
             setState(() {
               _scannedItems.insert(
                 0,
@@ -415,6 +441,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
               const Color(0xFF059669),
             );
           }
+          }
         } else {
           await _showCase4ModelMismatchDialog(cleanSerial, existingModel, msg);
         }
@@ -422,6 +449,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
     } catch (e) {
       HapticFeedback.heavyImpact();
       _showSimpleAlert('Validation Error', 'Could not verify serial "$cleanSerial": $e');
+    } finally {
+      _inFlightSerials.remove(cleanSerial);
     }
   }
 

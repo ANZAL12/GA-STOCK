@@ -9,6 +9,8 @@ class BarcodeScannerWidget extends StatefulWidget {
   final String prompt;
   final String? initialLastScanned;
   final int initialCount;
+  final Set<String>? existingSerials;
+  final bool Function(String barcode)? isDuplicate;
   final Function(String barcode) onScanned;
 
   const BarcodeScannerWidget({
@@ -17,6 +19,8 @@ class BarcodeScannerWidget extends StatefulWidget {
     this.prompt = 'Align barcode strictly inside viewfinder',
     this.initialLastScanned,
     this.initialCount = 0,
+    this.existingSerials,
+    this.isDuplicate,
     required this.onScanned,
   });
 
@@ -52,12 +56,15 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
   bool _isTorchOn = false;
   bool _isProcessing = false;
+  bool _isDuplicateWarning = false;
   bool _holdToScanMode = true;
   bool _isHoldingTrigger = false;
   String? _lastScannedValue;
   int _scannedCount = 0;
-  DateTime _lastScannedTime = DateTime.fromMillisecondsSinceEpoch(0);
   final TextEditingController _manualTextController = TextEditingController();
+
+  late final Set<String> _sessionScannedSerials;
+  final Map<String, DateTime> _recentScanTimes = {};
 
   static const double _boxWidth = 290.0;
   static const double _boxHeight = 190.0;
@@ -71,6 +78,9 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     SoundService().init();
     _lastScannedValue = widget.initialLastScanned;
     _scannedCount = widget.initialCount;
+    _sessionScannedSerials = widget.existingSerials != null
+        ? Set<String>.from(widget.existingSerials!.map((s) => s.trim().toUpperCase()))
+        : <String>{};
     _animController = AnimationController(
       duration: const Duration(milliseconds: 1600),
       vsync: this,
@@ -245,16 +255,33 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     // Prioritize the barcode closest to the viewfinder center
     candidates.sort((a, b) => a.distFromCenter.compareTo(b.distFromCenter));
 
-    final String cleanVal = candidates.first.cleanVal;
+    final String cleanVal = candidates.first.cleanVal.toUpperCase();
     final DateTime now = DateTime.now();
 
-    // Prevent accidental repeat scanning of the EXACT same physical barcode
-    if (_lastScannedValue == cleanVal &&
-        now.difference(_lastScannedTime).inMilliseconds < 1500) {
+    // 1. Prevent accidental repeat scanning of the same barcode within 2000ms
+    final lastTime = _recentScanTimes[cleanVal];
+    if (lastTime != null && now.difference(lastTime).inMilliseconds < 2000) {
       return;
     }
 
-    _lastScannedTime = now;
+    // 2. Instant duplicate rejection: check if already in the session batch
+    final bool isAlreadyInBatch = _sessionScannedSerials.contains(cleanVal) ||
+        (widget.isDuplicate != null && widget.isDuplicate!(cleanVal));
+
+    if (isAlreadyInBatch) {
+      _recentScanTimes[cleanVal] = now;
+      HapticFeedback.heavyImpact();
+      if (!_isDuplicateWarning) {
+        setState(() => _isDuplicateWarning = true);
+        Future.delayed(const Duration(milliseconds: 350), () {
+          if (mounted) setState(() => _isDuplicateWarning = false);
+        });
+      }
+      return;
+    }
+
+    _recentScanTimes[cleanVal] = now;
+    _sessionScannedSerials.add(cleanVal); // Synchronously claim before callback
 
     // Fire beep sound and haptic first for absolute zero-delay audio feedback
     SoundService().playScannerBeep();
@@ -267,13 +294,16 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
     widget.onScanned(cleanVal);
 
-    // Super-fast cooldown (280ms) so moving to the next item scans instantly!
-    Future.delayed(const Duration(milliseconds: 280), () {
+    // Super-fast cooldown (260ms) so moving to the next unique item scans instantly!
+    Future.delayed(const Duration(milliseconds: 260), () {
       if (mounted) setState(() => _isProcessing = false);
     });
   }
 
   Color _getReticleBorderColor() {
+    if (_isDuplicateWarning) {
+      return const Color(0xFFEF4444); // Bright Red when duplicate scanned
+    }
     if (_isProcessing) {
       return const Color(0xFF10B981); // Emerald green on successful read
     }

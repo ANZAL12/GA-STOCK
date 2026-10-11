@@ -72,6 +72,22 @@ class Product {
       hasDualSerial: json['has_dual_serial'] ?? false,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'sku': sku,
+    'category_id': categoryId,
+    'category_name': categoryName,
+    'brand': brand,
+    'model': model,
+    'size_capacity': sizeCapacity,
+    'unit': unit,
+    'serial_number_required': serialNumberRequired,
+    'current_stock_qty': currentStockQty,
+    'out_of_stock_reminder': outOfStockReminder,
+    'has_dual_serial': hasDualSerial,
+  };
 }
 
 class Shop {
@@ -98,6 +114,14 @@ class Shop {
       isActive: json['is_active'] ?? true,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'city': city,
+    'phone': phone,
+    'is_active': isActive,
+  };
 }
 
 enum OutwardCase {
