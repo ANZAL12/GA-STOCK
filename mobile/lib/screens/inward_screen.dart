@@ -1814,28 +1814,15 @@ class _InwardScreenState extends State<InwardScreen> {
                   ),
                 )
               : ListView.builder(
+                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   itemCount: _scannedItems.length,
+                  addAutomaticKeepAlives: false,
+                  addRepaintBoundaries: true,
                   itemBuilder: (ctx, idx) {
                     final item = _scannedItems[idx];
-                    return Dismissible(
-                      key: Key('${item.serialNumber}_$idx'),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 20),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE11D48),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(Icons.delete, color: Colors.white),
-                      ),
-                      onDismissed: (_) {
-                        setState(() {
-                          _scannedItems.removeAt(idx);
-                        });
-                      },
-                      child: Container(
+                    return Container(
+                      key: ValueKey('${item.serialNumber}_$idx'),
                         margin: const EdgeInsets.only(bottom: 6),
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                         decoration: BoxDecoration(
@@ -1919,9 +1906,8 @@ class _InwardScreenState extends State<InwardScreen> {
                             ),
                           ],
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
                 ),
         ),
 

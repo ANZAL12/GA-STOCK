@@ -2504,29 +2504,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   ),
                 )
               : ListView.builder(
+                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
                   itemCount: filteredItems.length,
+                  addAutomaticKeepAlives: false,
+                  addRepaintBoundaries: true,
                   itemBuilder: (ctx, idx) {
                     final item = filteredItems[idx];
                     final itemProd = item.product ?? _selectedProduct;
 
-                    return Dismissible(
-                      key: Key(item.serialNumber),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 16),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFE11D48),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Icon(Icons.delete, color: Colors.white, size: 20),
-                      ),
-                      onDismissed: (_) {
-                        setState(() => _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber));
-                      },
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 6),
+                    return Container(
+                      key: ValueKey(item.serialNumber),
+                      margin: const EdgeInsets.only(bottom: 6),
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
                           color: Colors.white,
@@ -2723,9 +2712,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             ],
                           ],
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
                 ),
         ),
 

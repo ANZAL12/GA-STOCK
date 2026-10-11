@@ -11,6 +11,8 @@ class ApiService {
 
   static const String defaultBaseUrl = 'http://100.66.97.14:8000/api/v1';
 
+  final http.Client _client = http.Client();
+
   String _baseUrl = defaultBaseUrl;
   String? _accessToken;
   String? _refreshToken;
@@ -86,7 +88,7 @@ class ApiService {
     if (_deviceUid == null) await init();
 
     try {
-      final res = await http.post(
+      final res = await _client.post(
         Uri.parse('$_baseUrl/devices/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
@@ -108,7 +110,7 @@ class ApiService {
 
   // --- AUTHENTICATION ---
   Future<User> login(String username, String password) async {
-    final res = await http.post(
+    final res = await _client.post(
       Uri.parse('$_baseUrl/auth/login'),
       headers: _headers(),
       body: jsonEncode({
@@ -167,7 +169,7 @@ class ApiService {
   Future<bool> _doRefreshToken() async {
     if (_refreshToken == null || _refreshToken!.isEmpty) return false;
     try {
-      final res = await http.post(
+      final res = await _client.post(
         Uri.parse('$_baseUrl/auth/refresh'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'refresh_token': _refreshToken}),
@@ -186,22 +188,22 @@ class ApiService {
   }
 
   Future<http.Response> _authenticatedGet(Uri uri) async {
-    var res = await http.get(uri, headers: _headers());
+    var res = await _client.get(uri, headers: _headers());
     if (res.statusCode == 401 && _refreshToken != null) {
       final refreshed = await _refreshTokenNow();
       if (refreshed) {
-        res = await http.get(uri, headers: _headers());
+        res = await _client.get(uri, headers: _headers());
       }
     }
     return res;
   }
 
   Future<http.Response> _authenticatedPost(Uri uri, {Object? body}) async {
-    var res = await http.post(uri, headers: _headers(), body: body);
+    var res = await _client.post(uri, headers: _headers(), body: body);
     if (res.statusCode == 401 && _refreshToken != null) {
       final refreshed = await _refreshTokenNow();
       if (refreshed) {
-        res = await http.post(uri, headers: _headers(), body: body);
+        res = await _client.post(uri, headers: _headers(), body: body);
       }
     }
     return res;

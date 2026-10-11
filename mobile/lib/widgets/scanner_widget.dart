@@ -28,9 +28,23 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     with SingleTickerProviderStateMixin {
   final MobileScannerController _controller = MobileScannerController(
     detectionSpeed: DetectionSpeed.unrestricted,
+    cameraResolution: const Size(1280, 720),
     facing: CameraFacing.back,
     torchEnabled: false,
     returnImage: false,
+    formats: const [
+      BarcodeFormat.code128,
+      BarcodeFormat.code39,
+      BarcodeFormat.code93,
+      BarcodeFormat.ean13,
+      BarcodeFormat.ean8,
+      BarcodeFormat.upcA,
+      BarcodeFormat.upcE,
+      BarcodeFormat.qrCode,
+      BarcodeFormat.dataMatrix,
+      BarcodeFormat.itf14,
+      BarcodeFormat.codabar,
+    ],
   );
 
   late AnimationController _animController;

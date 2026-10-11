@@ -2,11 +2,12 @@ import React, { useEffect, useState, useMemo } from "react";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import type { BillListItem, BillDetail, Shop } from "../types";
-import { generateBillPdf } from "../utils/generateBillPdf";
+import { generateBillPdf, printBillPdf } from "../utils/generateBillPdf";
 import {
   Receipt,
   Search,
   FileDown,
+  Printer,
   Calendar,
   Store,
   Eye,
@@ -34,6 +35,7 @@ export const BillsPage: React.FC = () => {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [serialSearch, setSerialSearch] = useState("");
   const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [printingPdf, setPrintingPdf] = useState(false);
 
   const fetchShops = async () => {
     try {
@@ -110,6 +112,26 @@ export const BillsPage: React.FC = () => {
       generateBillPdf(selectedBill);
     } finally {
       setDownloadingPdf(false);
+    }
+  };
+
+  const handleQuickPrintPdf = async (e: React.MouseEvent, billNumber: string) => {
+    e.stopPropagation();
+    try {
+      const detail = await apiRequest<BillDetail>(`/outward/bills/${encodeURIComponent(billNumber)}`);
+      printBillPdf(detail);
+    } catch (err: any) {
+      alert("Error printing PDF: " + (err.message || "Unknown error"));
+    }
+  };
+
+  const handlePrintDetailPdf = () => {
+    if (!selectedBill) return;
+    setPrintingPdf(true);
+    try {
+      printBillPdf(selectedBill);
+    } finally {
+      setPrintingPdf(false);
     }
   };
 
@@ -368,7 +390,7 @@ export const BillsPage: React.FC = () => {
 
                     {/* Actions */}
                     <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1">
+                      <div className="inline-flex items-center gap-1.5">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -378,6 +400,15 @@ export const BillsPage: React.FC = () => {
                           className="p-1.5 rounded-lg text-slate-500 hover:text-[#3C3489] hover:bg-[#EEF2FF] transition-colors"
                         >
                           <Eye size={15} />
+                        </button>
+
+                        <button
+                          onClick={(e) => handleQuickPrintPdf(e, bill.bill_number)}
+                          title="Print Bill Directly (Tally Format)"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 hover:text-slate-900 transition-colors shadow-xs"
+                        >
+                          <Printer size={13} className="text-slate-600" />
+                          Print
                         </button>
 
                         <button
@@ -453,9 +484,20 @@ export const BillsPage: React.FC = () => {
 
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={handlePrintDetailPdf}
+                    disabled={printingPdf}
+                    title="Direct Print Delivery Challan (Tally Format)"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white text-slate-900 text-xs font-bold hover:bg-slate-100 transition-colors shadow-sm"
+                  >
+                    <Printer size={14} className="text-slate-700" />
+                    {printingPdf ? "Printing..." : "Print"}
+                  </button>
+
+                  <button
                     onClick={handleDownloadDetailPdf}
                     disabled={downloadingPdf}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white text-[#1E1B4B] text-xs font-bold hover:bg-indigo-50 transition-colors shadow-sm"
+                    title="Download PDF Delivery Challan"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/20 text-white text-xs font-bold hover:bg-white/30 transition-colors shadow-sm"
                   >
                     <FileDown size={14} />
                     {downloadingPdf ? "Generating..." : "Download PDF"}
