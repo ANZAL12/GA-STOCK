@@ -361,7 +361,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               ],
             ),
           ),
-          pw.Divider(thickness: 0.5, color: black, height: 1),
+          pw.Divider(thickness: 0.25, color: black, height: 1),
           // Split Row: Consignor/Consignee (left) vs Voucher Meta (right)
           pw.Table(
             border: const pw.TableBorder(
@@ -432,7 +432,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                           ],
                         ),
                       ),
-                      pw.Divider(thickness: 0.5, color: black, height: 1),
+                      pw.Divider(thickness: 0.25, color: black, height: 1),
                       // Consignee / Buyer (Dispatch To)
                       pw.Padding(
                         padding: const pw.EdgeInsets.fromLTRB(6, 4, 6, 4),
@@ -656,7 +656,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             // Model title row with complete borders and vertical divider
             pw.Table(
               border: const pw.TableBorder(
-                top: pw.BorderSide.none,
+                top: pw.BorderSide(color: black, width: 0.25),
                 bottom: pw.BorderSide(color: black, width: 0.25),
                 left: pw.BorderSide(color: black, width: 0.25),
                 right: pw.BorderSide(color: black, width: 0.25),
