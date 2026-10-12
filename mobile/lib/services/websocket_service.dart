@@ -69,6 +69,7 @@ class WebSocketService {
               final parsed = jsonDecode(data);
               if (parsed is Map<String, dynamic>) {
                 _eventController.add(parsed);
+                ApiService().handleWebSocketEvent(parsed);
               }
             } catch (e) {
               debugPrint('[WS] Failed to parse message: $e');

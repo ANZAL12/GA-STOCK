@@ -127,7 +127,27 @@ class _OutwardScreenState extends State<OutwardScreen> {
           });
         }
       } else if (type == 'stock_updated') {
-        _loadMetadata();
+        if (data is Map<String, dynamic>) {
+          final pid = data['product_id']?.toString();
+          final rawQty = data['current_stock_qty'];
+          final newQty = rawQty is int ? rawQty : int.tryParse(rawQty?.toString() ?? '');
+          if (pid != null && newQty != null) {
+            _api.updateProductStock(pid, newQty);
+            setState(() {
+              final idx = _products.indexWhere((p) => p.id == pid);
+              if (idx != -1) {
+                _products[idx] = _products[idx].copyWith(currentStockQty: newQty);
+                if (_selectedProduct?.id == pid) {
+                  _selectedProduct = _products[idx];
+                }
+              }
+            });
+          } else {
+            _loadMetadata(forceRefresh: true);
+          }
+        } else {
+          _loadMetadata(forceRefresh: true);
+        }
       } else if (type == 'shop_created' && data is Map<String, dynamic>) {
         try {
           final newShop = Shop.fromJson(data);
@@ -163,7 +183,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         } catch (_) {}
       } else if (type == 'shop_deleted' && data is Map<String, dynamic>) {
         if (data['bulk'] == true) {
-          _loadMetadata();
+          _loadMetadata(forceRefresh: true);
         } else {
           final id = data['id']?.toString();
           if (id != null) {
@@ -191,16 +211,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
     super.dispose();
   }
 
-  Future<void> _loadMetadata() async {
+  Future<void> _loadMetadata({bool forceRefresh = false}) async {
     try {
       final results = await Future.wait([
-        _api.getShops(),
-        _api.getProducts(),
+        _api.getShops(forceRefresh: forceRefresh),
+        _api.getProducts(forceRefresh: forceRefresh),
       ]);
       if (mounted) {
         setState(() {
           _shops = results[0] as List<Shop>;
           _products = results[1] as List<Product>;
+          if (_selectedProduct != null) {
+            final refreshed = _products.firstWhere(
+              (p) => p.id == _selectedProduct!.id,
+              orElse: () => _selectedProduct!,
+            );
+            _selectedProduct = refreshed;
+          }
           _loadingShops = false;
           _loadingProducts = false;
         });

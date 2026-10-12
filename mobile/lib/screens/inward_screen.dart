@@ -110,7 +110,27 @@ class _InwardScreenState extends State<InwardScreen> {
           });
         }
       } else if (type == 'stock_updated') {
-        _loadProducts();
+        if (data is Map<String, dynamic>) {
+          final pid = data['product_id']?.toString();
+          final rawQty = data['current_stock_qty'];
+          final newQty = rawQty is int ? rawQty : int.tryParse(rawQty?.toString() ?? '');
+          if (pid != null && newQty != null) {
+            _api.updateProductStock(pid, newQty);
+            setState(() {
+              final idx = _products.indexWhere((p) => p.id == pid);
+              if (idx != -1) {
+                _products[idx] = _products[idx].copyWith(currentStockQty: newQty);
+                if (_selectedProduct?.id == pid) {
+                  _selectedProduct = _products[idx];
+                }
+              }
+            });
+          } else {
+            _loadProducts(forceRefresh: true);
+          }
+        } else {
+          _loadProducts(forceRefresh: true);
+        }
       }
     });
   }
@@ -122,13 +142,20 @@ class _InwardScreenState extends State<InwardScreen> {
     super.dispose();
   }
 
-  Future<void> _loadProducts() async {
+  Future<void> _loadProducts({bool forceRefresh = false}) async {
     try {
-      final list = await _api.getProducts();
+      final list = await _api.getProducts(forceRefresh: forceRefresh);
       if (mounted) {
         setState(() {
           _products = list;
           _loadingProducts = false;
+          if (_selectedProduct != null) {
+            final refreshed = _products.firstWhere(
+              (p) => p.id == _selectedProduct!.id,
+              orElse: () => _selectedProduct!,
+            );
+            _selectedProduct = refreshed;
+          }
         });
       }
     } catch (e) {

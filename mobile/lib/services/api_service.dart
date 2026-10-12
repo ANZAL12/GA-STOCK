@@ -335,11 +335,64 @@ class ApiService {
     }).catchError((_) {});
   }
 
+  /// Live update of a product's stock count in RAM and disk cache (e.g. from WebSocket push)
+  void updateProductStock(String productId, int newQty) {
+    if (_cachedProducts == null) return;
+    final idx = _cachedProducts!.indexWhere((p) => p.id == productId);
+    if (idx != -1) {
+      _cachedProducts![idx] = _cachedProducts![idx].copyWith(currentStockQty: newQty);
+      _productsCacheTime = DateTime.now();
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setString('cache_products_json', jsonEncode(_cachedProducts!.map((p) => p.toJson()).toList()));
+      }).catchError((_) {});
+    } else {
+      _refreshProductsInBackground();
+    }
+  }
+
+  /// Invalidate products cache so subsequent getProducts calls fetch fresh stock from server
+  void invalidateProductCache() {
+    _productsCacheTime = null;
+  }
+
+  /// Handles incoming WebSocket events to keep RAM + Disk cache permanently fresh
+  void handleWebSocketEvent(Map<String, dynamic> event) {
+    final type = event['type']?.toString();
+    final data = event['data'];
+    if (type == 'stock_updated' && data is Map<String, dynamic>) {
+      final pid = data['product_id']?.toString();
+      final rawQty = data['current_stock_qty'];
+      final qty = rawQty is int ? rawQty : int.tryParse(rawQty?.toString() ?? '');
+      if (pid != null && qty != null) {
+        updateProductStock(pid, qty);
+      } else {
+        _refreshProductsInBackground();
+      }
+    } else if ((type == 'product_updated' || type == 'product_created') && data is Map<String, dynamic>) {
+      try {
+        final p = Product.fromJson(data);
+        updateCachedProduct(p);
+      } catch (_) {}
+    } else if (type == 'product_deleted' && data is Map<String, dynamic>) {
+      final id = data['id']?.toString();
+      if (id != null && _cachedProducts != null) {
+        _cachedProducts!.removeWhere((p) => p.id == id);
+        SharedPreferences.getInstance().then((prefs) {
+          prefs.setString('cache_products_json', jsonEncode(_cachedProducts!.map((p) => p.toJson()).toList()));
+        }).catchError((_) {});
+      }
+    }
+  }
+
   /// Stale-while-revalidate for products: returns instant cached if available
   Future<List<Product>> getProducts({bool forceRefresh = false}) async {
     if (!forceRefresh && _cachedProducts != null && _cachedProducts!.isNotEmpty) {
-      final age = _productsCacheTime != null ? DateTime.now().difference(_productsCacheTime!) : Duration.zero;
-      if (age < const Duration(minutes: 10)) {
+      // If cache time was invalidated (null), force re-fetch
+      if (_productsCacheTime == null) {
+        return await _fetchAndCacheProducts();
+      }
+      final age = DateTime.now().difference(_productsCacheTime!);
+      if (age < const Duration(minutes: 5)) {
         return _cachedProducts!;
       }
       // Stale cache: trigger background refresh silently, return cached immediately
@@ -489,6 +542,8 @@ class ApiService {
     );
 
     if (res.statusCode == 200 || res.statusCode == 201) {
+      invalidateProductCache();
+      _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
       String msg = 'Inward submission failed';
@@ -518,6 +573,8 @@ class ApiService {
     );
 
     if (res.statusCode == 200 || res.statusCode == 201) {
+      invalidateProductCache();
+      _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
       String msg = 'Inward submission failed';
@@ -609,6 +666,8 @@ class ApiService {
     );
 
     if (res.statusCode == 200 || res.statusCode == 201) {
+      invalidateProductCache();
+      _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
       String msg = 'Outward dispatch failed';
@@ -642,6 +701,8 @@ class ApiService {
     );
 
     if (res.statusCode == 200 || res.statusCode == 201) {
+      invalidateProductCache();
+      _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
       String msg = 'Outward dispatch failed';

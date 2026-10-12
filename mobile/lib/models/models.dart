@@ -55,6 +55,38 @@ class Product {
     this.hasDualSerial = false,
   });
 
+  Product copyWith({
+    String? id,
+    String? name,
+    String? sku,
+    String? categoryId,
+    String? categoryName,
+    String? brand,
+    String? model,
+    String? sizeCapacity,
+    String? unit,
+    bool? serialNumberRequired,
+    int? currentStockQty,
+    bool? outOfStockReminder,
+    bool? hasDualSerial,
+  }) {
+    return Product(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      sku: sku ?? this.sku,
+      categoryId: categoryId ?? this.categoryId,
+      categoryName: categoryName ?? this.categoryName,
+      brand: brand ?? this.brand,
+      model: model ?? this.model,
+      sizeCapacity: sizeCapacity ?? this.sizeCapacity,
+      unit: unit ?? this.unit,
+      serialNumberRequired: serialNumberRequired ?? this.serialNumberRequired,
+      currentStockQty: currentStockQty ?? this.currentStockQty,
+      outOfStockReminder: outOfStockReminder ?? this.outOfStockReminder,
+      hasDualSerial: hasDualSerial ?? this.hasDualSerial,
+    );
+  }
+
   factory Product.fromJson(Map<String, dynamic> json) {
     return Product(
       id: json['id'] ?? '',
