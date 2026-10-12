@@ -81,7 +81,7 @@ export function generateSerialListPdf(options: {
   doc.setFontSize(8.5);
   doc.setTextColor(224, 231, 255);
   doc.text("CENTRAL WAREHOUSE SERIAL NUMBER REGISTRY & AUDIT REPORT", textStartX, 17);
-  doc.text("Appliance Serial Inventory • Live Movement & Destination Tracking Log", textStartX, 22.5);
+  doc.text("Appliance Serial Inventory | Live Movement & Destination Tracking Log", textStartX, 22.5);
 
   // Header Right Metadata Badge
   const badgeWidth = 72;
@@ -275,7 +275,7 @@ export function generateSerialListPdf(options: {
     doc.setFontSize(7.5);
     doc.setTextColor(148, 163, 184);
     doc.text(
-      `Generated on ${new Date().toLocaleString("en-IN")} • Global Logistics Serial Registry • Page ${i} of ${pageCount}`,
+      `Generated on ${new Date().toLocaleString("en-IN")} | Global Logistics Serial Registry | Page ${i} of ${pageCount}`,
       pageWidth / 2,
       pageHeight - 8,
       { align: "center" }
@@ -502,7 +502,7 @@ export function generateSerialTracePdf(options: {
     doc.setFontSize(7.5);
     doc.setTextColor(148, 163, 184);
     doc.text(
-      `Generated on ${new Date().toLocaleString("en-IN")} • Serial #${serial.serial_number} Lifecycle • Page ${i} of ${pageCount}`,
+      `Generated on ${new Date().toLocaleString("en-IN")} | Serial #${serial.serial_number} Lifecycle | Page ${i} of ${pageCount}`,
       pageWidth / 2,
       pageHeight - 8,
       { align: "center" }

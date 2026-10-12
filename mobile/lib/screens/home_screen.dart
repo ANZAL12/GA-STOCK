@@ -74,16 +74,22 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            const Text(
-              'Global Agencies',
-              style: TextStyle(color: Color(0xFF0F172A), fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            Text(
-              user != null ? '${user.fullName} (${user.role})' : 'Godown Terminal',
-              style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+            Image.asset('assets/images/logo.png', width: 32, height: 32, fit: BoxFit.contain),
+            const SizedBox(width: 10),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Global Agencies',
+                  style: TextStyle(color: Color(0xFF0F172A), fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  user != null ? '${user.fullName} (${user.role})' : 'Godown Terminal',
+                  style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+                ),
+              ],
             ),
           ],
         ),

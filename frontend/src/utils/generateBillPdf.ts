@@ -356,7 +356,7 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
     doc.setFontSize(7);
     doc.setTextColor(60, 60, 60);
     doc.text(
-      `This is a Computer Generated Delivery Challan • Bill #${bill.bill_number} • Page ${i} of ${pageCount}`,
+      `This is a Computer Generated Delivery Challan | Bill #${bill.bill_number} | Page ${i} of ${pageCount}`,
       pageWidth / 2,
       292,
       { align: "center" }

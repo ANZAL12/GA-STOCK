@@ -289,6 +289,9 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     }
   }
 
+  // For test verification
+  Future<pw.Document> buildPdfForTesting(BillDetail bill) => _buildPdf(bill);
+
   // Build the PDF document from BillDetail - exact match to admin dashboard generateBillPdf
   Future<pw.Document> _buildPdf(BillDetail bill) async {
     final doc = pw.Document();
@@ -306,11 +309,11 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         footer: (ctx) => _pdfFooter(ctx, bill),
         build: (ctx) => [
           _pdfHeader(bill, logoImage),
-          pw.SizedBox(height: 10),
-          ..._pdfModelsTable(bill),
-          pw.SizedBox(height: 12),
-          ..._pdfSerialsTable(bill),
-          pw.SizedBox(height: 12),
+          pw.SizedBox(height: 4 * PdfPageFormat.mm),
+          _pdfModelsTable(bill),
+          pw.SizedBox(height: 6 * PdfPageFormat.mm),
+          _pdfSerialsTable(bill),
+          pw.SizedBox(height: 6 * PdfPageFormat.mm),
           _pdfSignatureBlock(),
         ],
       ),
@@ -322,7 +325,6 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
   pw.Widget _pdfHeader(BillDetail bill, pw.MemoryImage? logoImage) {
     const black = PdfColors.black;
-    final divider = pw.Container(height: 0.25, color: black);
 
     final destinationVal = bill.shopCity.trim().isNotEmpty
         ? bill.shopCity.trim()
@@ -359,7 +361,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               ],
             ),
           ),
-          divider,
+          pw.Divider(thickness: 0.5, color: black, height: 1),
           // Split Row: Consignor/Consignee (left) vs Voucher Meta (right)
           pw.Table(
             border: const pw.TableBorder(
@@ -430,7 +432,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                           ],
                         ),
                       ),
-                      divider,
+                      pw.Divider(thickness: 0.5, color: black, height: 1),
                       // Consignee / Buyer (Dispatch To)
                       pw.Padding(
                         padding: const pw.EdgeInsets.fromLTRB(6, 4, 6, 4),
@@ -532,7 +534,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   }) {
     return pw.Container(
       alignment: align,
-      padding: const pw.EdgeInsets.symmetric(horizontal: 5, vertical: 3.5),
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3),
       child: pw.Text(
         text,
         style: pw.TextStyle(
@@ -544,7 +546,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  List<pw.Widget> _pdfModelsTable(BillDetail bill) {
+  pw.Widget _pdfModelsTable(BillDetail bill) {
     const headerBg = PdfColor.fromInt(0xFFF2F2F2);
     const border = pw.TableBorder(
       top: pw.BorderSide(color: PdfColors.black, width: 0.25),
@@ -593,66 +595,38 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       ),
     ];
 
-    return [
-      pw.Text(
-        '1. Description of Goods Dispatched',
-        style: pw.TextStyle(
-          fontSize: 9,
-          fontWeight: pw.FontWeight.bold,
-          color: PdfColors.black,
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text(
+          '1. Description of Goods Dispatched',
+          style: pw.TextStyle(
+            fontSize: 9,
+            fontWeight: pw.FontWeight.bold,
+            color: PdfColors.black,
+          ),
         ),
-      ),
-      pw.SizedBox(height: 3),
-      pw.Table(
-        border: border,
-        columnWidths: {
-          0: const pw.FixedColumnWidth(32),
-          1: const pw.FlexColumnWidth(2),
-          2: const pw.FlexColumnWidth(2.6),
-          3: const pw.FlexColumnWidth(3.8),
-          4: const pw.FixedColumnWidth(65),
-        },
-        children: rows,
-      ),
-    ];
+        pw.SizedBox(height: 2 * PdfPageFormat.mm),
+        pw.Table(
+          border: border,
+          columnWidths: const {
+            0: pw.FlexColumnWidth(14),
+            1: pw.FlexColumnWidth(32),
+            2: pw.FlexColumnWidth(42),
+            3: pw.FlexColumnWidth(68),
+            4: pw.FlexColumnWidth(30),
+          },
+          children: rows,
+        ),
+      ],
+    );
   }
 
-  List<pw.Widget> _pdfSerialsTable(BillDetail bill) {
+  pw.Widget _pdfSerialsTable(BillDetail bill) {
     const headerBg = PdfColor.fromInt(0xFFF2F2F2);
     const black = PdfColors.black;
 
-    final widgets = <pw.Widget>[
-      pw.Text(
-        '2.Serial Number Register',
-        style: pw.TextStyle(
-          fontSize: 9,
-          fontWeight: pw.FontWeight.bold,
-          color: black,
-        ),
-      ),
-      pw.SizedBox(height: 3),
-      // Table Header Row
-      pw.Container(
-        decoration: pw.BoxDecoration(
-          color: headerBg,
-          border: pw.Border.all(color: black, width: 0.25),
-        ),
-        padding: const pw.EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
-        child: pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-          children: [
-            pw.Text(
-              'Model Details & Serial Number Register',
-              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
-            ),
-            pw.Text(
-              'Quantity',
-              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
-            ),
-          ],
-        ),
-      ),
-    ];
+    final batchWidgets = <pw.Widget>[];
 
     for (int i = 0; i < bill.batches.length; i++) {
       final b = bill.batches[i];
@@ -675,26 +649,29 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         lines.add(serialStrings.sublist(k, end).join('          '));
       }
 
-      widgets.add(
-        pw.Container(
-          decoration: pw.BoxDecoration(
-            border: pw.Border(
-              left: pw.BorderSide(color: black, width: 0.25),
-              right: pw.BorderSide(color: black, width: 0.25),
-              bottom: pw.BorderSide(color: black, width: 0.25),
-            ),
-          ),
-          child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-            children: [
-              // Model Header Row (Shown once per model)
-              pw.Container(
-                color: headerBg,
-                padding: const pw.EdgeInsets.symmetric(horizontal: 7, vertical: 3.5),
-                child: pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+      batchWidgets.add(
+        pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
+          children: [
+            // Model title row with complete borders and vertical divider
+            pw.Table(
+              border: const pw.TableBorder(
+                top: pw.BorderSide.none,
+                bottom: pw.BorderSide(color: black, width: 0.25),
+                left: pw.BorderSide(color: black, width: 0.25),
+                right: pw.BorderSide(color: black, width: 0.25),
+                verticalInside: pw.BorderSide(color: black, width: 0.25),
+              ),
+              columnWidths: const {
+                0: pw.FlexColumnWidth(156),
+                1: pw.FlexColumnWidth(30),
+              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: headerBg),
                   children: [
-                    pw.Expanded(
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
                       child: pw.Text(
                         '${i + 1}.  ${b.brand} - ${b.model}$descText',
                         style: pw.TextStyle(
@@ -704,49 +681,113 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                         ),
                       ),
                     ),
-                    pw.Text(
-                      '${b.quantity} ${b.quantity == 1 ? "Unit" : "Units"}',
-                      style: pw.TextStyle(
-                        fontSize: 8.5,
-                        fontWeight: pw.FontWeight.bold,
-                        color: black,
+                    pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
+                      child: pw.Align(
+                        alignment: pw.Alignment.centerRight,
+                        child: pw.Text(
+                          '${b.quantity} ${b.quantity == 1 ? "Unit" : "Units"}',
+                          style: pw.TextStyle(
+                            fontSize: 8.5,
+                            fontWeight: pw.FontWeight.bold,
+                            color: black,
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ),
-              ),
-              // Divider between model header and serials
-              pw.Container(height: 0.2, color: black),
-              // Serial list
-              pw.Container(
+              ],
+            ),
+            // Complete serial numbers box
+            pw.Container(
+              width: double.infinity,
+              decoration: const pw.BoxDecoration(
                 color: PdfColors.white,
-                padding: const pw.EdgeInsets.fromLTRB(8, 5, 8, 5),
-                child: lines.isNotEmpty
-                    ? pw.Text(
-                        lines.join('\n'),
-                        style: pw.TextStyle(
-                          font: pw.Font.courier(),
-                          fontSize: 8,
-                          color: black,
-                          lineSpacing: 3,
-                        ),
-                      )
-                    : pw.Text(
-                        '   No scanned serial numbers recorded for this batch',
-                        style: pw.TextStyle(
-                          fontSize: 7.5,
-                          color: const PdfColor.fromInt(0xFF505050),
-                          fontStyle: pw.FontStyle.italic,
-                        ),
-                      ),
+                border: pw.Border(
+                  left: pw.BorderSide(color: black, width: 0.25),
+                  right: pw.BorderSide(color: black, width: 0.25),
+                  bottom: pw.BorderSide(color: black, width: 0.25),
+                ),
               ),
-            ],
-          ),
+              padding: const pw.EdgeInsets.fromLTRB(8, 4, 8, 5),
+              child: lines.isNotEmpty
+                  ? pw.Text(
+                      lines.join('\n'),
+                      style: pw.TextStyle(
+                        font: pw.Font.courier(),
+                        fontSize: 8,
+                        color: black,
+                        lineSpacing: 3,
+                      ),
+                    )
+                  : pw.Text(
+                      '   No scanned serial numbers recorded for this batch',
+                      style: const pw.TextStyle(
+                        fontSize: 7.5,
+                        color: PdfColor.fromInt(0xFF505050),
+                        fontStyle: pw.FontStyle.italic,
+                      ),
+                    ),
+            ),
+          ],
         ),
       );
     }
 
-    return widgets;
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text(
+          '2.Serial Number Register',
+          style: pw.TextStyle(
+            fontSize: 9,
+            fontWeight: pw.FontWeight.bold,
+            color: black,
+          ),
+        ),
+        pw.SizedBox(height: 2 * PdfPageFormat.mm),
+        // Complete Header Table
+        pw.Table(
+          border: const pw.TableBorder(
+            top: pw.BorderSide(color: black, width: 0.25),
+            bottom: pw.BorderSide(color: black, width: 0.25),
+            left: pw.BorderSide(color: black, width: 0.25),
+            right: pw.BorderSide(color: black, width: 0.25),
+            verticalInside: pw.BorderSide(color: black, width: 0.25),
+          ),
+          columnWidths: const {
+            0: pw.FlexColumnWidth(156),
+            1: pw.FlexColumnWidth(30),
+          },
+          children: [
+            pw.TableRow(
+              decoration: const pw.BoxDecoration(color: headerBg),
+              children: [
+                pw.Padding(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
+                  child: pw.Text(
+                    'Model Details & Serial Number Register',
+                    style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                  ),
+                ),
+                pw.Padding(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
+                  child: pw.Align(
+                    alignment: pw.Alignment.centerRight,
+                    child: pw.Text(
+                      'Quantity',
+                      style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        ...batchWidgets,
+      ],
+    );
   }
 
   pw.Widget _pdfSignatureBlock() {
@@ -762,7 +803,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
           children: [
             // Left Box: Declaration & Receiver
             pw.Container(
-              height: 72,
+              height: 75,
               padding: const pw.EdgeInsets.fromLTRB(7, 5, 7, 5),
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -791,7 +832,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             ),
             // Right Box: Authorized Signatory
             pw.Container(
-              height: 72,
+              height: 75,
               padding: const pw.EdgeInsets.fromLTRB(7, 5, 7, 5),
               child: pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
@@ -832,7 +873,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       alignment: pw.Alignment.center,
       margin: const pw.EdgeInsets.only(top: 6),
       child: pw.Text(
-        'This is a Computer Generated Delivery Challan • Bill #${bill.billNumber} • Page ${ctx.pageNumber} of ${ctx.pagesCount}',
+        'This is a Computer Generated Delivery Challan | Bill #${bill.billNumber} | Page ${ctx.pageNumber} of ${ctx.pagesCount}',
         style: const pw.TextStyle(fontSize: 7, color: PdfColor.fromInt(0xFF3C3C3C)),
       ),
     );

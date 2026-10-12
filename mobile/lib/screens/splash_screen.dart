@@ -56,15 +56,15 @@ class _SplashScreenState extends State<SplashScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFF1E1B4B),
+    return Scaffold(
+      backgroundColor: const Color(0xFF1E1B4B),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.inventory_2_outlined, size: 64, color: Colors.white),
-            SizedBox(height: 16),
-            Text(
+            Image.asset('assets/images/logo.png', width: 72, height: 72, fit: BoxFit.contain),
+            const SizedBox(height: 18),
+            const Text(
               'GLOBAL AGENCIES',
               style: TextStyle(
                 color: Colors.white,
@@ -73,13 +73,13 @@ class _SplashScreenState extends State<SplashScreen> {
                 letterSpacing: 1.5,
               ),
             ),
-            SizedBox(height: 6),
-            Text(
+            const SizedBox(height: 6),
+            const Text(
               'Godown Scanner Suite',
               style: TextStyle(color: Color(0xFFC7D2FE), fontSize: 13),
             ),
-            SizedBox(height: 32),
-            CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+            const SizedBox(height: 32),
+            const CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
           ],
         ),
       ),

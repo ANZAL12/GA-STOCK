@@ -13,7 +13,7 @@ import {
   LogOut
 } from "lucide-react";
 
-import logoImg from "../assets/Global Logistics Warehouse Emblem.png";
+import logoImg from "../assets/GLOBAL2.png";
 
 export const Navbar: React.FC = () => {
   const { user, logout, isAdmin } = useAuth();
@@ -44,7 +44,7 @@ export const Navbar: React.FC = () => {
           <img
             src={logoImg}
             alt="Global Logistics Emblem"
-            className="w-12 h-12 object-contain drop-shadow-sm shrink-0"
+            className="w-10 h-10 object-contain shrink-0"
           />
           <div>
             <span className="font-extrabold text-base tracking-tight text-slate-900 block leading-none">

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Lock, User, ArrowRight, AlertCircle } from "lucide-react";
-import logoImg from "../assets/Global Logistics Warehouse Emblem.png";
+import logoImg from "../assets/GLOBAL2.png";
 
 export const LoginPage: React.FC = () => {
   const [username, setUsername] = useState("");
@@ -41,7 +41,7 @@ export const LoginPage: React.FC = () => {
           <img
             src={logoImg}
             alt="Global Logistics Emblem"
-            className="w-20 h-20 mx-auto object-contain drop-shadow-md mb-3"
+            className="w-16 h-16 mx-auto object-contain mb-3"
           />
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">
             GLOBAL LOGISTICS
