@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
@@ -21,6 +22,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   final ApiService _api = ApiService();
   final OfflineQueueService _queue = OfflineQueueService();
   StreamSubscription? _wsSubscription;
+  VoidCallback? _scannerSub;
 
   // Wizard steps: 1 = Shop, 2 = Model & Ref, 3 = Scanning & Review
   int _currentStep = 1;
@@ -65,6 +67,32 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
     _loadMetadata();
     _initWebSocket();
+
+    // Hardware barcode scanner support
+    _scannerSub = HardwareScannerService().registerListener((barcode) {
+      if (!mounted) return;
+      if (_selectedShop == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please select a destination shop first to dispatch serials.'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+      if (_selectedProduct == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please select a product model first to dispatch serials.'),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+      _handleOutwardScan(barcode);
+    });
   }
 
   void _initWebSocket() {
@@ -204,6 +232,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   @override
   void dispose() {
+    _scannerSub?.call();
     _wsSubscription?.cancel();
     _billNumberController.dispose();
     _deliveryRefController.dispose();
@@ -2505,32 +2534,52 @@ class _OutwardScreenState extends State<OutwardScreen> {
         // Continuous Scan Button (Clean, wraps so full model name is always visible)
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 44),
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFD97706),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  elevation: 0,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                ),
-                icon: const Icon(Icons.qr_code_scanner, size: 20),
-                label: Flexible(
-                  child: Text(
-                    _selectedProduct?.hasDualSerial == true
-                        ? 'Continuous Scan (${_selectedProduct?.model} - ${_outwardUnitType == "indoor" ? "Indoor" : "Outdoor"})'
-                        : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, height: 1.25),
-                    textAlign: TextAlign.center,
-                    softWrap: true,
+          child: Column(
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 44),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFD97706),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                    icon: const Icon(Icons.qr_code_scanner, size: 20),
+                    label: Flexible(
+                      child: Text(
+                        _selectedProduct?.hasDualSerial == true
+                            ? 'Continuous Scan (${_selectedProduct?.model} - ${_outwardUnitType == "indoor" ? "Indoor" : "Outdoor"})'
+                            : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, height: 1.25),
+                        textAlign: TextAlign.center,
+                        softWrap: true,
+                      ),
+                    ),
+                    onPressed: _openContinuousScanner,
                   ),
                 ),
-                onPressed: _openContinuousScanner,
               ),
-            ),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'Hardware Scanner Ready: Pull trigger on Bluetooth/USB scanner directly',
+                    style: TextStyle(color: Color(0xFF059669), fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
 

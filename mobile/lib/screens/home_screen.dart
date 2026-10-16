@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
 import 'login_screen.dart';
@@ -19,6 +20,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final ApiService _api = ApiService();
   final OfflineQueueService _queue = OfflineQueueService();
+  VoidCallback? _scannerSub;
   int _pendingQueueCount = 0;
 
   @override
@@ -27,6 +29,37 @@ class _HomeScreenState extends State<HomeScreen> {
     _refreshQueueCount();
     WebSocketService().connect();
     _api.preWarmCache();
+
+    // Listen for hardware barcode scanner on home screen (auto-opens Serial Trace)
+    _scannerSub = HardwareScannerService().registerListener((barcode) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.qr_code_scanner, color: Colors.white, size: 20),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Hardware Scan: $barcode → Opening Trace...')),
+            ],
+          ),
+          duration: const Duration(milliseconds: 1400),
+          backgroundColor: const Color(0xFF1E1B4B),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SerialLookupScreen(initialSerial: barcode),
+        ),
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _scannerSub?.call();
+    super.dispose();
   }
 
   Future<void> _refreshQueueCount() async {
@@ -166,6 +199,29 @@ class _HomeScreenState extends State<HomeScreen> {
                             Text(
                               'Device: ${_api.deviceUid?.substring(0, 8)}... (Authorized)',
                               style: const TextStyle(color: Color(0xFFC7D2FE), fontSize: 11),
+                            ),
+                            const SizedBox(height: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF10B981).withValues(alpha: 0.25),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.bolt, color: Color(0xFF34D399), size: 13),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Hardware Scanner (BT / USB) Ready',
+                                    style: TextStyle(
+                                      color: Color(0xFF6EE7B7),
+                                      fontSize: 10.5,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),

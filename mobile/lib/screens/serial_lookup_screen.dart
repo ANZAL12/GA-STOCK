@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/hardware_scanner_service.dart';
 import '../widgets/scanner_widget.dart';
 
 class SerialLookupScreen extends StatefulWidget {
-  const SerialLookupScreen({super.key});
+  final String? initialSerial;
+  const SerialLookupScreen({super.key, this.initialSerial});
 
   @override
   State<SerialLookupScreen> createState() => _SerialLookupScreenState();
@@ -13,13 +15,33 @@ class SerialLookupScreen extends StatefulWidget {
 class _SerialLookupScreenState extends State<SerialLookupScreen> {
   final ApiService _api = ApiService();
   final TextEditingController _searchController = TextEditingController();
+  VoidCallback? _scannerSub;
 
   bool _loading = false;
   SerialLookupDetail? _detail;
   String? _errorMessage;
 
   @override
+  void initState() {
+    super.initState();
+    _scannerSub = HardwareScannerService().registerListener((barcode) {
+      if (mounted) {
+        _searchController.text = barcode;
+        _performLookup(barcode);
+      }
+    });
+
+    if (widget.initialSerial != null && widget.initialSerial!.isNotEmpty) {
+      _searchController.text = widget.initialSerial!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _performLookup(widget.initialSerial!);
+      });
+    }
+  }
+
+  @override
   void dispose() {
+    _scannerSub?.call();
     _searchController.dispose();
     super.dispose();
   }
@@ -102,42 +124,65 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
           // Search & scan bar
           Container(
             color: Colors.white,
-            padding: const EdgeInsets.all(16),
-            child: Row(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: TextField(
-                    controller: _searchController,
-                    textCapitalization: TextCapitalization.characters,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace'),
-                    decoration: InputDecoration(
-                      hintText: 'Type or scan serial...',
-                      prefixIcon: const Icon(Icons.search, size: 20),
-                      filled: true,
-                      fillColor: const Color(0xFFF8FAFC),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _searchController,
+                        textCapitalization: TextCapitalization.characters,
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace'),
+                        decoration: InputDecoration(
+                          hintText: 'Type or scan serial...',
+                          prefixIcon: const Icon(Icons.search, size: 20),
+                          filled: true,
+                          fillColor: const Color(0xFFF8FAFC),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
+                          ),
+                        ),
+                        onSubmitted: (val) => _performLookup(val),
                       ),
                     ),
-                    onSubmitted: (val) => _performLookup(val),
-                  ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      style: IconButton.styleFrom(
+                        backgroundColor: const Color(0xFF1E1B4B),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.all(12),
+                      ),
+                      icon: const Icon(Icons.qr_code_scanner, size: 22),
+                      tooltip: 'Scan Barcode',
+                      onPressed: _openScanner,
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                IconButton(
-                  style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xFF1E1B4B),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.all(12),
-                  ),
-                  icon: const Icon(Icons.qr_code_scanner, size: 22),
-                  tooltip: 'Scan Barcode',
-                  onPressed: _openScanner,
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Container(
+                      width: 7,
+                      height: 7,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF10B981),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'External Scanner Active: Press trigger on Bluetooth/USB scanner',
+                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
+                    ),
+                  ],
                 ),
               ],
             ),

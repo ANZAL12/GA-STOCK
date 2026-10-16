@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
 import '../widgets/scanner_widget.dart';
@@ -40,6 +41,7 @@ class _InwardScreenState extends State<InwardScreen> {
   final ApiService _api = ApiService();
   final OfflineQueueService _queue = OfflineQueueService();
   StreamSubscription? _wsSubscription;
+  VoidCallback? _scannerSub;
 
   InwardStage _stage = InwardStage.selectCase;
   String _inwardType = 'stock_in'; // 'stock_in', 'return', 'damaged'
@@ -67,6 +69,22 @@ class _InwardScreenState extends State<InwardScreen> {
     }
     _loadProducts();
     _initWebSocket();
+
+    // Hardware barcode scanner support
+    _scannerSub = HardwareScannerService().registerListener((barcode) {
+      if (!mounted) return;
+      if (_stage == InwardStage.scanning) {
+        _handleScannedSerial(barcode);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Please select inward type and model first to register $barcode'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    });
   }
 
   void _initWebSocket() {
@@ -137,6 +155,7 @@ class _InwardScreenState extends State<InwardScreen> {
 
   @override
   void dispose() {
+    _scannerSub?.call();
     _wsSubscription?.cancel();
     _remarksController.dispose();
     super.dispose();
@@ -1808,26 +1827,46 @@ class _InwardScreenState extends State<InwardScreen> {
 
         // Big Scan Barcode Action
         Padding(
-          padding: const EdgeInsets.all(16),
-          child: SizedBox(
-            width: double.infinity,
-            height: 52,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1E1B4B),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                elevation: 1,
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Column(
+            children: [
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF1E1B4B),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 1,
+                  ),
+                  icon: const Icon(Icons.qr_code_scanner, size: 22),
+                  label: Text(
+                    _inwardType == 'stock_in'
+                        ? 'Scan Barcode (${_selectedProduct?.model ?? ''})'
+                        : 'Open Barcode Scanner (${_getInwardTypeShort(_inwardType)})',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  onPressed: _openScanner,
+                ),
               ),
-              icon: const Icon(Icons.qr_code_scanner, size: 22),
-              label: Text(
-                _inwardType == 'stock_in'
-                    ? 'Scan Barcode (${_selectedProduct?.model ?? ''})'
-                    : 'Open Barcode Scanner (${_getInwardTypeShort(_inwardType)})',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'Hardware Scanner Ready: Pull trigger on Bluetooth/USB scanner directly',
+                    style: TextStyle(color: Color(0xFF059669), fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                ],
               ),
-              onPressed: _openScanner,
-            ),
+            ],
           ),
         ),
 

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/sound_service.dart';
+import '../services/hardware_scanner_service.dart';
 
 class BarcodeScannerWidget extends StatefulWidget {
   final String title;
@@ -62,6 +63,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   String? _lastScannedValue;
   int _scannedCount = 0;
   final TextEditingController _manualTextController = TextEditingController();
+  VoidCallback? _hardwareScannerSub;
 
   late final Set<String> _sessionScannedSerials;
   final Map<String, DateTime> _recentScanTimes = {};
@@ -94,6 +96,13 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     }
 
     _initVolumeKeyListener();
+
+    // Hardware barcode scanner (Bluetooth / USB) instant integration
+    _hardwareScannerSub = HardwareScannerService().registerListener((barcode) {
+      if (mounted) {
+        _processScannedValue(barcode);
+      }
+    });
   }
 
   void _initVolumeKeyListener() {
@@ -146,6 +155,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
   @override
   void dispose() {
+    _hardwareScannerSub?.call();
     HardwareKeyboard.instance.removeHandler(_handleHardwareKeyEvent);
     try {
       _volumeChannel.invokeMethod('disable');
@@ -255,7 +265,13 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     // Prioritize the barcode closest to the viewfinder center
     candidates.sort((a, b) => a.distFromCenter.compareTo(b.distFromCenter));
 
-    final String cleanVal = candidates.first.cleanVal.toUpperCase();
+    final String topVal = candidates.first.cleanVal;
+    _processScannedValue(topVal);
+  }
+
+  void _processScannedValue(String rawVal) {
+    final String cleanVal = rawVal.trim().toUpperCase();
+    if (cleanVal.isEmpty) return;
     final DateTime now = DateTime.now();
 
     // 1. Prevent accidental repeat scanning of the same barcode within 2000ms
