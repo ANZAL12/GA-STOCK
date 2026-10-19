@@ -5,6 +5,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import '../services/api_service.dart';
 import '../models/models.dart';
+import '../widgets/responsive_utils.dart';
 import '../widgets/top_toast.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,11 +75,16 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
+        toolbarHeight: context.isTablet ? 68 : 56,
         backgroundColor: Colors.white,
         elevation: 0,
-        title: const Text(
+        title: Text(
           'Print / Export Bill',
-          style: TextStyle(color: Color(0xFF0F172A), fontSize: 16, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: const Color(0xFF0F172A),
+            fontSize: context.isTablet ? 19 : 16,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
       ),
@@ -86,18 +92,23 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
         children: [
           // Search bar
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            padding: EdgeInsets.fromLTRB(
+              context.isTablet ? 24 : 16,
+              12,
+              context.isTablet ? 24 : 16,
+              context.isTablet ? 8 : 4,
+            ),
             child: TextField(
               controller: _searchCtrl,
               onChanged: _onSearch,
-              style: const TextStyle(fontSize: 14),
+              style: TextStyle(fontSize: context.isTablet ? 16 : 14),
               decoration: InputDecoration(
                 hintText: 'Search by bill number or shop…',
-                hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
-                prefixIcon: const Icon(Icons.search, size: 20, color: Color(0xFF94A3B8)),
+                hintStyle: TextStyle(color: const Color(0xFF94A3B8), fontSize: context.isTablet ? 15 : 13),
+                prefixIcon: Icon(Icons.search, size: context.isTablet ? 24 : 20, color: const Color(0xFF94A3B8)),
                 suffixIcon: _searchCtrl.text.isNotEmpty
                     ? IconButton(
-                        icon: const Icon(Icons.clear, size: 18),
+                        icon: Icon(Icons.clear, size: context.isTablet ? 22 : 18),
                         onPressed: () {
                           _searchCtrl.clear();
                           _loadBills();
@@ -107,18 +118,21 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                 filled: true,
                 fillColor: Colors.white,
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12),
                   borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
                 ),
                 enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12),
                   borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
                 ),
                 focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12),
                   borderSide: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
                 ),
-                contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                contentPadding: EdgeInsets.symmetric(
+                  horizontal: context.isTablet ? 18 : 14,
+                  vertical: context.isTablet ? 14 : 10,
+                ),
               ),
             ),
           ),
@@ -168,7 +182,10 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
     return RefreshIndicator(
       onRefresh: () => _loadBills(search: _searchCtrl.text.trim().isEmpty ? null : _searchCtrl.text.trim()),
       child: ListView.builder(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        padding: EdgeInsets.symmetric(
+          horizontal: context.isTablet ? 24 : 16,
+          vertical: context.isTablet ? 12 : 8,
+        ),
         itemCount: _bills.length,
         itemBuilder: (ctx, i) => _buildBillCard(_bills[i]),
       ),
@@ -179,11 +196,11 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
     return GestureDetector(
       onTap: () => _openBill(bill),
       child: Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.all(14),
+        margin: EdgeInsets.only(bottom: context.isTablet ? 12 : 10),
+        padding: EdgeInsets.all(context.isTablet ? 18 : 14),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(context.isTablet ? 16 : 14),
           border: Border.all(color: const Color(0xFFE2E8F0)),
           boxShadow: [
             BoxShadow(
@@ -196,30 +213,37 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
         child: Row(
           children: [
             Container(
-              width: 44,
-              height: 44,
+              width: context.isTablet ? 54 : 44,
+              height: context.isTablet ? 54 : 44,
               decoration: BoxDecoration(
                 color: const Color(0xFFEEF2FF),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12),
               ),
-              child: const Icon(Icons.receipt_long, color: Color(0xFF3C3489), size: 22),
+              child: Icon(Icons.receipt_long, color: const Color(0xFF3C3489), size: context.isTablet ? 26 : 22),
             ),
-            const SizedBox(width: 12),
+            SizedBox(width: context.isTablet ? 16 : 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     bill.billNumber,
-                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                    style: TextStyle(
+                      fontSize: context.isTablet ? 17 : 14,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF0F172A),
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     bill.shopCity.trim().isNotEmpty ? '${bill.shopName} • ${bill.shopCity.trim()}' : bill.shopName,
-                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    style: TextStyle(
+                      fontSize: context.isTablet ? 14 : 12,
+                      color: const Color(0xFF64748B),
+                    ),
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 4),
+                  SizedBox(height: context.isTablet ? 6 : 4),
                   Row(
                     children: [
                       _chip('${bill.totalUnits} units', const Color(0xFF059669), const Color(0xFFECFDF5)),
@@ -228,10 +252,13 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                     ],
                   ),
                   if (bill.modelsSummary.isNotEmpty) ...[
-                    const SizedBox(height: 4),
+                    SizedBox(height: context.isTablet ? 6 : 4),
                     Text(
                       bill.modelsSummary.join(', '),
-                      style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8)),
+                      style: TextStyle(
+                        fontSize: context.isTablet ? 13 : 11,
+                        color: const Color(0xFF94A3B8),
+                      ),
                       overflow: TextOverflow.ellipsis,
                       maxLines: 1,
                     ),
@@ -239,7 +266,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                 ],
               ),
             ),
-            const Icon(Icons.print, color: Color(0xFF94A3B8), size: 20),
+            Icon(Icons.print, color: const Color(0xFF94A3B8), size: context.isTablet ? 24 : 20),
           ],
         ),
       ),
@@ -248,9 +275,19 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
 
   Widget _chip(String label, Color text, Color bg) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      padding: EdgeInsets.symmetric(
+        horizontal: context.isTablet ? 10 : 7,
+        vertical: context.isTablet ? 4 : 2,
+      ),
       decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
-      child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: text)),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: context.isTablet ? 12 : 10,
+          fontWeight: FontWeight.w600,
+          color: text,
+        ),
+      ),
     );
   }
 }
@@ -944,25 +981,33 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
+        toolbarHeight: context.isTablet ? 68 : 56,
         backgroundColor: Colors.white,
         elevation: 0,
         title: Text(
           'Bill: ${widget.billNumber}',
-          style: const TextStyle(color: Color(0xFF0F172A), fontSize: 15, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: const Color(0xFF0F172A),
+            fontSize: context.isTablet ? 18 : 15,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
           if (_detail != null) ...[
             IconButton(
+              iconSize: context.isTablet ? 26 : 22,
               icon: const Icon(Icons.share_outlined, color: Color(0xFF3C3489)),
               tooltip: 'Share PDF',
               onPressed: _isGeneratingPdf ? null : _sharePdf,
             ),
             IconButton(
+              iconSize: context.isTablet ? 26 : 22,
               icon: const Icon(Icons.print, color: Color(0xFF3C3489)),
               tooltip: 'Direct Print',
               onPressed: _isGeneratingPdf ? null : _directPrint,
             ),
+            if (context.isTablet) const SizedBox(width: 8),
           ],
         ],
       ),
@@ -990,7 +1035,12 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       bottomNavigationBar: _detail != null
           ? SafeArea(
               child: Container(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                padding: EdgeInsets.fromLTRB(
+                  context.isTablet ? 24 : 16,
+                  12,
+                  context.isTablet ? 24 : 16,
+                  context.isTablet ? 18 : 14,
+                ),
                 decoration: const BoxDecoration(
                   color: Colors.white,
                   border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
@@ -1000,24 +1050,30 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                     Expanded(
                       flex: 1,
                       child: SizedBox(
-                        height: 48,
+                        height: context.isTablet ? 58 : 48,
                         child: OutlinedButton.icon(
                           onPressed: _isGeneratingPdf ? null : _sharePdf,
-                          icon: const Icon(Icons.share_outlined, size: 18),
-                          label: const Text('Share PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                          icon: Icon(Icons.share_outlined, size: context.isTablet ? 22 : 18),
+                          label: Text(
+                            'Share PDF',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: context.isTablet ? 15 : 13,
+                            ),
+                          ),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: const Color(0xFF3C3489),
                             side: const BorderSide(color: Color(0xFF3C3489)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12)),
                           ),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    SizedBox(width: context.isTablet ? 16 : 12),
                     Expanded(
                       flex: 2,
                       child: SizedBox(
-                        height: 48,
+                        height: context.isTablet ? 58 : 48,
                         child: ElevatedButton.icon(
                           onPressed: _isGeneratingPdf ? null : _openPdfPreview,
                           icon: _isGeneratingPdf
@@ -1026,12 +1082,18 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                                   height: 18,
                                   child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                                 )
-                              : const Icon(Icons.picture_as_pdf_rounded, size: 20),
-                          label: const Text('View & Print PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                              : Icon(Icons.picture_as_pdf_rounded, size: context.isTablet ? 22 : 20),
+                          label: Text(
+                            'View & Print PDF',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: context.isTablet ? 16 : 14,
+                            ),
+                          ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF3C3489),
                             foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12)),
                             elevation: 1,
                           ),
                         ),
@@ -1047,23 +1109,23 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
   Widget _buildDetail(BillDetail bill) {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: EdgeInsets.all(context.isTablet ? 26 : 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // ── Bill info card
           _infoCard(bill),
-          const SizedBox(height: 16),
+          SizedBox(height: context.isTablet ? 22 : 16),
 
           // ── Models summary
           _sectionHeader('Models & Quantities', Icons.inventory_2_outlined),
-          const SizedBox(height: 8),
+          SizedBox(height: context.isTablet ? 12 : 8),
           ...bill.batches.asMap().entries.map((e) => _batchCard(e.key + 1, e.value)),
 
-          const SizedBox(height: 16),
+          SizedBox(height: context.isTablet ? 22 : 16),
           // ── Serial register
           _sectionHeader('Scanned Serial Numbers', Icons.qr_code_scanner),
-          const SizedBox(height: 8),
+          SizedBox(height: context.isTablet ? 12 : 8),
           _serialsTable(bill),
 
           const SizedBox(height: 80), // space for bottom bar
@@ -1074,30 +1136,64 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
   Widget _infoCard(BillDetail bill) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: EdgeInsets.all(context.isTablet ? 20 : 14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(context.isTablet ? 18 : 14),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: context.isTablet
+            ? [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ]
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(color: const Color(0xFF1E1B4B), borderRadius: BorderRadius.circular(6)),
-              child: Text(bill.billNumber, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+              padding: EdgeInsets.symmetric(
+                horizontal: context.isTablet ? 12 : 8,
+                vertical: context.isTablet ? 5 : 3,
+              ),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1B4B),
+                borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
+              ),
+              child: Text(
+                bill.billNumber,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: context.isTablet ? 15 : 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
             const Spacer(),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(color: const Color(0xFFECFDF5), borderRadius: BorderRadius.circular(6)),
-              child: Text('${bill.totalUnits} units',
-                  style: const TextStyle(color: Color(0xFF059669), fontSize: 11, fontWeight: FontWeight.w600)),
+              padding: EdgeInsets.symmetric(
+                horizontal: context.isTablet ? 10 : 7,
+                vertical: context.isTablet ? 5 : 3,
+              ),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECFDF5),
+                borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
+              ),
+              child: Text(
+                '${bill.totalUnits} units',
+                style: TextStyle(
+                  color: const Color(0xFF059669),
+                  fontSize: context.isTablet ? 13 : 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ]),
-          const SizedBox(height: 10),
+          SizedBox(height: context.isTablet ? 14 : 10),
           _infoRow(Icons.store_outlined, 'Shop', bill.shopCity.trim().isNotEmpty ? '${bill.shopName} – ${bill.shopCity.trim()}' : bill.shopName),
           _infoRow(Icons.calendar_today_outlined, 'Date', bill.transactionDate),
           _infoRow(Icons.person_outline, 'Dispatched By', bill.dispatchedByName),
@@ -1112,15 +1208,28 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
   Widget _infoRow(IconData icon, String label, String value) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 5),
+      padding: EdgeInsets.only(bottom: context.isTablet ? 8 : 5),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 15, color: const Color(0xFF94A3B8)),
-          const SizedBox(width: 6),
-          Text('$label: ', style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8))),
+          Icon(icon, size: context.isTablet ? 18 : 15, color: const Color(0xFF94A3B8)),
+          SizedBox(width: context.isTablet ? 8 : 6),
+          Text(
+            '$label: ',
+            style: TextStyle(
+              fontSize: context.isTablet ? 14 : 12,
+              color: const Color(0xFF94A3B8),
+            ),
+          ),
           Expanded(
-            child: Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF0F172A))),
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: context.isTablet ? 14 : 12,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF0F172A),
+              ),
+            ),
           ),
         ],
       ),
@@ -1130,46 +1239,88 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   Widget _sectionHeader(String title, IconData icon) {
     return Row(
       children: [
-        Icon(icon, size: 16, color: const Color(0xFF3C3489)),
-        const SizedBox(width: 6),
-        Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
+        Icon(icon, size: context.isTablet ? 20 : 16, color: const Color(0xFF3C3489)),
+        SizedBox(width: context.isTablet ? 8 : 6),
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: context.isTablet ? 16 : 13,
+            fontWeight: FontWeight.bold,
+            color: const Color(0xFF0F172A),
+          ),
+        ),
       ],
     );
   }
 
   Widget _batchCard(int no, BillBatch batch) {
     return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
+      margin: EdgeInsets.only(bottom: context.isTablet ? 10 : 8),
+      padding: EdgeInsets.all(context.isTablet ? 16 : 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(context.isTablet ? 14 : 10),
         border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
       child: Row(
         children: [
           Container(
-            width: 32,
-            height: 32,
+            width: context.isTablet ? 42 : 32,
+            height: context.isTablet ? 42 : 32,
             alignment: Alignment.center,
-            decoration: BoxDecoration(color: const Color(0xFFEEF2FF), borderRadius: BorderRadius.circular(8)),
-            child: Text('$no', style: const TextStyle(color: Color(0xFF3C3489), fontWeight: FontWeight.bold, fontSize: 13)),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEEF2FF),
+              borderRadius: BorderRadius.circular(context.isTablet ? 10 : 8),
+            ),
+            child: Text(
+              '$no',
+              style: TextStyle(
+                color: const Color(0xFF3C3489),
+                fontWeight: FontWeight.bold,
+                fontSize: context.isTablet ? 16 : 13,
+              ),
+            ),
           ),
-          const SizedBox(width: 10),
+          SizedBox(width: context.isTablet ? 14 : 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${batch.brand} ${batch.model}',
-                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF0F172A))),
-                Text(batch.productName, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                Text(
+                  '${batch.brand} ${batch.model}',
+                  style: TextStyle(
+                    fontSize: context.isTablet ? 15 : 13,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF0F172A),
+                  ),
+                ),
+                Text(
+                  batch.productName,
+                  style: TextStyle(
+                    fontSize: context.isTablet ? 13 : 11,
+                    color: const Color(0xFF64748B),
+                  ),
+                ),
               ],
             ),
           ),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(color: const Color(0xFFECFDF5), borderRadius: BorderRadius.circular(6)),
-            child: Text('${batch.quantity} u', style: const TextStyle(color: Color(0xFF059669), fontWeight: FontWeight.bold, fontSize: 12)),
+            padding: EdgeInsets.symmetric(
+              horizontal: context.isTablet ? 12 : 8,
+              vertical: context.isTablet ? 5 : 3,
+            ),
+            decoration: BoxDecoration(
+              color: const Color(0xFFECFDF5),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              '${batch.quantity} u',
+              style: TextStyle(
+                color: const Color(0xFF059669),
+                fontWeight: FontWeight.bold,
+                fontSize: context.isTablet ? 14 : 12,
+              ),
+            ),
           ),
         ],
       ),
@@ -1200,24 +1351,68 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(context.isTablet ? 16 : 12),
         border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
       child: Column(
         children: [
           // header row
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: const BoxDecoration(
-              color: Color(0xFF4F46E5),
-              borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+            padding: EdgeInsets.symmetric(
+              horizontal: context.isTablet ? 16 : 12,
+              vertical: context.isTablet ? 12 : 8,
             ),
-            child: const Row(
+            decoration: BoxDecoration(
+              color: const Color(0xFF4F46E5),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(context.isTablet ? 15 : 12)),
+            ),
+            child: Row(
               children: [
-                SizedBox(width: 30, child: Text('#', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))),
-                Expanded(flex: 3, child: Text('Serial Number', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))),
-                Expanded(flex: 2, child: Text('Model', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))),
-                SizedBox(width: 50, child: Text('Type', textAlign: TextAlign.center, style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold))),
+                SizedBox(
+                  width: context.isTablet ? 36 : 30,
+                  child: Text(
+                    '#',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: context.isTablet ? 13 : 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  flex: 3,
+                  child: Text(
+                    'Serial Number',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: context.isTablet ? 13 : 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  flex: 2,
+                  child: Text(
+                    'Model',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: context.isTablet ? 13 : 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: context.isTablet ? 60 : 50,
+                  child: Text(
+                    'Type',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: context.isTablet ? 13 : 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1225,29 +1420,51 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             final even = e.key.isEven;
             final item = e.value;
             return Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              padding: EdgeInsets.symmetric(
+                horizontal: context.isTablet ? 16 : 12,
+                vertical: context.isTablet ? 10 : 7,
+              ),
               decoration: BoxDecoration(
                 color: even ? Colors.white : const Color(0xFFF8FAFC),
                 borderRadius: e.key == allLines.length - 1
-                    ? const BorderRadius.vertical(bottom: Radius.circular(12))
+                    ? BorderRadius.vertical(bottom: Radius.circular(context.isTablet ? 15 : 12))
                     : BorderRadius.zero,
               ),
               child: Row(
                 children: [
                   SizedBox(
-                    width: 30,
-                    child: Text('${e.key + 1}', style: const TextStyle(fontSize: 11, color: Color(0xFF94A3B8))),
+                    width: context.isTablet ? 36 : 30,
+                    child: Text(
+                      '${e.key + 1}',
+                      style: TextStyle(
+                        fontSize: context.isTablet ? 13 : 11,
+                        color: const Color(0xFF94A3B8),
+                      ),
+                    ),
                   ),
                   Expanded(
                     flex: 3,
-                    child: Text(item.line.serialText, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF0F172A))),
+                    child: Text(
+                      item.line.serialText,
+                      style: TextStyle(
+                        fontSize: context.isTablet ? 14 : 11,
+                        fontWeight: FontWeight.w600,
+                        color: const Color(0xFF0F172A),
+                      ),
+                    ),
                   ),
                   Expanded(
                     flex: 2,
-                    child: Text(item.model, style: const TextStyle(fontSize: 11, color: Color(0xFF64748B))),
+                    child: Text(
+                      item.model,
+                      style: TextStyle(
+                        fontSize: context.isTablet ? 13 : 11,
+                        color: const Color(0xFF64748B),
+                      ),
+                    ),
                   ),
                   SizedBox(
-                    width: 50,
+                    width: context.isTablet ? 60 : 50,
                     child: Text(
                       item.line.unitType?.toUpperCase() ?? '-',
                       textAlign: TextAlign.center,

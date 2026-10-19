@@ -167,11 +167,11 @@ async def list_shop_dispatched_serials(
 @router.post("", response_model=ShopResponse, status_code=status.HTTP_201_CREATED)
 async def create_shop(
     req: ShopCreate,
-    admin: Annotated[User, Depends(require_admin)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ShopResponse:
     """
-    Admin only: add a new shop.
+    Accessible by admin and staff: add a new shop.
     """
     clean_name = req.name.strip()
     clean_city = req.city.strip() if req.city else ""
@@ -199,7 +199,7 @@ async def create_shop(
     await db.flush()
 
     audit = AuditLog(
-        user_id=admin.id,
+        user_id=current_user.id,
         action="SHOP_CREATED",
         entity_type="shop",
         entity_id=str(shop_obj.id),

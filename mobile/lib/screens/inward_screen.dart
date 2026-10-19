@@ -7,6 +7,7 @@ import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/websocket_service.dart';
+import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 
@@ -1827,44 +1828,38 @@ class _InwardScreenState extends State<InwardScreen> {
 
         // Big Scan Barcode Action
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          padding: EdgeInsets.fromLTRB(
+            context.isTablet ? 28 : 16,
+            context.isTablet ? 22 : 16,
+            context.isTablet ? 28 : 16,
+            context.isTablet ? 12 : 8,
+          ),
           child: Column(
             children: [
               SizedBox(
                 width: double.infinity,
-                height: 52,
+                height: context.isTablet ? 64 : 52,
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1E1B4B),
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(context.isTablet ? 18 : 14),
+                    ),
                     elevation: 1,
                   ),
-                  icon: const Icon(Icons.qr_code_scanner, size: 22),
+                  icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 26 : 22),
                   label: Text(
                     _inwardType == 'stock_in'
                         ? 'Scan Barcode (${_selectedProduct?.model ?? ''})'
                         : 'Open Barcode Scanner (${_getInwardTypeShort(_inwardType)})',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: context.isTablet ? 16 : 14,
+                    ),
                   ),
                   onPressed: _openScanner,
                 ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: const BoxDecoration(color: Color(0xFF10B981), shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 6),
-                  const Text(
-                    'Hardware Scanner Ready: Pull trigger on Bluetooth/USB scanner directly',
-                    style: TextStyle(color: Color(0xFF059669), fontSize: 11, fontWeight: FontWeight.w600),
-                  ),
-                ],
               ),
             ],
           ),

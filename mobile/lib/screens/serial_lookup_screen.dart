@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
+import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 
 class SerialLookupScreen extends StatefulWidget {
@@ -111,20 +112,32 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isTablet = context.isTablet;
+
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
+        toolbarHeight: isTablet ? 72 : 56,
         backgroundColor: Colors.white,
         elevation: 0,
         foregroundColor: const Color(0xFF0F172A),
-        title: const Text('Serial Lifecycle Trace', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        title: Text(
+          'Serial Lifecycle Trace',
+          style: TextStyle(
+            fontSize: isTablet ? 20 : 16,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ),
       body: Column(
         children: [
           // Search & scan bar
           Container(
             color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            padding: EdgeInsets.symmetric(
+              horizontal: isTablet ? 28 : 16,
+              vertical: isTablet ? 18 : 12,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -134,53 +147,68 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
                       child: TextField(
                         controller: _searchController,
                         textCapitalization: TextCapitalization.characters,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontFamily: 'monospace'),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'monospace',
+                          fontSize: isTablet ? 17 : 14,
+                        ),
                         decoration: InputDecoration(
                           hintText: 'Type or scan serial...',
-                          prefixIcon: const Icon(Icons.search, size: 20),
+                          hintStyle: TextStyle(fontSize: isTablet ? 15 : 14),
+                          prefixIcon: Icon(Icons.search, size: isTablet ? 24 : 20),
                           filled: true,
                           fillColor: const Color(0xFFF8FAFC),
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: isTablet ? 20 : 16,
+                            vertical: isTablet ? 18 : 14,
+                          ),
                           border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(isTablet ? 16 : 12),
                             borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
                           ),
                           focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(isTablet ? 16 : 12),
                             borderSide: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
                           ),
                         ),
                         onSubmitted: (val) => _performLookup(val),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 10),
                     IconButton(
                       style: IconButton.styleFrom(
                         backgroundColor: const Color(0xFF1E1B4B),
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        padding: const EdgeInsets.all(12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(isTablet ? 16 : 12),
+                        ),
+                        padding: EdgeInsets.all(isTablet ? 16 : 12),
                       ),
-                      icon: const Icon(Icons.qr_code_scanner, size: 22),
+                      icon: Icon(Icons.qr_code_scanner, size: isTablet ? 28 : 22),
                       tooltip: 'Scan Barcode',
                       onPressed: _openScanner,
                     ),
                   ],
                 ),
-                const SizedBox(height: 6),
+                SizedBox(height: isTablet ? 10 : 6),
                 Row(
                   children: [
                     Container(
-                      width: 7,
-                      height: 7,
+                      width: isTablet ? 9 : 7,
+                      height: isTablet ? 9 : 7,
                       decoration: const BoxDecoration(
                         color: Color(0xFF10B981),
                         shape: BoxShape.circle,
                       ),
                     ),
-                    const SizedBox(width: 6),
+                    const SizedBox(width: 8),
                     Text(
                       'External Scanner Active: Press trigger on Bluetooth/USB scanner',
-                      style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
+                      style: TextStyle(
+                        fontSize: isTablet ? 13 : 11,
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ],
                 ),

@@ -477,6 +477,45 @@ class ApiService {
     _fetchAndCacheShops().catchError((_) => <Shop>[]);
   }
 
+  Future<Shop> createShop({
+    required String name,
+    String? city,
+    String? phone,
+  }) async {
+    final payload = {
+      'name': name.trim(),
+      if (city != null && city.trim().isNotEmpty) 'city': city.trim(),
+      if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
+    };
+    final res = await _authenticatedPost(
+      Uri.parse('$_baseUrl/shops'),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 201) {
+      final data = jsonDecode(res.body);
+      final newShop = Shop.fromJson(data);
+      if (_cachedShops != null) {
+        _cachedShops!.removeWhere((s) => s.id == newShop.id);
+        _cachedShops!.add(newShop);
+        _cachedShops!.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cache_shops_json', jsonEncode(_cachedShops!.map((s) => s.toJson()).toList()));
+        } catch (_) {}
+      }
+      return newShop;
+    }
+    try {
+      final body = jsonDecode(res.body);
+      throw Exception(body['detail'] ?? 'Failed to create shop');
+    } catch (e) {
+      if (e is Exception && !e.toString().contains('FormatException')) {
+        rethrow;
+      }
+      throw Exception('Server error (${res.statusCode}): Failed to create shop');
+    }
+  }
+
   void clearSerialCheckCache() {
     _outwardSerialCheckCache.clear();
     _inwardSerialValidateCache.clear();
