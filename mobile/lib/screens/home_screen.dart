@@ -11,6 +11,7 @@ import 'outward_screen.dart';
 import 'serial_lookup_screen.dart';
 import 'offline_queue_screen.dart';
 import 'print_bill_screen.dart';
+import 'quick_dispatch_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -119,6 +120,22 @@ class _HomeScreenState extends State<HomeScreen> {
         await Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const OutwardScreen()),
+        );
+        _refreshQueueCount();
+      },
+    );
+
+    final cardQuickScan = _buildActionCard(
+      isTablet: isTablet,
+      title: 'Quick Dispatch Scan',
+      icon: Icons.bolt,
+      iconColor: const Color(0xFFEA580C),
+      iconBg: const Color(0xFFFFF7ED),
+      badgeText: 'Direct Scan',
+      onTap: () async {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const QuickDispatchScreen()),
         );
         _refreshQueueCount();
       },
@@ -298,9 +315,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(child: cardTrace),
+                        Expanded(child: cardQuickScan),
                         const SizedBox(width: 20),
-                        Expanded(child: cardPrint),
+                        Expanded(child: cardTrace),
                       ],
                     ),
                   ),
@@ -309,16 +326,31 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(child: cardAddShop),
+                        Expanded(child: cardPrint),
                         const SizedBox(width: 20),
-                        Expanded(child: cardQueue ?? const SizedBox()),
+                        Expanded(child: cardAddShop),
                       ],
                     ),
                   ),
+                  if (cardQueue != null) ...[
+                    const SizedBox(height: 20),
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(child: cardQueue),
+                          const SizedBox(width: 20),
+                          const Expanded(child: SizedBox()),
+                        ],
+                      ),
+                    ),
+                  ],
                 ] else ...[
                   cardInward,
                   const SizedBox(height: 14),
                   cardOutward,
+                  const SizedBox(height: 14),
+                  cardQuickScan,
                   const SizedBox(height: 14),
                   cardTrace,
                   const SizedBox(height: 14),

@@ -5,8 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class OutwardCheckSerialRequest(BaseModel):
-    product_id: uuid.UUID
-    shop_id: uuid.UUID
+    product_id: Optional[uuid.UUID] = None
+    shop_id: Optional[uuid.UUID] = None
     serial_number: str = Field(..., min_length=1, max_length=100)
 
 
@@ -23,6 +23,7 @@ class OutwardCheckSerialResponse(BaseModel):
     can_dispatch: bool = True
     is_blocked: bool = False
     is_matched: bool = False
+    is_damaged: bool = False
     registered_model_name: Optional[str] = None
     registered_product_id: Optional[uuid.UUID] = None
     current_status: Optional[str] = None

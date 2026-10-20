@@ -627,21 +627,24 @@ class ApiService {
 
   // --- OUTWARD API ---
   Future<Map<String, dynamic>> checkOutwardSerial(
-    String productId,
+    String? productId,
     String serialNumber,
   ) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
-    final cacheKey = '$productId:$cleanSerial';
+    final cacheKey = '${productId ?? "any"}:$cleanSerial';
 
     if (_outwardSerialCheckCache.containsKey(cacheKey)) {
       return _outwardSerialCheckCache[cacheKey]!;
     }
 
-    final res = await _authenticatedGet(
-      Uri.parse(
-        '$_baseUrl/outward/check-serial?product_id=$productId&serial_number=${Uri.encodeComponent(cleanSerial)}',
-      ),
-    );
+    final queryParams = <String, String>{
+      'serial_number': cleanSerial,
+    };
+    if (productId != null && productId.isNotEmpty) {
+      queryParams['product_id'] = productId;
+    }
+    final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
+    final res = await _authenticatedGet(uri);
 
     if (res.statusCode == 200) {
       final data = jsonDecode(res.body);

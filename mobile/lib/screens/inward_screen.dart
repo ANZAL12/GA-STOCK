@@ -353,6 +353,7 @@ class _InwardScreenState extends State<InwardScreen> {
           prompt: prompt,
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
+          itemCountProvider: () => _scannedItems.length,
           existingSerials: _scannedItems.map((e) => e.serialNumber).toSet(),
           isDuplicate: (s) =>
               _scannedItems.any((e) => e.serialNumber == s.trim().toUpperCase()) ||

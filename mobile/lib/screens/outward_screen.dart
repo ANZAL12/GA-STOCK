@@ -303,6 +303,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           prompt: 'Scanning: ${_selectedProduct!.brand} ${_selectedProduct!.model}',
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
+          itemCountProvider: () => _scannedItems.length,
           existingSerials: _scannedItems.map((e) => e.serialNumber).toSet(),
           isDuplicate: (s) =>
               _scannedItems.any((e) => e.serialNumber == s.trim().toUpperCase()) ||
@@ -346,6 +347,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
         return; // NEVER ADD TO LIST!
       }
 
+      // --- CRITICAL BLOCK: DAMAGED PRODUCT WARNING ---
+      final bool isDamaged = res['is_damaged'] == true ||
+          (res['current_status'] ?? '').toString().toLowerCase() == 'damaged' ||
+          (res['message'] ?? '').toString().toLowerCase().contains('damaged');
+
+      if (isDamaged) {
+        HapticFeedback.heavyImpact();
+        final proceed = await _showCase3StatusWarningDialog(
+          cleanSerial,
+          'This item is damaged. Are you sure you want to add?',
+          isDamaged: true,
+        );
+        if (proceed != true) {
+          return; // DO NOT ADD TO LIST!
+        }
+      }
+
       final dynamic caseVal = res['case'];
       final String caseName = (res['case_name'] ?? '').toString();
       final bool isMatched = res['is_matched'] == true || caseVal == 1 || caseName == 'matched';
@@ -378,14 +396,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
               OutwardScanResult(
                 serialNumber: cleanSerial,
                 product: _selectedProduct,
-                caseType: OutwardCase.matched,
+                caseType: isDamaged ? OutwardCase.statusWarning : OutwardCase.matched,
                 isMatched: true,
-                warningMessage: msg,
+                isFlaggedForReview: isDamaged,
+                warningMessage: isDamaged ? 'Damaged item added after confirmation.' : msg,
                 unitType: unitType,
               ),
             );
           });
-          _showToast('Matched: $cleanSerial (${_selectedProduct!.model})', const Color(0xFF059669));
+          _showToast(
+            '${isDamaged ? "Damaged unit added" : "Matched"}: $cleanSerial (${_selectedProduct!.model})',
+            isDamaged ? const Color(0xFFD97706) : const Color(0xFF059669),
+          );
         }
       }
 
@@ -429,9 +451,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
           }
         }
 
-        HapticFeedback.heavyImpact();
-        final proceed = await _showCase3StatusWarningDialog(cleanSerial, msg ?? 'Unit is not currently marked available.');
-        if (proceed == true) {
+        bool proceed = true;
+        if (!isDamaged) {
+          HapticFeedback.heavyImpact();
+          final resProceed = await _showCase3StatusWarningDialog(
+            cleanSerial,
+            msg ?? 'Unit is not currently marked available.',
+            isDamaged: false,
+          );
+          proceed = (resProceed == true);
+        }
+
+        if (proceed) {
           final unitType = (res['unit_type'] as String?) ?? (_selectedProduct?.hasDualSerial == true ? _outwardUnitType : null);
           setState(() {
             _scannedItems.insert(
@@ -442,15 +473,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 caseType: OutwardCase.statusWarning,
                 isMatched: isMatched,
                 isFlaggedForReview: true,
-                warningMessage: msg,
+                warningMessage: isDamaged ? 'Damaged item added after confirmation.' : msg,
                 unitType: unitType,
               ),
             );
           });
+          _showToast(
+            'Added $cleanSerial (${_selectedProduct!.model})${isDamaged ? " • DAMAGED" : ""}',
+            const Color(0xFFD97706),
+          );
         }
       }
 
-      // --- CASE 4: MODEL MISMATCH (Serial is registered under another model in this godown) ---
       // --- CASE 4: MODEL MISMATCH (Serial is registered under another model in this godown) ---
       else if (caseVal == 4 || caseName == 'model_mismatch') {
         HapticFeedback.heavyImpact();
@@ -470,34 +504,37 @@ class _OutwardScreenState extends State<OutwardScreen> {
             cleanSerial,
             matchedProd,
             initialUnitType: res['unit_type']?.toString(),
+            isDamaged: isDamaged,
           );
           if (dialogResult != null && dialogResult['action'] == 'add') {
             final String? chosenUnitType = dialogResult['unit_type'];
-          if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
-            setState(() {
-              _scannedItems.insert(
-                0,
-                OutwardScanResult(
-                  serialNumber: cleanSerial,
-                  product: matchedProd,
-                  caseType: OutwardCase.matched,
-                  isMatched: true,
-                  unitType: chosenUnitType,
-                ),
+            if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+              setState(() {
+                _scannedItems.insert(
+                  0,
+                  OutwardScanResult(
+                    serialNumber: cleanSerial,
+                    product: matchedProd,
+                    caseType: isDamaged ? OutwardCase.statusWarning : OutwardCase.matched,
+                    isMatched: true,
+                    isFlaggedForReview: isDamaged,
+                    warningMessage: isDamaged ? 'Damaged item added after confirmation.' : null,
+                    unitType: chosenUnitType,
+                  ),
+                );
+                // Switch active model to matchedProd so staff can see and scan the matching unit!
+                _selectedProduct = matchedProd;
+                _activeFilterModelId = matchedProd!.id;
+                if (matchedProd.hasDualSerial && chosenUnitType != null) {
+                  // Auto-toggle to the companion unit so the next scan is ready for the other unit!
+                  _outwardUnitType = (chosenUnitType == 'indoor') ? 'outdoor' : 'indoor';
+                }
+              });
+              _showToast(
+                'Added $cleanSerial (${matchedProd.model})${isDamaged ? " • DAMAGED" : ""}${matchedProd.hasDualSerial ? " • Next unit: ${_outwardUnitType.toUpperCase()}" : ""}',
+                isDamaged ? const Color(0xFFD97706) : const Color(0xFF059669),
               );
-              // Switch active model to matchedProd so staff can see and scan the matching unit!
-              _selectedProduct = matchedProd;
-              _activeFilterModelId = matchedProd!.id;
-              if (matchedProd.hasDualSerial && chosenUnitType != null) {
-                // Auto-toggle to the companion unit so the next scan is ready for the other unit!
-                _outwardUnitType = (chosenUnitType == 'indoor') ? 'outdoor' : 'indoor';
-              }
-            });
-            _showToast(
-              'Added $cleanSerial (${matchedProd.model})${matchedProd.hasDualSerial ? " • Next unit: ${_outwardUnitType.toUpperCase()}" : ""}',
-              const Color(0xFF059669),
-            );
-          }
+            }
           }
         } else {
           await _showCase4ModelMismatchDialog(cleanSerial, existingModel, msg);
@@ -515,6 +552,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
     String serial,
     Product targetProd, {
     String? initialUnitType,
+    bool isDamaged = false,
   }) {
     String selectedUnitType = initialUnitType ?? 'indoor';
 
@@ -535,16 +573,20 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 Container(
                   padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFEEF2FF),
+                    color: isDamaged ? const Color(0xFFFEF2F2) : const Color(0xFFEEF2FF),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Icon(Icons.swap_horiz, color: Color(0xFF4F46E5), size: 20),
+                  child: Icon(
+                    isDamaged ? Icons.warning_amber_rounded : Icons.swap_horiz,
+                    color: isDamaged ? const Color(0xFFDC2626) : const Color(0xFF4F46E5),
+                    size: 20,
+                  ),
                 ),
                 const SizedBox(width: 8),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Model Mismatch Detected',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                    isDamaged ? 'Damaged Unit • Different Model' : 'Model Mismatch Detected',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
                   ),
                 ),
               ],
@@ -553,6 +595,34 @@ class _OutwardScreenState extends State<OutwardScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (isDamaged) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFFECACA)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, size: 16, color: Color(0xFFDC2626)),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'This item is marked as DAMAGED.',
+                            style: TextStyle(
+                              color: Color(0xFF991B1B),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 Text(
                   'Scanned Serial:',
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.grey[500]),
@@ -1070,44 +1140,101 @@ class _OutwardScreenState extends State<OutwardScreen> {
     );
   }
 
-  Future<bool?> _showCase3StatusWarningDialog(String serial, String message) {
+  Future<bool?> _showCase3StatusWarningDialog(
+    String serial,
+    String message, {
+    bool isDamaged = false,
+  }) {
     return showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706)),
-            SizedBox(width: 8),
-            Expanded(child: Text('Serial Status Warning', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+            Icon(
+              Icons.warning_amber_rounded,
+              color: isDamaged ? const Color(0xFFDC2626) : const Color(0xFFD97706),
+              size: 24,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                isDamaged ? 'Damaged Product' : 'Serial Status Warning',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+              ),
+            ),
           ],
         ),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(message, style: const TextStyle(fontSize: 13, height: 1.4)),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: isDamaged ? const Color(0xFFFEF2F2) : const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: isDamaged ? const Color(0xFFFECACA) : const Color(0xFFE2E8F0),
+                ),
+              ),
+              child: Text(
+                serial,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: isDamaged ? const Color(0xFF991B1B) : const Color(0xFF0F172A),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              isDamaged ? 'This item is damaged. Are you sure you want to add?' : message,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFF334155), height: 1.4),
+            ),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFFBEB),
+                color: isDamaged ? const Color(0xFFFFF1F2) : const Color(0xFFFFFBEB),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFFDE68A)),
+                border: Border.all(
+                  color: isDamaged ? const Color(0xFFFECDD3) : const Color(0xFFFDE68A),
+                ),
               ),
-              child: const Text(
-                'If you proceed, this dispatch will be flagged for administrator review.',
-                style: TextStyle(fontSize: 11, color: Color(0xFFB45309)),
+              child: Text(
+                isDamaged
+                    ? 'If you proceed, this dispatch will record the item as damaged for review.'
+                    : 'If you proceed, this dispatch will be flagged for administrator review.',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: isDamaged ? const Color(0xFF9F1239) : const Color(0xFFB45309),
+                ),
               ),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel Scan')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+          ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD97706)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: isDamaged ? const Color(0xFFDC2626) : const Color(0xFFD97706),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+            ),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Dispatch Anyway (Flag)', style: TextStyle(color: Colors.white)),
+            child: Text(
+              isDamaged ? 'Yes, Add' : 'Dispatch Anyway (Flag)',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),

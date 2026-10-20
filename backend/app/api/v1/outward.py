@@ -149,15 +149,17 @@ async def check_serial(
     registered_model_display = f"{prod_name} ({prod_model})"
 
     # Case 4: Known, not dispatched, but belongs to a different model than the one selected
-    if sn.product_id != req.product_id:
+    if req.product_id is not None and sn.product_id != req.product_id:
+        is_damaged = (sn.status == SerialStatus.damaged)
+        dmg_prefix = "This item is damaged and " if is_damaged else ""
         return OutwardCheckSerialResponse(
             serial_number=clean_serial,
             case=4,
             case_name="model_mismatch",
             badge="warning",
-            badge_label="Model Warning",
+            badge_label="Damaged & Model Warning" if is_damaged else "Model Warning",
             message=(
-                f"Serial is registered under '{registered_model_display}', not the selected model. "
+                f"{dmg_prefix}Serial is registered under '{registered_model_display}', not the selected model. "
                 "Confirm to dispatch anyway (will be flagged for admin review)."
             ),
             requires_confirmation=True,
@@ -166,6 +168,7 @@ async def check_serial(
             can_dispatch=True,
             is_blocked=False,
             is_matched=False,
+            is_damaged=is_damaged,
             registered_model_name=registered_model_display,
             registered_product_id=sn.product_id,
             current_status=sn.status.value,
@@ -174,22 +177,26 @@ async def check_serial(
 
     # Case 3: Known, same model, not dispatched, but status is NOT Available
     if sn.status != SerialStatus.available:
+        is_damaged = (sn.status == SerialStatus.damaged)
+        dmg_msg = (
+            "This item is damaged. Are you sure you want to add?"
+            if is_damaged
+            else f"Serial is currently in status '{sn.status.value}'. Confirm to dispatch anyway (will be flagged for admin review)."
+        )
         return OutwardCheckSerialResponse(
             serial_number=clean_serial,
             case=3,
             case_name="status_warning",
             badge="warning",
-            badge_label="Status Warning",
-            message=(
-                f"Serial is currently in status '{sn.status.value}'. "
-                "Confirm to dispatch anyway (will be flagged for admin review)."
-            ),
+            badge_label="Damaged" if is_damaged else "Status Warning",
+            message=dmg_msg,
             requires_confirmation=True,
             warning_duplicate_dispatch=False,
             is_dispatched=False,
             can_dispatch=True,
             is_blocked=False,
             is_matched=True,
+            is_damaged=is_damaged,
             registered_model_name=registered_model_display,
             registered_product_id=sn.product_id,
             current_status=sn.status.value,
@@ -211,6 +218,7 @@ async def check_serial(
         can_dispatch=True,
         is_blocked=False,
         is_matched=True,
+        is_damaged=False,
         registered_model_name=registered_model_display,
         registered_product_id=sn.product_id,
         current_status="available",
@@ -253,10 +261,10 @@ async def check_reference(
 
 @router.get("/check-serial", response_model=OutwardCheckSerialResponse)
 async def check_serial_get(
-    product_id: uuid.UUID,
     serial_number: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    product_id: Optional[uuid.UUID] = None,
     shop_id: Optional[uuid.UUID] = None,
 ) -> OutwardCheckSerialResponse:
     dummy_shop_id = shop_id or uuid.uuid4()

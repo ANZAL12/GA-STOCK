@@ -10,9 +10,10 @@ class BarcodeScannerWidget extends StatefulWidget {
   final String prompt;
   final String? initialLastScanned;
   final int initialCount;
+  final int Function()? itemCountProvider;
   final Set<String>? existingSerials;
   final bool Function(String barcode)? isDuplicate;
-  final Function(String barcode) onScanned;
+  final dynamic Function(String barcode) onScanned;
 
   const BarcodeScannerWidget({
     super.key,
@@ -20,6 +21,7 @@ class BarcodeScannerWidget extends StatefulWidget {
     this.prompt = 'Align barcode strictly inside viewfinder',
     this.initialLastScanned,
     this.initialCount = 0,
+    this.itemCountProvider,
     this.existingSerials,
     this.isDuplicate,
     required this.onScanned,
@@ -62,6 +64,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   bool _isHoldingTrigger = false;
   String? _lastScannedValue;
   int _scannedCount = 0;
+  int get _currentCount => widget.itemCountProvider?.call() ?? _scannedCount;
   final TextEditingController _manualTextController = TextEditingController();
   VoidCallback? _hardwareScannerSub;
 
@@ -79,7 +82,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     super.initState();
     SoundService().init();
     _lastScannedValue = widget.initialLastScanned;
-    _scannedCount = widget.initialCount;
+    _scannedCount = widget.itemCountProvider?.call() ?? widget.initialCount;
     _sessionScannedSerials = widget.existingSerials != null
         ? Set<String>.from(widget.existingSerials!.map((s) => s.trim().toUpperCase()))
         : <String>{};
@@ -269,9 +272,11 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     _processScannedValue(topVal);
   }
 
-  void _processScannedValue(String rawVal) {
+  Future<void> _processScannedValue(String rawVal) async {
     final String cleanVal = rawVal.trim().toUpperCase();
     if (cleanVal.isEmpty) return;
+    if (_isProcessing) return;
+
     final DateTime now = DateTime.now();
 
     // 1. Prevent accidental repeat scanning of the same barcode within 2000ms
@@ -297,18 +302,46 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     }
 
     _recentScanTimes[cleanVal] = now;
-    _sessionScannedSerials.add(cleanVal); // Synchronously claim before callback
+    _sessionScannedSerials.add(cleanVal); // Tentatively claim
 
-    // Fire beep sound and haptic first for absolute zero-delay audio feedback
+    // Audio cue on barcode detection
     SoundService().playScannerBeep();
     HapticFeedback.mediumImpact();
+
+    final int countBefore = widget.itemCountProvider?.call() ?? _scannedCount;
+
     setState(() {
-      _lastScannedValue = cleanVal;
-      _scannedCount++;
       _isProcessing = true;
     });
 
-    widget.onScanned(cleanVal);
+    dynamic result;
+    try {
+      result = await widget.onScanned(cleanVal);
+    } catch (_) {
+      result = false;
+    }
+
+    if (!mounted) return;
+
+    final int countAfter = widget.itemCountProvider?.call() ?? _scannedCount;
+    final bool isSuccess = (result is bool)
+        ? result
+        : (widget.itemCountProvider != null ? (countAfter > countBefore) : true);
+
+    if (isSuccess) {
+      setState(() {
+        _lastScannedValue = cleanVal;
+        _scannedCount = widget.itemCountProvider != null ? countAfter : (_scannedCount + 1);
+      });
+    } else {
+      _sessionScannedSerials.remove(cleanVal);
+      _recentScanTimes.remove(cleanVal);
+      if (widget.itemCountProvider != null) {
+        setState(() {
+          _scannedCount = countAfter;
+        });
+      }
+    }
 
     // Super-fast cooldown (260ms) so moving to the next unique item scans instantly!
     Future.delayed(const Duration(milliseconds: 260), () {
@@ -376,12 +409,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
               final val = _manualTextController.text.trim();
               if (val.isNotEmpty) {
                 Navigator.pop(ctx);
-                HapticFeedback.lightImpact();
-                setState(() {
-                  _lastScannedValue = val;
-                  _scannedCount++;
-                });
-                widget.onScanned(val);
+                _processScannedValue(val);
               }
             },
             child: const Text('Submit'),
@@ -827,7 +855,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                         letterSpacing: 0.8,
                       ),
                     ),
-                    if (_scannedCount > 0) ...[
+                    if (_currentCount > 0) ...[
                       const SizedBox(width: 6),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -836,7 +864,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
-                          '#$_scannedCount',
+                          '#$_currentCount',
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 9,
