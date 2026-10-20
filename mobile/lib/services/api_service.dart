@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
+import 'offline_manager.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -98,6 +99,9 @@ class ApiService {
         _shopsCacheTime = DateTime.now();
       } catch (_) {}
     }
+
+    // 5. Saved device approval status
+    _isDeviceApproved = prefs.getBool('device_approved') ?? false;
   }
 
   Future<void> setBaseUrl(String url) async {
@@ -143,11 +147,16 @@ class ApiService {
       if (res.statusCode == 200 || res.statusCode == 201) {
         final data = jsonDecode(res.body);
         _isDeviceApproved = data['is_active'] == true;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('device_approved', _isDeviceApproved);
+        OfflineManager().markOnline();
         return _isDeviceApproved;
       }
       return false;
     } catch (e) {
-      return false;
+      // If offline or network unreachable, fallback to previously approved state
+      OfflineManager().markOffline();
+      return _isDeviceApproved;
     }
   }
 
@@ -421,10 +430,15 @@ class ApiService {
         throw Exception('Session expired. Please log in again.');
       }
     } catch (e) {
+      OfflineManager().markOffline();
       if (_cachedProducts != null && _cachedProducts!.isNotEmpty) {
         return _cachedProducts!;
       }
-      rethrow;
+      if (OfflineManager().products.isNotEmpty) {
+        _cachedProducts = OfflineManager().products;
+        return _cachedProducts!;
+      }
+      return [];
     }
     return _cachedProducts ?? [];
   }
@@ -465,10 +479,15 @@ class ApiService {
         throw Exception('Session expired. Please log in again.');
       }
     } catch (e) {
+      OfflineManager().markOffline();
       if (_cachedShops != null && _cachedShops!.isNotEmpty) {
         return _cachedShops!;
       }
-      rethrow;
+      if (OfflineManager().shops.isNotEmpty) {
+        _cachedShops = OfflineManager().shops;
+        return _cachedShops!;
+      }
+      return [];
     }
     return _cachedShops ?? [];
   }
@@ -534,6 +553,13 @@ class ApiService {
       return _inwardSerialValidateCache[cacheKey]!;
     }
 
+    // Fast-path offline check if connection is down
+    if (!OfflineManager().isOnline) {
+      final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = offlineResult;
+      return offlineResult;
+    }
+
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
       'inward_type': inwardType,
@@ -541,20 +567,30 @@ class ApiService {
     if (productId != null && productId.isNotEmpty) {
       queryParams['product_id'] = productId;
     }
-    final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
-    final res = await _authenticatedGet(uri);
 
-    if (res.statusCode == 200) {
-      final data = jsonDecode(res.body);
-      _inwardSerialValidateCache[cacheKey] = data;
-      return data;
-    } else {
-      String msg = 'Validation error';
-      try {
-        final err = jsonDecode(res.body);
-        msg = err['detail'] ?? msg;
-      } catch (_) {}
-      throw Exception(msg);
+    try {
+      final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
+      // Fast check: 1200ms timeout with 0 retries
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1200));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        _inwardSerialValidateCache[cacheKey] = data;
+        OfflineManager().markOnline();
+        return data;
+      } else {
+        String msg = 'Validation error';
+        try {
+          final err = jsonDecode(res.body);
+          msg = err['detail'] ?? msg;
+        } catch (_) {}
+        throw Exception(msg);
+      }
+    } catch (e) {
+      OfflineManager().markOffline();
+      final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = offlineResult;
+      return offlineResult;
     }
   }
 
@@ -637,26 +673,43 @@ class ApiService {
       return _outwardSerialCheckCache[cacheKey]!;
     }
 
+    // Fast-path offline check if connection is known to be down
+    if (!OfflineManager().isOnline) {
+      final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = offlineResult;
+      return offlineResult;
+    }
+
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
     };
     if (productId != null && productId.isNotEmpty) {
       queryParams['product_id'] = productId;
     }
-    final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
-    final res = await _authenticatedGet(uri);
+    try {
+      final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
+      // Fast check: 1200ms timeout, 0 retries so offline scanning never freezes
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1200));
 
-    if (res.statusCode == 200) {
-      final data = jsonDecode(res.body);
-      _outwardSerialCheckCache[cacheKey] = data;
-      return data;
-    } else {
-      String msg = 'Serial check failed';
-      try {
-        final err = jsonDecode(res.body);
-        msg = err['detail'] ?? msg;
-      } catch (_) {}
-      throw Exception(msg);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        _outwardSerialCheckCache[cacheKey] = data;
+        OfflineManager().markOnline();
+        return data;
+      } else {
+        String msg = 'Serial check failed';
+        try {
+          final err = jsonDecode(res.body);
+          msg = err['detail'] ?? msg;
+        } catch (_) {}
+        throw Exception(msg);
+      }
+    } catch (e) {
+      // Server down, network drop, or timeout -> instantly mark offline and match from local cache
+      OfflineManager().markOffline();
+      final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = offlineResult;
+      return offlineResult;
     }
   }
 
@@ -758,21 +811,53 @@ class ApiService {
 
   // --- SERIAL LOOKUP ---
   Future<SerialLookupDetail> lookupSerial(String serialNumber) async {
-    final res = await _authenticatedGet(
-      Uri.parse(
-        '$_baseUrl/serials/lookup?serial_number=${Uri.encodeComponent(serialNumber.trim())}',
-      ),
-    );
+    final cleanSerial = serialNumber.trim();
+    if (cleanSerial.isEmpty) {
+      throw Exception('Serial number cannot be empty');
+    }
 
-    if (res.statusCode == 200) {
-      return SerialLookupDetail.fromJson(jsonDecode(res.body));
-    } else {
-      String msg = 'Serial lookup failed';
-      try {
-        final err = jsonDecode(res.body);
-        msg = err['detail'] ?? msg;
-      } catch (_) {}
-      throw Exception(msg);
+    // 1. Fast-path offline check if connection is known to be down
+    if (!OfflineManager().isOnline) {
+      return OfflineManager().lookupSerialOffline(cleanSerial);
+    }
+
+    // 2. Online query with fast 1500ms timeout
+    try {
+      final uri = Uri.parse(
+        '$_baseUrl/serials/lookup?serial_number=${Uri.encodeComponent(cleanSerial)}',
+      );
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1500));
+
+      if (res.statusCode == 200) {
+        OfflineManager().markOnline();
+        return SerialLookupDetail.fromJson(jsonDecode(res.body));
+      } else if (res.statusCode == 404) {
+        // Check offline snapshot before deciding it's completely missing
+        final offlineDetail = OfflineManager().lookupSerialOffline(cleanSerial);
+        if (offlineDetail.isTracked) {
+          return offlineDetail;
+        }
+        String msg = 'Serial number "$cleanSerial" not found in system.';
+        try {
+          final err = jsonDecode(res.body);
+          msg = err['detail'] ?? msg;
+        } catch (_) {}
+        throw Exception(msg);
+      } else {
+        String msg = 'Serial lookup failed';
+        try {
+          final err = jsonDecode(res.body);
+          msg = err['detail'] ?? msg;
+        } catch (_) {}
+        throw Exception(msg);
+      }
+    } catch (e) {
+      if (e is Exception && e.toString().contains('not found in system')) {
+        rethrow;
+      }
+      // Server down, network drop, or timeout -> instantly mark offline and match from local snapshot
+      OfflineManager().markOffline();
+      return OfflineManager().lookupSerialOffline(cleanSerial);
     }
   }
 

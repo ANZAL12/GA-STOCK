@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
+import '../widgets/offline_banner.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 
@@ -131,6 +132,7 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
       ),
       body: Column(
         children: [
+          const OfflineBanner(),
           // Search & scan bar
           Container(
             color: Colors.white,
@@ -435,7 +437,7 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
                                   style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Color(0xFF1E293B)),
                                 ),
                                 Text(
-                                  h.createdAt.substring(0, 10),
+                                  h.createdAt.length >= 10 ? h.createdAt.substring(0, 10) : h.createdAt,
                                   style: const TextStyle(fontSize: 10, color: Color(0xFF94A3B8)),
                                 ),
                               ],

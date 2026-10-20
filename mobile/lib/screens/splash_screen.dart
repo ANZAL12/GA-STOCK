@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../services/offline_manager.dart';
 import 'device_approval_screen.dart';
 import 'login_screen.dart';
 import 'home_screen.dart';
@@ -21,18 +22,33 @@ class _SplashScreenState extends State<SplashScreen> {
   Future<void> _checkStatus() async {
     final api = ApiService();
     await api.init();
+    await OfflineManager().init();
 
-    // 1. Check or register device (with 3 second timeout so splash never hangs)
+    if (!mounted) return;
+
+    // 1. If previously logged in, ALWAYS direct directly to HomeScreen, even if network is down
+    if (api.isAuthenticated) {
+      // Trigger background check if network is available without blocking navigation
+      api.checkOrRegisterDevice().catchError((_) => false);
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+      return;
+    }
+
+    // 2. If not logged in, check device registration / approval
     bool approved = false;
     try {
       approved = await api.checkOrRegisterDevice().timeout(const Duration(seconds: 3));
     } catch (_) {
-      approved = false;
+      approved = api.isDeviceApproved;
     }
 
     if (!mounted) return;
 
-    if (!approved) {
+    if (!approved && !api.isDeviceApproved) {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const DeviceApprovalScreen()),
@@ -40,18 +56,11 @@ class _SplashScreenState extends State<SplashScreen> {
       return;
     }
 
-    // 2. Check auth
-    if (api.isAuthenticated) {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
-      );
-    } else {
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(builder: (_) => const LoginScreen()),
-      );
-    }
+    // 3. Navigate to LoginScreen
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+    );
   }
 
   @override

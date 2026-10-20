@@ -6,10 +6,12 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/offline_banner.dart';
 import 'print_bill_screen.dart';
 
 class OutwardScreen extends StatefulWidget {
@@ -495,7 +497,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
             matchedProd = _products.firstWhere(
               (p) => p.id.toLowerCase() == regProdId.toLowerCase(),
             );
-          } catch (_) {}
+          } catch (_) {
+            try {
+              matchedProd = OfflineManager().products.firstWhere(
+                (p) => p.id.toLowerCase() == regProdId.toLowerCase(),
+              );
+            } catch (_) {}
+          }
         }
         final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
 
@@ -1750,6 +1758,30 @@ class _OutwardScreenState extends State<OutwardScreen> {
     // Preserve client request ID across retries of this dispatch attempt
     _dispatchRequestId ??= const Uuid().v4();
 
+    final dispatchPayload = {
+      'shop_id': _selectedShop!.id,
+      'items': batchItems,
+      'bill_number': billNumber.isEmpty ? null : billNumber,
+      'delivery_reference': deliveryRef.isEmpty ? null : deliveryRef,
+      'remarks': remarks.isEmpty ? null : remarks,
+      'client_request_id': _dispatchRequestId,
+    };
+
+    if (!OfflineManager().isOnline) {
+      await OfflineManager().queueDispatch(dispatchPayload);
+      _dispatchRequestId = null;
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _scannedItems.clear();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Dispatch saved offline • Will auto-sync when online!')),
+      );
+      Navigator.pop(context);
+      return;
+    }
+
     try {
       final result = await _api.submitOutwardMultiBatch(
         shopId: _selectedShop!.id,
@@ -1899,6 +1931,29 @@ class _OutwardScreenState extends State<OutwardScreen> {
           _submitOutwardBatch();
           return;
         }
+      }
+
+      final errLower = errorStr.toLowerCase();
+      final isNetError = !OfflineManager().isOnline ||
+          errLower.contains('cannot reach server') ||
+          errLower.contains('connection') ||
+          errLower.contains('socketexception') ||
+          errLower.contains('timeout');
+
+      if (isNetError) {
+        OfflineManager().markOffline();
+        await OfflineManager().queueDispatch(dispatchPayload);
+        _dispatchRequestId = null;
+        if (!mounted) return;
+        setState(() {
+          _submitting = false;
+          _scannedItems.clear();
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Dispatch saved to offline queue • Will auto-sync when connected!')),
+        );
+        Navigator.pop(context);
+        return;
       }
 
       if (!mounted) return;
@@ -2060,7 +2115,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
         ],
       ),
-      body: _buildCurrentStep(),
+      body: Column(
+        children: [
+          const OfflineBanner(),
+          Expanded(child: _buildCurrentStep()),
+        ],
+      ),
     );
   }
 

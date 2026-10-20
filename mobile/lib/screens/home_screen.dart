@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/add_shop_dialog.dart';
+import '../widgets/offline_banner.dart';
 import 'login_screen.dart';
 import 'inward_screen.dart';
 import 'outward_screen.dart';
@@ -275,8 +277,15 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _refreshQueueCount,
+        child: Column(
+          children: [
+            const OfflineBanner(),
+            Expanded(
+              child: RefreshIndicator(
+                onRefresh: () async {
+                  await _refreshQueueCount();
+                  await OfflineManager().syncFromBackend();
+                },
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.symmetric(
@@ -367,7 +376,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-    );
+    ],
+  ),
+),
+);
   }
 
   Widget _buildActionCard({

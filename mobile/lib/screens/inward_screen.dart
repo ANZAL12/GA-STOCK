@@ -10,6 +10,7 @@ import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/offline_banner.dart';
 
 enum InwardStage {
   selectCase,   // Step 1: Pick Stock In, Returned Product, or Damaged Product
@@ -1363,7 +1364,12 @@ class _InwardScreenState extends State<InwardScreen> {
             ],
           ],
         ),
-        body: _buildCurrentStageView(),
+        body: Column(
+          children: [
+            const OfflineBanner(),
+            Expanded(child: _buildCurrentStageView()),
+          ],
+        ),
       ),
     );
   }

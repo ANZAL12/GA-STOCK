@@ -4,9 +4,11 @@ import 'package:flutter/services.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
+import '../services/offline_manager.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/offline_banner.dart';
 import 'print_bill_screen.dart';
 
 class QuickScanItem {
@@ -923,27 +925,49 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
     setState(() => _isSubmitting = true);
 
+    final Map<String, List<QuickScanItem>> grouped = {};
+    for (var item in _scannedItems) {
+      grouped.putIfAbsent(item.productId, () => []).add(item);
+    }
+
+    final itemsPayload = grouped.entries.map((entry) {
+      return {
+        'product_id': entry.key,
+        'serials': entry.value.map((s) => {
+          'serial_number': s.serialNumber,
+          'confirmed_warning': true,
+          if (s.unitType != null) 'unit_type': s.unitType,
+        }).toList(),
+        'unit_types': {
+          for (var s in entry.value)
+            if (s.unitType != null) s.serialNumber: s.unitType!
+        },
+      };
+    }).toList();
+
+    final dispatchPayload = {
+      'shop_id': _selectedShop!.id,
+      'items': itemsPayload,
+      'bill_number': _billNumberController.text.trim().isNotEmpty ? _billNumberController.text.trim() : null,
+      'delivery_reference': _deliveryRefController.text.trim().isNotEmpty ? _deliveryRefController.text.trim() : null,
+      'remarks': _remarksController.text.trim().isNotEmpty ? _remarksController.text.trim() : null,
+      'client_request_id': 'offline_${DateTime.now().millisecondsSinceEpoch}',
+    };
+
+    if (!OfflineManager().isOnline) {
+      await OfflineManager().queueDispatch(dispatchPayload);
+      if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+        _scannedItems.clear();
+        _scannedSerialSet.clear();
+      });
+      _showToast('Offline: Dispatch queued. Will auto-sync when online.', const Color(0xFFD97706));
+      Navigator.pop(context);
+      return;
+    }
+
     try {
-      final Map<String, List<QuickScanItem>> grouped = {};
-      for (var item in _scannedItems) {
-        grouped.putIfAbsent(item.productId, () => []).add(item);
-      }
-
-      final itemsPayload = grouped.entries.map((entry) {
-        return {
-          'product_id': entry.key,
-          'serials': entry.value.map((s) => {
-            'serial_number': s.serialNumber,
-            'confirmed_warning': true,
-            if (s.unitType != null) 'unit_type': s.unitType,
-          }).toList(),
-          'unit_types': {
-            for (var s in entry.value)
-              if (s.unitType != null) s.serialNumber: s.unitType!
-          },
-        };
-      }).toList();
-
       final res = await _api.submitOutwardMultiBatch(
         shopId: _selectedShop!.id,
         items: itemsPayload,
@@ -966,6 +990,28 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
       }
     } catch (e) {
       if (mounted) {
+        final errStr = e.toString().toLowerCase();
+        final isNetError = !OfflineManager().isOnline ||
+            errStr.contains('cannot reach server') ||
+            errStr.contains('connection') ||
+            errStr.contains('socketexception') ||
+            errStr.contains('timeout');
+
+        if (isNetError) {
+          OfflineManager().markOffline();
+          await OfflineManager().queueDispatch(dispatchPayload);
+          if (mounted) {
+            setState(() {
+              _isSubmitting = false;
+              _scannedItems.clear();
+              _scannedSerialSet.clear();
+            });
+            _showToast('Saved to offline queue. Will auto-sync when connected.', const Color(0xFFD97706));
+            Navigator.pop(context);
+          }
+          return;
+        }
+
         setState(() => _isSubmitting = false);
         _showToast('Submission failed: $e', const Color(0xFFE11D48));
       }
@@ -1043,7 +1089,14 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
             ),
         ],
       ),
-      body: _selectedShop == null ? _buildShopSelector() : _buildScanView(),
+      body: Column(
+        children: [
+          const OfflineBanner(),
+          Expanded(
+            child: _selectedShop == null ? _buildShopSelector() : _buildScanView(),
+          ),
+        ],
+      ),
     );
   }
 
