@@ -261,7 +261,7 @@ class ApiService {
         msg.contains('connection refused') ||
         msg.contains('failed host lookup') ||
         msg.contains('network is unreachable')) {
-      return 'Cannot reach server at $_baseUrl. Please check your Wi-Fi or VPN connection.';
+      return 'Cannot reach server. Please check your vpn connection.';
     }
     return e.toString().replaceAll('Exception: ', '');
   }
