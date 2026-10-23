@@ -5,10 +5,12 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_manager.dart';
+import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
+import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
 
 class QuickScanItem {
@@ -41,6 +43,7 @@ class QuickDispatchScreen extends StatefulWidget {
 class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   final ApiService _api = ApiService();
   VoidCallback? _scannerSub;
+  StreamSubscription? _wsSub;
 
   List<Shop> _shops = [];
   Shop? _selectedShop;
@@ -67,6 +70,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   final FocusNode _remarksFocus = FocusNode();
 
   bool _isSubmitting = false;
+  DateTime? _lastScanTime;
 
   void _indexProducts(List<Product> prods) {
     _products = prods;
@@ -89,9 +93,13 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
       _indexProducts(cachedProds);
     }
     _loadMetadata();
+    _initWebSocket();
 
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true) return;
+      _lastScanTime = DateTime.now();
+      FocusScope.of(context).unfocus();
       if (_selectedShop == null) {
         _showToast('Select a shop first', const Color(0xFFD97706));
         return;
@@ -100,9 +108,91 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     });
   }
 
+  void _initWebSocket() {
+    WebSocketService().connect();
+    _wsSub?.cancel();
+    _wsSub = WebSocketService().stream.listen((event) {
+      if (!mounted) return;
+      final type = event['event']?.toString() ?? event['type']?.toString();
+      final data = event['data'];
+
+      if (type == 'shop_created' && data is Map<String, dynamic>) {
+        try {
+          final newShop = Shop.fromJson(data);
+          if (newShop.isActive) {
+            setState(() {
+              _shops.removeWhere((s) => s.id == newShop.id);
+              _shops.add(newShop);
+              _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+            });
+          }
+        } catch (_) {}
+      } else if (type == 'shop_updated' && data is Map<String, dynamic>) {
+        try {
+          final updatedShop = Shop.fromJson(data);
+          setState(() {
+            _shops.removeWhere((s) => s.id == updatedShop.id);
+            if (updatedShop.isActive) {
+              _shops.add(updatedShop);
+              _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+              if (_selectedShop?.id == updatedShop.id) {
+                _selectedShop = updatedShop;
+              }
+            } else {
+              if (_selectedShop?.id == updatedShop.id) {
+                _selectedShop = null;
+              }
+            }
+          });
+        } catch (_) {}
+      } else if (type == 'shop_deleted' && data is Map<String, dynamic>) {
+        final id = data['id']?.toString();
+        if (id != null) {
+          setState(() {
+            _shops.removeWhere((s) => s.id == id);
+            if (_selectedShop?.id == id) {
+              _selectedShop = null;
+            }
+          });
+        }
+      } else if (type == 'product_created' && data is Map<String, dynamic>) {
+        try {
+          final newProd = Product.fromJson(data);
+          setState(() {
+            _products.removeWhere((p) => p.id == newProd.id);
+            _products.insert(0, newProd);
+            _indexProducts(_products);
+          });
+        } catch (_) {}
+      } else if (type == 'product_updated' && data is Map<String, dynamic>) {
+        try {
+          final updatedProd = Product.fromJson(data);
+          setState(() {
+            final idx = _products.indexWhere((p) => p.id == updatedProd.id);
+            if (idx != -1) {
+              _products[idx] = updatedProd;
+            } else {
+              _products.insert(0, updatedProd);
+            }
+            _indexProducts(_products);
+          });
+        } catch (_) {}
+      } else if (type == 'product_deleted' && data is Map<String, dynamic>) {
+        final id = data['id']?.toString();
+        if (id != null) {
+          setState(() {
+            _products.removeWhere((p) => p.id == id);
+            _indexProducts(_products);
+          });
+        }
+      }
+    });
+  }
+
   @override
   void dispose() {
     _scannerSub?.call();
+    _wsSub?.cancel();
     _manualController.dispose();
     _billNumberController.dispose();
     _deliveryRefController.dispose();
@@ -144,10 +234,12 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   Future<bool> _handleQuickScan(String serial) async {
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return false;
+    _lastScanTime = DateTime.now();
 
     if (_scannedSerialSet.contains(cleanSerial) ||
         _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       _showToast('Duplicate: $cleanSerial already scanned', const Color(0xFFE11D48));
       return false;
     }
@@ -166,6 +258,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
       if (isBlocked) {
         HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         if (mounted) {
           await showDialog(
             context: context,
@@ -1054,48 +1147,123 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   Widget build(BuildContext context) {
     final isTablet = context.isTablet;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        toolbarHeight: isTablet ? 68 : 56,
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: const Color(0xFF0F172A),
-        title: Text(
-          'Quick Dispatch Scan',
-          style: TextStyle(
-            fontSize: isTablet ? 18 : 16,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        actions: [
-          if (_selectedShop != null || _scannedItems.isNotEmpty)
-            TextButton(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final now = DateTime.now();
+        // If a barcode scan occurred within the last 2500ms, swallow the pop request
+        if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
+          debugPrint('[QuickDispatchScreen] Swallowed pop attempt from scanner keys');
+          return;
+        }
+
+        if (_selectedShop != null) {
+          if (_scannedItems.isNotEmpty) {
+            final confirm = await _showClearConfirmationDialog();
+            if (confirm != true) return;
+          }
+          if (mounted) {
+            setState(() {
+              _selectedShop = null;
+              _scannedItems.clear();
+              _scannedSerialSet.clear();
+              _sequenceCounter = 0;
+              _lastScanFeedback = null;
+              _activeFilterModel = 'ALL';
+            });
+          }
+          return;
+        }
+
+        if (mounted) {
+          Navigator.pop(context);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        appBar: AppBar(
+          toolbarHeight: isTablet ? 68 : 56,
+          backgroundColor: Colors.white,
+          elevation: 0,
+          foregroundColor: const Color(0xFF0F172A),
+          leading: Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: IconButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              icon: const Icon(Icons.arrow_back),
               onPressed: () async {
-                if (_scannedItems.isNotEmpty) {
-                  final confirm = await _showClearConfirmationDialog();
-                  if (confirm != true) return;
+                final now = DateTime.now();
+                if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
+                  return;
                 }
-                setState(() {
-                  _selectedShop = null;
-                  _scannedItems.clear();
-                  _scannedSerialSet.clear();
-                  _sequenceCounter = 0;
-                  _lastScanFeedback = null;
-                  _activeFilterModel = 'ALL';
-                });
+                if (_selectedShop != null) {
+                  if (_scannedItems.isNotEmpty) {
+                    final confirm = await _showClearConfirmationDialog();
+                    if (confirm != true) return;
+                  }
+                  if (mounted) {
+                    setState(() {
+                      _selectedShop = null;
+                      _scannedItems.clear();
+                      _scannedSerialSet.clear();
+                      _sequenceCounter = 0;
+                      _lastScanFeedback = null;
+                      _activeFilterModel = 'ALL';
+                    });
+                  }
+                  return;
+                }
+                if (mounted) {
+                  Navigator.pop(context);
+                }
               },
-              child: const Text('Reset', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
             ),
-        ],
-      ),
-      body: Column(
-        children: [
-          const OfflineBanner(),
-          Expanded(
-            child: _selectedShop == null ? _buildShopSelector() : _buildScanView(),
           ),
-        ],
+          title: Text(
+            'Quick Dispatch Scan',
+            style: TextStyle(
+              fontSize: isTablet ? 18 : 16,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          actions: [
+            if (_selectedShop != null || _scannedItems.isNotEmpty)
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: TextButton(
+                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                  onPressed: () async {
+                    if (_scannedItems.isNotEmpty) {
+                      final confirm = await _showClearConfirmationDialog();
+                      if (confirm != true) return;
+                    }
+                    setState(() {
+                      _selectedShop = null;
+                      _scannedItems.clear();
+                      _scannedSerialSet.clear();
+                      _sequenceCounter = 0;
+                      _lastScanFeedback = null;
+                      _activeFilterModel = 'ALL';
+                    });
+                  },
+                  child: const Text('Reset', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
+                ),
+              ),
+          ],
+        ),
+        body: Column(
+          children: [
+            const OfflineBanner(),
+            Expanded(
+              child: _selectedShop == null ? _buildShopSelector() : _buildScanView(),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1210,7 +1378,11 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         ? _scannedItems
         : _scannedItems.where((e) => e.modelName == _activeFilterModel).toList();
 
-    return Column(
+    return Focus(
+      canRequestFocus: false,
+      descendantsAreFocusable: false,
+      skipTraversal: true,
+      child: Column(
       children: [
         // Shop banner
         Container(
@@ -1251,9 +1423,28 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                   ],
                 ),
               ),
-              TextButton(
-                onPressed: () => setState(() => _selectedShop = null),
-                child: const Text('Change Shop', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: TextButton(
+                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                  onPressed: () async {
+                    if (_scannedItems.isNotEmpty) {
+                      final confirm = await _showClearConfirmationDialog();
+                      if (confirm != true) return;
+                    }
+                    setState(() {
+                      _selectedShop = null;
+                      _scannedItems.clear();
+                      _scannedSerialSet.clear();
+                      _sequenceCounter = 0;
+                      _lastScanFeedback = null;
+                      _activeFilterModel = 'ALL';
+                    });
+                  },
+                  child: const Text('Change Shop', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                ),
               ),
             ],
           ),
@@ -1269,21 +1460,27 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
           ),
           child: Column(
             children: [
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFEA580C),
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    padding: EdgeInsets.symmetric(vertical: isTablet ? 18 : 13),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  onPressed: _openCameraScanner,
-                  icon: const Icon(Icons.qr_code_scanner, size: 20),
-                  label: Text(
-                    'Continuous Camera Scan',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: isTablet ? 16 : 14),
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFEA580C),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: EdgeInsets.symmetric(vertical: isTablet ? 18 : 13),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: _openCameraScanner,
+                    icon: const Icon(Icons.qr_code_scanner, size: 20),
+                    label: Text(
+                      'Continuous Camera Scan',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: isTablet ? 16 : 14),
+                    ),
                   ),
                 ),
               ),
@@ -1306,24 +1503,32 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                         ),
                       ),
                       onSubmitted: (val) {
+                        FocusScope.of(context).unfocus();
                         _handleQuickScan(val);
                         _manualController.clear();
                       },
                     ),
                   ),
                   const SizedBox(width: 8),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF1E293B),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  Focus(
+                    canRequestFocus: false,
+                    descendantsAreFocusable: false,
+                    skipTraversal: true,
+                    child: ElevatedButton(
+                      focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF1E293B),
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                      onPressed: () {
+                        FocusScope.of(context).unfocus();
+                        _handleQuickScan(_manualController.text);
+                        _manualController.clear();
+                      },
+                      child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
-                    onPressed: () {
-                      _handleQuickScan(_manualController.text);
-                      _manualController.clear();
-                    },
-                    child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
@@ -1617,6 +1822,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
           ),
         ),
       ],
+    ),
     );
   }
 }

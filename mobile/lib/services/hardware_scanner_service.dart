@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'sound_service.dart';
 
 typedef BarcodeScanCallback = void Function(String barcode);
@@ -18,6 +18,7 @@ class HardwareScannerService {
   Stream<String> get onScan => _scanStreamController.stream;
 
   final StringBuffer _buffer = StringBuffer();
+  final Map<String, DateTime> _recentScanTimes = {};
   DateTime? _lastKeystrokeTime;
   bool _initialized = false;
   bool isEnabled = true;
@@ -43,57 +44,107 @@ class HardwareScannerService {
     };
   }
 
+  Timer? _debounceTimer;
+
   bool _handleKeyEvent(KeyEvent event) {
     if (!isEnabled) return false;
-    if (event is! KeyDownEvent) return false;
 
     final key = event.logicalKey;
     final now = DateTime.now();
 
-    // 1. Check for Scanner Terminator Keys (Enter, NumpadEnter, Tab)
+    // Allow hardware volume buttons through for physical volume adjustment
+    if (key == LogicalKeyboardKey.audioVolumeUp ||
+        key == LogicalKeyboardKey.audioVolumeDown) {
+      return false;
+    }
+
+    // Handle KeyUp / KeyRepeat: swallow immediately so no trailing events reach UI
+    if (event is! KeyDownEvent) {
+      return true;
+    }
+
+    // 1. Scanner Terminator Keys (Enter, NumpadEnter, Tab)
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
         key == LogicalKeyboardKey.tab) {
+      _debounceTimer?.cancel();
+      _debounceTimer = null;
+
       if (_buffer.isNotEmpty) {
         final barcode = _buffer.toString().trim();
         _buffer.clear();
         _lastKeystrokeTime = null;
 
-        // Barcodes typically have at least 2 alphanumeric characters
         if (barcode.length >= 2) {
           _dispatchBarcode(barcode);
-          return true; // Handled: prevent triggering default Enter key behavior in UI
         }
       }
-      return false;
+      return true; // 100% swallowed: never activate buttons or trigger focus traversal!
     }
 
-    // 2. Clear buffer on Escape
-    if (key == LogicalKeyboardKey.escape) {
-      _buffer.clear();
-      _lastKeystrokeTime = null;
-      return false;
+    // 2. Escape / Back
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      _debounceTimer?.cancel();
+      _debounceTimer = null;
+      if (_buffer.isNotEmpty) {
+        _buffer.clear();
+        _lastKeystrokeTime = null;
+      }
+      return true; // 100% swallowed: never pop screen or go to home screen!
     }
 
-    // 3. Reset buffer if gap between keystrokes is too long (human typing vs hardware scanner burst)
+    // 3. Clear buffer if gap between characters is too long (> 800ms)
     if (_lastKeystrokeTime != null &&
-        now.difference(_lastKeystrokeTime!).inMilliseconds > 250) {
+        now.difference(_lastKeystrokeTime!).inMilliseconds > 800) {
       _buffer.clear();
     }
     _lastKeystrokeTime = now;
 
-    // 4. Extract character
+    // 4. Extract printable character
     final char = _extractCharacter(event);
     if (char != null && char.isNotEmpty) {
       _buffer.write(char);
+
+      // Auto-dispatch fallback: If scanner does not send Enter,
+      // automatically dispatch 500ms after the last character in the burst.
+      _debounceTimer?.cancel();
+      _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+        if (_buffer.isNotEmpty) {
+          final barcode = _buffer.toString().trim();
+          _buffer.clear();
+          _lastKeystrokeTime = null;
+          if (barcode.length >= 2) {
+            _dispatchBarcode(barcode);
+          }
+        }
+      });
     }
 
-    return false;
+    // 100% SWALLOWED: All external hardware keyboard events are consumed here!
+    // No physical keystroke can EVER leak into Flutter widgets, buttons, or focus traversal!
+    return true;
   }
 
   void _dispatchBarcode(String rawBarcode) {
     final barcode = rawBarcode.trim().toUpperCase();
+    if (barcode.length < 2) return;
+
+    final now = DateTime.now();
+    final lastTime = _recentScanTimes[barcode];
+    // Prevent accidental repeat double-scanning of the exact same barcode within 1200ms
+    if (lastTime != null && now.difference(lastTime).inMilliseconds < 1200) {
+      debugPrint('[HardwareScannerService] Debounced repeat scan of $barcode');
+      return;
+    }
+    _recentScanTimes[barcode] = now;
+    if (_recentScanTimes.length > 50) {
+      _recentScanTimes.removeWhere((_, time) => now.difference(time).inSeconds > 10);
+    }
+
     debugPrint('[HardwareScannerService] Scanned barcode: $barcode');
+
+    // Dismiss focus from any text fields or buttons so trailing scanner keys have no focus target
+    FocusManager.instance.primaryFocus?.unfocus();
 
     // Immediate zero-latency audio and haptic feedback
     try {

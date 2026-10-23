@@ -9,6 +9,8 @@ class SoundService {
 
   AudioPool? _pool;
   AudioPlayer? _fallbackPlayer;
+  AudioPool? _errorPool;
+  AudioPlayer? _fallbackErrorPlayer;
   bool _initialized = false;
 
   Future<void> init() async {
@@ -32,18 +34,37 @@ class SoundService {
         playerMode: PlayerMode.lowLatency,
       );
       debugPrint('[SoundService] AudioPool initialized with zero-latency scanner_beep.wav');
-      _initialized = true;
     } catch (e) {
       debugPrint('[SoundService] AudioPool init failed: $e, setting up fallback player');
       try {
         _fallbackPlayer = AudioPlayer();
         await _fallbackPlayer!.setPlayerMode(PlayerMode.lowLatency);
         await _fallbackPlayer!.setSource(AssetSource('sounds/scanner_beep.wav'));
-        _initialized = true;
       } catch (err) {
         debugPrint('[SoundService] Fallback player error: $err');
       }
     }
+
+    try {
+      _errorPool = await AudioPool.createFromAsset(
+        path: 'sounds/universfield-error-notification-129258.mp3',
+        minPlayers: 1,
+        maxPlayers: 3,
+        playerMode: PlayerMode.lowLatency,
+      );
+      debugPrint('[SoundService] AudioPool initialized with error notification sound');
+    } catch (e) {
+      debugPrint('[SoundService] Error AudioPool init failed: $e, setting up fallback error player');
+      try {
+        _fallbackErrorPlayer = AudioPlayer();
+        await _fallbackErrorPlayer!.setPlayerMode(PlayerMode.lowLatency);
+        await _fallbackErrorPlayer!.setSource(AssetSource('sounds/universfield-error-notification-129258.mp3'));
+      } catch (err) {
+        debugPrint('[SoundService] Fallback error player error: $err');
+      }
+    }
+
+    _initialized = true;
   }
 
   void playScannerBeep() {
@@ -66,6 +87,26 @@ class SoundService {
       }
     } catch (e) {
       debugPrint('[SoundService] playScannerBeep error: $e');
+    }
+  }
+
+  void playErrorSound() {
+    try {
+      HapticFeedback.heavyImpact();
+    } catch (_) {}
+
+    try {
+      if (_errorPool != null) {
+        _errorPool!.start(volume: 1.0);
+      } else if (_fallbackErrorPlayer != null) {
+        _fallbackErrorPlayer!.seek(Duration.zero).then((_) {
+          _fallbackErrorPlayer!.resume();
+        });
+      } else {
+        AudioPlayer().play(AssetSource('sounds/universfield-error-notification-129258.mp3'), volume: 1.0);
+      }
+    } catch (e) {
+      debugPrint('[SoundService] playErrorSound error: $e');
     }
   }
 }

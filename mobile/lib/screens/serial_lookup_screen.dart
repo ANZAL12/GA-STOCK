@@ -22,12 +22,16 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
   bool _loading = false;
   SerialLookupDetail? _detail;
   String? _errorMessage;
+  DateTime? _lastScanTime;
 
   @override
   void initState() {
     super.initState();
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (mounted) {
+        if (ModalRoute.of(context)?.isCurrent != true) return;
+        _lastScanTime = DateTime.now();
+        FocusScope.of(context).unfocus();
         _searchController.text = barcode;
         _performLookup(barcode);
       }
@@ -115,21 +119,43 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
   Widget build(BuildContext context) {
     final isTablet = context.isTablet;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        toolbarHeight: isTablet ? 72 : 56,
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: const Color(0xFF0F172A),
-        title: Text(
-          'Serial Lifecycle Trace',
-          style: TextStyle(
-            fontSize: isTablet ? 20 : 16,
-            fontWeight: FontWeight.bold,
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        final now = DateTime.now();
+        // If a barcode scan occurred within the last 2000ms, swallow the pop request
+        if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
+          debugPrint('[SerialLookupScreen] Swallowed pop attempt from scanner keys');
+          return;
+        }
+        Navigator.pop(context);
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        appBar: AppBar(
+          toolbarHeight: isTablet ? 72 : 56,
+          backgroundColor: Colors.white,
+          elevation: 0,
+          foregroundColor: const Color(0xFF0F172A),
+          leading: Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: IconButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
+          title: Text(
+            'Serial Lifecycle Trace',
+            style: TextStyle(
+              fontSize: isTablet ? 20 : 16,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
-      ),
       body: Column(
         children: [
           const OfflineBanner(),
@@ -173,22 +199,31 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
                             borderSide: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
                           ),
                         ),
-                        onSubmitted: (val) => _performLookup(val),
+                        onSubmitted: (val) {
+                          FocusScope.of(context).unfocus();
+                          _performLookup(val);
+                        },
                       ),
                     ),
                     const SizedBox(width: 10),
-                    IconButton(
-                      style: IconButton.styleFrom(
-                        backgroundColor: const Color(0xFF1E1B4B),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(isTablet ? 16 : 12),
+                    Focus(
+                      canRequestFocus: false,
+                      descendantsAreFocusable: false,
+                      skipTraversal: true,
+                      child: IconButton(
+                        focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                        style: IconButton.styleFrom(
+                          backgroundColor: const Color(0xFF1E1B4B),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(isTablet ? 16 : 12),
+                          ),
+                          padding: EdgeInsets.all(isTablet ? 16 : 12),
                         ),
-                        padding: EdgeInsets.all(isTablet ? 16 : 12),
+                        icon: Icon(Icons.qr_code_scanner, size: isTablet ? 28 : 22),
+                        tooltip: 'Scan Barcode',
+                        onPressed: _openScanner,
                       ),
-                      icon: Icon(Icons.qr_code_scanner, size: isTablet ? 28 : 22),
-                      tooltip: 'Scan Barcode',
-                      onPressed: _openScanner,
                     ),
                   ],
                 ),
@@ -260,8 +295,9 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildDetailCard(SerialLookupDetail d) {
     final statusColor = _getStatusColor(d.status);

@@ -17,6 +17,7 @@ class OfflineManager {
   final ValueNotifier<bool> isSyncingNotifier = ValueNotifier<bool>(false);
   final ValueNotifier<int> pendingDispatchCountNotifier = ValueNotifier<int>(0);
   final ValueNotifier<String?> syncStatusNotifier = ValueNotifier<String?>(null);
+  final ValueNotifier<bool> showOfflineWarningNotifier = ValueNotifier<bool>(false);
 
   // In-memory fast cache
   final Map<String, Map<String, dynamic>> _serials = {};
@@ -26,6 +27,9 @@ class OfflineManager {
 
   StreamSubscription? _wsSubscription;
   Timer? _healthCheckTimer;
+  Timer? _offlineWarningTimer;
+  DateTime? _disconnectedSince;
+  int _consecutiveFailures = 0;
   bool _isInitialized = false;
   bool _isSyncing = false;
 
@@ -72,10 +76,10 @@ class OfflineManager {
     _listenToWebSocket();
 
     // Check server health immediately so offline status is accurate right at startup
-    await checkServerHealth(timeoutSeconds: 2);
+    await checkServerHealth(timeoutSeconds: 3);
 
     if (isOnlineNotifier.value) {
-      unawaited(syncFromBackend());
+      unawaited(syncFromBackend(silent: true));
       if (_queuedDispatches.isNotEmpty) {
         unawaited(syncPendingDispatches());
       }
@@ -144,12 +148,12 @@ class OfflineManager {
 
   void _startHealthChecks() {
     _healthCheckTimer?.cancel();
-    _healthCheckTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
-      await checkServerHealth();
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      await checkServerHealth(timeoutSeconds: 5);
     });
   }
 
-  Future<bool> checkServerHealth({int timeoutSeconds = 2}) async {
+  Future<bool> checkServerHealth({int timeoutSeconds = 5}) async {
     final api = ApiService();
     try {
       final baseUri = Uri.parse(api.baseUrl);
@@ -157,31 +161,106 @@ class OfflineManager {
 
       final res = await http.get(healthUri).timeout(Duration(seconds: timeoutSeconds));
       final bool online = (res.statusCode == 200);
-      _setOnlineStatus(online);
-      if (online && _queuedDispatches.isNotEmpty) {
-        unawaited(syncPendingDispatches());
+      if (online) {
+        _consecutiveFailures = 0;
+        _setOnlineStatus(true);
+        if (_queuedDispatches.isNotEmpty) {
+          unawaited(syncPendingDispatches());
+        }
+      } else {
+        _consecutiveFailures++;
+        if (_consecutiveFailures >= 2) {
+          _setOnlineStatus(false);
+        }
       }
       return online;
     } catch (_) {
-      _setOnlineStatus(false);
+      _consecutiveFailures++;
+      if (_consecutiveFailures >= 2) {
+        _setOnlineStatus(false);
+      }
       return false;
     }
   }
 
   void _setOnlineStatus(bool online) {
-    if (isOnlineNotifier.value != online) {
-      isOnlineNotifier.value = online;
-      if (online) {
+    if (online) {
+      _consecutiveFailures = 0;
+      _disconnectedSince = null;
+      _offlineWarningTimer?.cancel();
+      _offlineWarningTimer = null;
+      showOfflineWarningNotifier.value = false;
+
+      if (!isOnlineNotifier.value) {
+        isOnlineNotifier.value = true;
         syncStatusNotifier.value = 'Connected';
-        // Auto-sync snapshot and queued dispatches on reconnect
-        unawaited(syncFromBackend());
+        // Auto-sync snapshot and queued dispatches silently on reconnect
+        unawaited(syncFromBackend(silent: true));
         unawaited(syncPendingDispatches());
-      } else {
+      } else if (_queuedDispatches.isNotEmpty) {
+        unawaited(syncPendingDispatches());
+      }
+    } else {
+      if (isOnlineNotifier.value) {
+        isOnlineNotifier.value = false;
         syncStatusNotifier.value = 'Server not reachable • Offline mode';
       }
-    } else if (online && _queuedDispatches.isNotEmpty) {
-      unawaited(syncPendingDispatches());
+      _disconnectedSince ??= DateTime.now();
+      _offlineWarningTimer ??= Timer(const Duration(minutes: 1), () {
+        if (!isOnlineNotifier.value) {
+          showOfflineWarningNotifier.value = true;
+        }
+      });
     }
+  }
+
+  void updateShop(Shop shop) {
+    final idx = _shops.indexWhere((s) => s.id == shop.id);
+    if (!shop.isActive) {
+      if (idx != -1) _shops.removeAt(idx);
+    } else {
+      if (idx != -1) {
+        _shops[idx] = shop;
+      } else {
+        _shops.add(shop);
+      }
+      _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    }
+    ApiService().updateCachedShop(shop);
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
+    }).catchError((_) {});
+  }
+
+  void removeShop(String id) {
+    _shops.removeWhere((s) => s.id == id);
+    ApiService().removeCachedShop(id);
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
+    }).catchError((_) {});
+  }
+
+  void updateProduct(Product product) {
+    final idx = _products.indexWhere((p) => p.id == product.id);
+    if (idx != -1) {
+      _products[idx] = product;
+    } else {
+      _products.insert(0, product);
+    }
+    ApiService().updateCachedProduct(product);
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
+    }).catchError((_) {});
+  }
+
+  void removeProduct(String id) {
+    _products.removeWhere((p) => p.id == id);
+    if (ApiService().cachedProducts != null) {
+      ApiService().cachedProducts!.removeWhere((p) => p.id == id);
+    }
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
+    }).catchError((_) {});
   }
 
   // --- WEBSOCKET EVENT LISTENER ---
@@ -200,13 +279,43 @@ class OfflineManager {
       final event = json['event']?.toString() ?? json['type']?.toString() ?? '';
       final data = json['data'];
 
-      if (event == 'stock_updated' ||
-          event == 'product_created' ||
-          event == 'product_updated' ||
-          event == 'product_deleted' ||
-          event == 'shop_created' ||
-          event == 'shop_updated') {
-        // Trigger background snapshot update
+      if (event == 'shop_created' || event == 'shop_updated') {
+        if (data is Map<String, dynamic>) {
+          try {
+            final s = Shop.fromJson(data);
+            updateShop(s);
+          } catch (_) {}
+        }
+        syncFromBackend(silent: true);
+      } else if (event == 'shop_deleted') {
+        final id = data?['id']?.toString();
+        if (id != null) {
+          removeShop(id);
+        }
+        syncFromBackend(silent: true);
+      } else if (event == 'product_created' || event == 'product_updated') {
+        if (data is Map<String, dynamic>) {
+          try {
+            final p = Product.fromJson(data);
+            updateProduct(p);
+          } catch (_) {}
+        }
+        syncFromBackend(silent: true);
+      } else if (event == 'product_deleted') {
+        final id = data?['id']?.toString();
+        if (id != null) {
+          removeProduct(id);
+        }
+        syncFromBackend(silent: true);
+      } else if (event == 'stock_updated') {
+        if (data is Map<String, dynamic>) {
+          final pid = data['product_id']?.toString();
+          final rawQty = data['current_stock_qty'];
+          final qty = rawQty is int ? rawQty : int.tryParse(rawQty?.toString() ?? '');
+          if (pid != null && qty != null) {
+            ApiService().updateProductStock(pid, qty);
+          }
+        }
         syncFromBackend(silent: true);
       } else if (event == 'serial_deleted') {
         final sn = data?['serial']?.toString().toUpperCase();
@@ -219,7 +328,7 @@ class OfflineManager {
   }
 
   // --- FULL SNAPSHOT SYNC FROM BACKEND ---
-  Future<void> syncFromBackend({bool silent = false}) async {
+  Future<void> syncFromBackend({bool silent = true}) async {
     if (_isSyncing) return;
     final api = ApiService();
     if (!api.isAuthenticated) return;
@@ -248,6 +357,7 @@ class OfflineManager {
           final List pList = data['products'];
           _products = pList.map((p) => Product.fromJson(p)).toList();
           await prefs.setString('cache_products_json', jsonEncode(data['products']));
+          api.invalidateProductCache();
         }
 
         // Update Shops
@@ -255,6 +365,7 @@ class OfflineManager {
           final List sList = data['shops'];
           _shops = sList.map((s) => Shop.fromJson(s)).toList();
           await prefs.setString('cache_shops_json', jsonEncode(data['shops']));
+          api.invalidateShopCache();
         }
 
         // Update Serials

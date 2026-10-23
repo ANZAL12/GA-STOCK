@@ -364,9 +364,45 @@ class ApiService {
     _productsCacheTime = null;
   }
 
+  /// Live update of single shop in cache (e.g. from WebSocket push)
+  void updateCachedShop(Shop shop) {
+    if (_cachedShops == null) {
+      if (shop.isActive) {
+        _cachedShops = [shop];
+      }
+    } else {
+      _cachedShops!.removeWhere((s) => s.id == shop.id);
+      if (shop.isActive) {
+        _cachedShops!.add(shop);
+        _cachedShops!.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      }
+    }
+    _shopsCacheTime = DateTime.now();
+    if (_cachedShops != null) {
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setString('cache_shops_json', jsonEncode(_cachedShops!.map((s) => s.toJson()).toList()));
+      }).catchError((_) {});
+    }
+  }
+
+  /// Remove shop from cache on permanent delete
+  void removeCachedShop(String shopId) {
+    if (_cachedShops == null) return;
+    _cachedShops!.removeWhere((s) => s.id == shopId);
+    _shopsCacheTime = DateTime.now();
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setString('cache_shops_json', jsonEncode(_cachedShops!.map((s) => s.toJson()).toList()));
+    }).catchError((_) {});
+  }
+
+  /// Invalidate shops cache so subsequent getShops calls fetch fresh list from server
+  void invalidateShopCache() {
+    _shopsCacheTime = null;
+  }
+
   /// Handles incoming WebSocket events to keep RAM + Disk cache permanently fresh
   void handleWebSocketEvent(Map<String, dynamic> event) {
-    final type = event['type']?.toString();
+    final type = event['event']?.toString() ?? event['type']?.toString();
     final data = event['data'];
     if (type == 'stock_updated' && data is Map<String, dynamic>) {
       final pid = data['product_id']?.toString();
@@ -389,6 +425,16 @@ class ApiService {
         SharedPreferences.getInstance().then((prefs) {
           prefs.setString('cache_products_json', jsonEncode(_cachedProducts!.map((p) => p.toJson()).toList()));
         }).catchError((_) {});
+      }
+    } else if ((type == 'shop_created' || type == 'shop_updated') && data is Map<String, dynamic>) {
+      try {
+        final s = Shop.fromJson(data);
+        updateCachedShop(s);
+      } catch (_) {}
+    } else if (type == 'shop_deleted' && data is Map<String, dynamic>) {
+      final id = data['id']?.toString();
+      if (id != null) {
+        removeCachedShop(id);
       }
     }
   }
@@ -450,8 +496,11 @@ class ApiService {
   /// Stale-while-revalidate for shops: returns instant cached if available
   Future<List<Shop>> getShops({bool forceRefresh = false}) async {
     if (!forceRefresh && _cachedShops != null && _cachedShops!.isNotEmpty) {
-      final age = _shopsCacheTime != null ? DateTime.now().difference(_shopsCacheTime!) : Duration.zero;
-      if (age < const Duration(minutes: 15)) {
+      if (_shopsCacheTime == null) {
+        return await _fetchAndCacheShops();
+      }
+      final age = DateTime.now().difference(_shopsCacheTime!);
+      if (age < const Duration(minutes: 5)) {
         return _cachedShops!;
       }
       _refreshShopsInBackground();

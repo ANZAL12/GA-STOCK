@@ -11,6 +11,7 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
+import '../services/sound_service.dart';
 
 enum InwardStage {
   selectCase,   // Step 1: Pick Stock In, Returned Product, or Damaged Product
@@ -59,6 +60,7 @@ class _InwardScreenState extends State<InwardScreen> {
   bool _submitting = false;
   final Set<String> _inFlightSerials = <String>{};
   String? _inwardRequestId;
+  DateTime? _lastScanTime;
 
   @override
   void initState() {
@@ -75,6 +77,9 @@ class _InwardScreenState extends State<InwardScreen> {
     // Hardware barcode scanner support
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true) return;
+      _lastScanTime = DateTime.now();
+      FocusScope.of(context).unfocus();
       if (_stage == InwardStage.scanning) {
         _handleScannedSerial(barcode);
       } else {
@@ -93,7 +98,7 @@ class _InwardScreenState extends State<InwardScreen> {
     WebSocketService().connect();
     _wsSubscription = WebSocketService().stream.listen((event) {
       if (!mounted) return;
-      final type = event['event'];
+      final type = event['event']?.toString() ?? event['type']?.toString();
       final data = event['data'];
 
       if (type == 'product_created' && data is Map<String, dynamic>) {
@@ -289,6 +294,12 @@ class _InwardScreenState extends State<InwardScreen> {
   }
 
   Future<bool> _handleWillPop() async {
+    final now = DateTime.now();
+    if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
+      debugPrint('[InwardScreen] _handleWillPop swallowed pop within 2500ms of scan');
+      return false;
+    }
+
     if (_stage == InwardStage.selectCase) {
       return true;
     }
@@ -368,11 +379,13 @@ class _InwardScreenState extends State<InwardScreen> {
   Future<void> _handleScannedSerial(String serial) async {
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
+    _lastScanTime = DateTime.now();
 
     // 1. Instant synchronous check: Reject immediately if already in batch OR currently in-flight
     if (_scannedItems.any((it) => it.serialNumber == cleanSerial) ||
         _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       _showWarningDialog('Duplicate in Current Batch', 'Serial "$cleanSerial" is already scanned in this batch.');
       return;
     }
@@ -395,6 +408,7 @@ class _InwardScreenState extends State<InwardScreen> {
 
       if (!isValid) {
         HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         _showWarningDialog('Serial Validation Warning', message ?? 'This serial number cannot be registered.');
         return;
       }
@@ -782,17 +796,29 @@ class _InwardScreenState extends State<InwardScreen> {
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF059669),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: TextButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
             ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Accept & Add', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+          Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: ElevatedButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF059669),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Accept & Add', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
           ),
         ],
       ),
@@ -1302,6 +1328,12 @@ class _InwardScreenState extends State<InwardScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
+        final now = DateTime.now();
+        // If a barcode scan occurred within the last 2000ms, swallow the pop request
+        if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
+          debugPrint('[InwardScreen] Swallowed pop attempt from scanner keys');
+          return;
+        }
         final canPop = await _handleWillPop();
         if (canPop && mounted) {
           Navigator.pop(context);
@@ -1313,53 +1345,71 @@ class _InwardScreenState extends State<InwardScreen> {
           backgroundColor: Colors.white,
           elevation: 0,
           foregroundColor: const Color(0xFF0F172A),
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () async {
-              final canPop = await _handleWillPop();
-              if (canPop && mounted) {
-                Navigator.pop(context);
-              }
-            },
+          leading: Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: IconButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () async {
+                final canPop = await _handleWillPop();
+                if (canPop && mounted) {
+                  Navigator.pop(context);
+                }
+              },
+            ),
           ),
           title: Text(_getAppBarTitle(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           actions: [
             if (_stage == InwardStage.scanning) ...[
               if (_inwardType == 'stock_in')
-                TextButton(
-                  onPressed: () => setState(() => _stage = InwardStage.selectModel),
-                  child: const Text('Change Model', style: TextStyle(color: Color(0xFF4F46E5), fontWeight: FontWeight.bold)),
+                Focus(
+                  canRequestFocus: false,
+                  descendantsAreFocusable: false,
+                  skipTraversal: true,
+                  child: TextButton(
+                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                    onPressed: () => setState(() => _stage = InwardStage.selectModel),
+                    child: const Text('Change Model', style: TextStyle(color: Color(0xFF4F46E5), fontWeight: FontWeight.bold)),
+                  ),
                 ),
-              TextButton(
-                onPressed: () async {
-                  if (_scannedItems.isNotEmpty) {
-                    final discard = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                        title: const Text('Switch Inward Mode?'),
-                        content: Text(
-                          'You have ${_scannedItems.length} scanned item(s). Switching mode will discard them.',
-                          style: const TextStyle(fontSize: 13),
-                        ),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Stay')),
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE11D48)),
-                            onPressed: () => Navigator.pop(ctx, true),
-                            child: const Text('Switch & Discard', style: TextStyle(color: Colors.white)),
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: TextButton(
+                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                  onPressed: () async {
+                    if (_scannedItems.isNotEmpty) {
+                      final discard = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          title: const Text('Switch Inward Mode?'),
+                          content: Text(
+                            'You have ${_scannedItems.length} scanned item(s). Switching mode will discard them.',
+                            style: const TextStyle(fontSize: 13),
                           ),
-                        ],
-                      ),
-                    );
-                    if (discard != true) return;
-                  }
-                  setState(() {
-                    _scannedItems.clear();
-                    _stage = InwardStage.selectCase;
-                  });
-                },
-                child: const Text('Switch Mode', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Stay')),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE11D48)),
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: const Text('Switch & Discard', style: TextStyle(color: Colors.white)),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (discard != true) return;
+                    }
+                    setState(() {
+                      _scannedItems.clear();
+                      _stage = InwardStage.selectCase;
+                    });
+                  },
+                  child: const Text('Switch Mode', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.bold)),
+                ),
               ),
             ],
           ],
@@ -1404,7 +1454,11 @@ class _InwardScreenState extends State<InwardScreen> {
 
   // STAGE 1: The 3 Primary Options Screen
   Widget _buildCaseSelector() {
-    return SingleChildScrollView(
+    return Focus(
+      canRequestFocus: false,
+      descendantsAreFocusable: false,
+      skipTraversal: true,
+      child: SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1460,6 +1514,7 @@ class _InwardScreenState extends State<InwardScreen> {
           ),
         ],
       ),
+    ),
     );
   }
 
@@ -1726,7 +1781,11 @@ class _InwardScreenState extends State<InwardScreen> {
 
   // STAGE 3: Scanning & Batch Review View
   Widget _buildScanningView() {
-    return Column(
+    return Focus(
+      canRequestFocus: false,
+      descendantsAreFocusable: false,
+      skipTraversal: true,
+      child: Column(
       children: [
         // Mode Banner
         _buildScanningHeader(),
@@ -1843,29 +1902,35 @@ class _InwardScreenState extends State<InwardScreen> {
           ),
           child: Column(
             children: [
-              SizedBox(
-                width: double.infinity,
-                height: context.isTablet ? 64 : 52,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1E1B4B),
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(context.isTablet ? 18 : 14),
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: SizedBox(
+                  width: double.infinity,
+                  height: context.isTablet ? 64 : 52,
+                  child: ElevatedButton.icon(
+                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF1E1B4B),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(context.isTablet ? 18 : 14),
+                      ),
+                      elevation: 1,
                     ),
-                    elevation: 1,
-                  ),
-                  icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 26 : 22),
-                  label: Text(
-                    _inwardType == 'stock_in'
-                        ? 'Scan Barcode (${_selectedProduct?.model ?? ''})'
-                        : 'Open Barcode Scanner (${_getInwardTypeShort(_inwardType)})',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: context.isTablet ? 16 : 14,
+                    icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 26 : 22),
+                    label: Text(
+                      _inwardType == 'stock_in'
+                          ? 'Scan Barcode (${_selectedProduct?.model ?? ''})'
+                          : 'Open Barcode Scanner (${_getInwardTypeShort(_inwardType)})',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: context.isTablet ? 16 : 14,
+                      ),
                     ),
+                    onPressed: _openScanner,
                   ),
-                  onPressed: _openScanner,
                 ),
               ),
             ],
@@ -2029,6 +2094,7 @@ class _InwardScreenState extends State<InwardScreen> {
             ),
           ),
       ],
+    ),
     );
   }
 

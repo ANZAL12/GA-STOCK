@@ -35,9 +35,10 @@ class _HomeScreenState extends State<HomeScreen> {
     WebSocketService().connect();
     _api.preWarmCache();
 
-    // Listen for hardware barcode scanner on home screen (auto-opens Serial Trace)
+    // Listen for hardware barcode scanner on home screen (auto-opens Serial Trace only when on home screen)
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true) return;
       Navigator.push(
         context,
         MaterialPageRoute(
@@ -252,32 +253,48 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           if (_pendingQueueCount > 0)
-            IconButton(
-              iconSize: isTablet ? 28 : 24,
-              icon: Badge(
-                label: Text('$_pendingQueueCount', style: TextStyle(fontSize: isTablet ? 12 : 10)),
-                child: const Icon(Icons.cloud_upload_outlined, color: Color(0xFFD97706)),
+            Focus(
+              canRequestFocus: false,
+              descendantsAreFocusable: false,
+              skipTraversal: true,
+              child: IconButton(
+                focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                iconSize: isTablet ? 28 : 24,
+                icon: Badge(
+                  label: Text('$_pendingQueueCount', style: TextStyle(fontSize: isTablet ? 12 : 10)),
+                  child: const Icon(Icons.cloud_upload_outlined, color: Color(0xFFD97706)),
+                ),
+                tooltip: 'Offline Queue',
+                onPressed: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const OfflineQueueScreen()),
+                  );
+                  _refreshQueueCount();
+                },
               ),
-              tooltip: 'Offline Queue',
-              onPressed: () async {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const OfflineQueueScreen()),
-                );
-                _refreshQueueCount();
-              },
             ),
-          IconButton(
-            iconSize: isTablet ? 28 : 24,
-            icon: const Icon(Icons.logout, color: Color(0xFF64748B)),
-            tooltip: 'Logout',
-            onPressed: _handleLogout,
+          Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: IconButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              iconSize: isTablet ? 28 : 24,
+              icon: const Icon(Icons.logout, color: Color(0xFF64748B)),
+              tooltip: 'Logout',
+              onPressed: _handleLogout,
+            ),
           ),
           if (isTablet) const SizedBox(width: 8),
         ],
       ),
-      body: SafeArea(
-        child: Column(
+      body: Focus(
+        canRequestFocus: false,
+        descendantsAreFocusable: false,
+        skipTraversal: true,
+        child: SafeArea(
+          child: Column(
           children: [
             const OfflineBanner(),
             Expanded(
@@ -378,6 +395,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ],
   ),
+),
 ),
 );
   }

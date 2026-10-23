@@ -12,6 +12,7 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
+import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
 
 class OutwardScreen extends StatefulWidget {
@@ -53,6 +54,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   bool _submitting = false;
   final Set<String> _inFlightSerials = <String>{};
   String? _dispatchRequestId;
+  DateTime? _lastScanTime;
 
   @override
   void initState() {
@@ -74,6 +76,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
     // Hardware barcode scanner support
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
+      if (ModalRoute.of(context)?.isCurrent != true) return;
+      _lastScanTime = DateTime.now();
+      FocusScope.of(context).unfocus();
       if (_selectedShop == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -102,7 +107,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
     WebSocketService().connect();
     _wsSubscription = WebSocketService().stream.listen((event) {
       if (!mounted) return;
-      final type = event['event'];
+      final type = event['event']?.toString() ?? event['type']?.toString();
       final data = event['data'];
 
       if (type == 'product_created' && data is Map<String, dynamic>) {
@@ -324,6 +329,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
     if (_scannedItems.any((item) => item.serialNumber == cleanSerial) ||
         _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       _showSimpleAlert('Duplicate Serial', 'Serial "$cleanSerial" is already in this dispatch batch.');
       return;
     }
@@ -342,6 +348,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       // --- CRITICAL BLOCK: ALREADY DISPATCHED CAN NEVER BE SCANNED ---
       if (isBlocked) {
         HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         await _showAlreadyDispatchedDialog(
           cleanSerial,
           msg ?? 'Serial "$cleanSerial" has already been dispatched. Dispatched serials can NEVER be scanned or dispatched again.',
@@ -2100,26 +2107,55 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        foregroundColor: const Color(0xFF0F172A),
-        title: const Text('Outward Dispatch Scan', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        actions: [
-          if (_currentStep > 1)
-            TextButton(
-              onPressed: _handleRestartPress,
-              child: const Text('Restart', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        final now = DateTime.now();
+        // If a barcode scan occurred within the last 2000ms, swallow the pop request
+        if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
+          debugPrint('[OutwardScreen] Swallowed pop attempt from scanner keys');
+          return;
+        }
+        Navigator.pop(context);
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        appBar: AppBar(
+          backgroundColor: Colors.white,
+          elevation: 0,
+          foregroundColor: const Color(0xFF0F172A),
+          title: const Text('Outward Dispatch Scan', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          leading: Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: IconButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => Navigator.pop(context),
             ),
-        ],
-      ),
-      body: Column(
-        children: [
-          const OfflineBanner(),
-          Expanded(child: _buildCurrentStep()),
-        ],
+          ),
+          actions: [
+            if (_currentStep > 1)
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: TextButton(
+                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                  onPressed: _handleRestartPress,
+                  child: const Text('Restart', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
+                ),
+              ),
+          ],
+        ),
+        body: Column(
+          children: [
+            const OfflineBanner(),
+            Expanded(child: _buildCurrentStep()),
+          ],
+        ),
       ),
     );
   }
@@ -2485,8 +2521,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
         ? _scannedItems
         : _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == _activeFilterModelId).toList();
 
-    return Column(
-      children: [
+    return Focus(
+      canRequestFocus: false,
+      descendantsAreFocusable: false,
+      skipTraversal: true,
+      child: Column(
+        children: [
         // Ultra-Compact Header (Minimal height, zero wasted space)
         Container(
           color: Colors.white,
@@ -2747,104 +2787,110 @@ class _OutwardScreenState extends State<OutwardScreen> {
         ),
 
         // Multi-Model Filter Tabs Bar
-        Container(
-          width: double.infinity,
-          decoration: const BoxDecoration(
-            color: Color(0xFFF8FAFC),
-            border: Border(
-              top: BorderSide(color: Color(0xFFE2E8F0)),
-              bottom: BorderSide(color: Color(0xFFE2E8F0)),
+        Focus(
+          canRequestFocus: false,
+          descendantsAreFocusable: false,
+          skipTraversal: true,
+          child: Container(
+            width: double.infinity,
+            decoration: const BoxDecoration(
+              color: Color(0xFFF8FAFC),
+              border: Border(
+                top: BorderSide(color: Color(0xFFE2E8F0)),
+                bottom: BorderSide(color: Color(0xFFE2E8F0)),
+              ),
             ),
-          ),
-          padding: EdgeInsets.symmetric(vertical: context.isTablet ? 8 : 4),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 24 : 14),
-            child: Row(
-              children: [
-                // ALL Tab
-                ChoiceChip(
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  label: Text('All (${_scannedItems.length})'),
-                  selected: _activeFilterModelId == 'ALL',
-                  selectedColor: const Color(0xFF1E1B4B),
-                  labelStyle: TextStyle(
-                    fontSize: context.isTablet ? 13 : 11,
-                    fontWeight: FontWeight.bold,
-                    color: _activeFilterModelId == 'ALL' ? Colors.white : const Color(0xFF475569),
-                  ),
-                  backgroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    side: BorderSide(
-                      color: _activeFilterModelId == 'ALL' ? const Color(0xFF1E1B4B) : const Color(0xFFCBD5E1),
+            padding: EdgeInsets.symmetric(vertical: context.isTablet ? 8 : 4),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 24 : 14),
+              child: Row(
+                children: [
+                  // ALL Tab
+                  ChoiceChip(
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    label: Text('All (${_scannedItems.length})'),
+                    selected: _activeFilterModelId == 'ALL',
+                    selectedColor: const Color(0xFF1E1B4B),
+                    labelStyle: TextStyle(
+                      fontSize: context.isTablet ? 13 : 11,
+                      fontWeight: FontWeight.bold,
+                      color: _activeFilterModelId == 'ALL' ? Colors.white : const Color(0xFF475569),
                     ),
-                  ),
-                  onSelected: (val) {
-                    if (val) setState(() => _activeFilterModelId = 'ALL');
-                  },
-                ),
-                SizedBox(width: context.isTablet ? 8 : 6),
-
-                // Individual Model Chips
-                ...modelList.map((prod) {
-                  final count = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id).length;
-                  final isSelected = _activeFilterModelId == prod.id;
-                  final isCurrentActive = prod.id == _selectedProduct?.id;
-
-                  return Padding(
-                    padding: EdgeInsets.only(right: context.isTablet ? 8 : 6),
-                    child: ChoiceChip(
-                      visualDensity: VisualDensity.compact,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      avatar: isCurrentActive
-                          ? Icon(Icons.bolt, size: context.isTablet ? 16 : 13, color: isSelected ? Colors.amber : const Color(0xFF4F46E5))
-                          : null,
-                      label: Text('${prod.model} ($count)'),
-                      selected: isSelected,
-                      selectedColor: const Color(0xFF4F46E5),
-                      labelStyle: TextStyle(
-                        fontSize: context.isTablet ? 13 : 11,
-                        fontWeight: FontWeight.bold,
-                        color: isSelected ? Colors.white : const Color(0xFF334155),
+                    backgroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      side: BorderSide(
+                        color: _activeFilterModelId == 'ALL' ? const Color(0xFF1E1B4B) : const Color(0xFFCBD5E1),
                       ),
-                      backgroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        side: BorderSide(
-                          color: isSelected ? const Color(0xFF4F46E5) : const Color(0xFFCBD5E1),
+                    ),
+                    onSelected: (val) {
+                      if (val) setState(() => _activeFilterModelId = 'ALL');
+                    },
+                  ),
+                  SizedBox(width: context.isTablet ? 8 : 6),
+
+                  // Individual Model Chips
+                  ...modelList.map((prod) {
+                    final count = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id).length;
+                    final isSelected = _activeFilterModelId == prod.id;
+                    final isCurrentActive = prod.id == _selectedProduct?.id;
+
+                    return Padding(
+                      padding: EdgeInsets.only(right: context.isTablet ? 8 : 6),
+                      child: ChoiceChip(
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        avatar: isCurrentActive
+                            ? Icon(Icons.bolt, size: context.isTablet ? 16 : 13, color: isSelected ? Colors.amber : const Color(0xFF4F46E5))
+                            : null,
+                        label: Text('${prod.model} ($count)'),
+                        selected: isSelected,
+                        selectedColor: const Color(0xFF4F46E5),
+                        labelStyle: TextStyle(
+                          fontSize: context.isTablet ? 13 : 11,
+                          fontWeight: FontWeight.bold,
+                          color: isSelected ? Colors.white : const Color(0xFF334155),
                         ),
+                        backgroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          side: BorderSide(
+                            color: isSelected ? const Color(0xFF4F46E5) : const Color(0xFFCBD5E1),
+                          ),
+                        ),
+                        onSelected: (val) {
+                          setState(() {
+                            _activeFilterModelId = val ? prod.id : 'ALL';
+                            if (val) _selectedProduct = prod;
+                          });
+                        },
                       ),
-                      onSelected: (val) {
-                        setState(() {
-                          _activeFilterModelId = val ? prod.id : 'ALL';
-                          if (val) _selectedProduct = prod;
-                        });
-                      },
-                    ),
-                  );
-                }),
+                    );
+                  }),
 
-                // Add / Switch Model Chip
-                ActionChip(
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  avatar: Icon(Icons.add, size: context.isTablet ? 16 : 14, color: const Color(0xFF4F46E5)),
-                  label: const Text('+ Add Model'),
-                  labelStyle: TextStyle(
-                    fontSize: context.isTablet ? 13 : 11,
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF4F46E5),
+                  // Add / Switch Model Chip
+                  ActionChip(
+                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    avatar: Icon(Icons.add, size: context.isTablet ? 16 : 14, color: const Color(0xFF4F46E5)),
+                    label: const Text('+ Add Model'),
+                    labelStyle: TextStyle(
+                      fontSize: context.isTablet ? 13 : 11,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF4F46E5),
+                    ),
+                    backgroundColor: const Color(0xFFEEF2FF),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      side: const BorderSide(color: Color(0xFFC7D2FE)),
+                    ),
+                    onPressed: _showModelSwitchBottomSheet,
                   ),
-                  backgroundColor: const Color(0xFFEEF2FF),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                    side: const BorderSide(color: Color(0xFFC7D2FE)),
-                  ),
-                  onPressed: _showModelSwitchBottomSheet,
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -2857,39 +2903,45 @@ class _OutwardScreenState extends State<OutwardScreen> {
           ),
           child: Column(
             children: [
-              ConstrainedBox(
-                constraints: BoxConstraints(minHeight: context.isTablet ? 66 : 44),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFD97706),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(context.isTablet ? 16 : 10),
-                      ),
-                      elevation: 0,
-                      padding: EdgeInsets.symmetric(
-                        horizontal: context.isTablet ? 24 : 12,
-                        vertical: context.isTablet ? 16 : 8,
-                      ),
-                    ),
-                    icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 28 : 20),
-                    label: Flexible(
-                      child: Text(
-                        _selectedProduct?.hasDualSerial == true
-                            ? 'Continuous Scan (${_selectedProduct?.model} - ${_outwardUnitType == "indoor" ? "Indoor" : "Outdoor"})'
-                            : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: context.isTablet ? 17 : 13,
-                          height: 1.25,
+              Focus(
+                canRequestFocus: false,
+                descendantsAreFocusable: false,
+                skipTraversal: true,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: context.isTablet ? 66 : 44),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFD97706),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(context.isTablet ? 16 : 10),
                         ),
-                        textAlign: TextAlign.center,
-                        softWrap: true,
+                        elevation: 0,
+                        padding: EdgeInsets.symmetric(
+                          horizontal: context.isTablet ? 24 : 12,
+                          vertical: context.isTablet ? 16 : 8,
+                        ),
                       ),
+                      icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 28 : 20),
+                      label: Flexible(
+                        child: Text(
+                          _selectedProduct?.hasDualSerial == true
+                              ? 'Continuous Scan (${_selectedProduct?.model} - ${_outwardUnitType == "indoor" ? "Indoor" : "Outdoor"})'
+                              : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: context.isTablet ? 17 : 13,
+                            height: 1.25,
+                          ),
+                          textAlign: TextAlign.center,
+                          softWrap: true,
+                        ),
+                      ),
+                      onPressed: _openContinuousScanner,
                     ),
-                    onPressed: _openContinuousScanner,
                   ),
                 ),
               ),
@@ -3180,6 +3232,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 width: double.infinity,
                 height: context.isTablet ? 64 : 50,
                 child: ElevatedButton(
+                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1E1B4B),
                     foregroundColor: Colors.white,
@@ -3205,6 +3258,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
           ),
       ],
-    );
-  }
+    ),
+  );
+}
 }

@@ -70,6 +70,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
   late final Set<String> _sessionScannedSerials;
   final Map<String, DateTime> _recentScanTimes = {};
+  DateTime? _lastScanTime;
 
   static const double _boxWidth = 290.0;
   static const double _boxHeight = 190.0;
@@ -278,6 +279,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     if (_isProcessing) return;
 
     final DateTime now = DateTime.now();
+    _lastScanTime = now;
 
     // 1. Prevent accidental repeat scanning of the same barcode within 2000ms
     final lastTime = _recentScanTimes[cleanVal];
@@ -292,6 +294,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     if (isAlreadyInBatch) {
       _recentScanTimes[cleanVal] = now;
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       if (!_isDuplicateWarning) {
         setState(() => _isDuplicateWarning = true);
         Future.delayed(const Duration(milliseconds: 350), () {
@@ -423,24 +426,59 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   Widget build(BuildContext context) {
     final bool isScanningActive = !_holdToScanMode || _isHoldingTrigger;
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        final now = DateTime.now();
+        if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
+          debugPrint('[BarcodeScannerWidget] Swallowed pop attempt within 2500ms of scan');
+          return;
+        }
+        Navigator.pop(context);
+      },
+      child: Scaffold(
         backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: Text(widget.title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-        actions: [
-          IconButton(
-            icon: Icon(_isTorchOn ? Icons.flash_on : Icons.flash_off, color: Colors.white),
-            onPressed: () async {
-              await _controller.toggleTorch();
-              setState(() => _isTorchOn = !_isTorchOn);
-            },
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          title: Text(widget.title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          leading: Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            skipTraversal: true,
+            child: IconButton(
+              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () {
+                final now = DateTime.now();
+                if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
+                  return;
+                }
+                Navigator.pop(context);
+              },
+            ),
           ),
-          IconButton(
-            icon: const Icon(Icons.flip_camera_android),
-            onPressed: () => _controller.switchCamera(),
+        actions: [
+          Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            child: IconButton(
+              icon: Icon(_isTorchOn ? Icons.flash_on : Icons.flash_off, color: Colors.white),
+              onPressed: () async {
+                await _controller.toggleTorch();
+                setState(() => _isTorchOn = !_isTorchOn);
+              },
+            ),
+          ),
+          Focus(
+            canRequestFocus: false,
+            descendantsAreFocusable: false,
+            child: IconButton(
+              icon: const Icon(Icons.flip_camera_android),
+              onPressed: () => _controller.switchCamera(),
+            ),
           ),
         ],
       ),
@@ -798,6 +836,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
         ],
       );
     },
+  ),
   ),
 );
   }
