@@ -55,12 +55,50 @@ class _InwardScreenState extends State<InwardScreen> {
   String _productSearch = '';
 
   final List<InwardScannedItem> _scannedItems = [];
+  final Set<String> _scannedSerialSet = <String>{};
+  String? _lastScanFeedback;
+  final ScrollController _scrollController = ScrollController();
+
+  void _jumpToTop() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _jumpToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
   String _inwardUnitType = 'indoor'; // Used when scanning dual-serial in stock_in mode
   final TextEditingController _remarksController = TextEditingController();
   bool _submitting = false;
   final Set<String> _inFlightSerials = <String>{};
   String? _inwardRequestId;
   DateTime? _lastScanTime;
+
+  BuildContext? _warningDialogContext;
+  Timer? _warningDialogTimer;
+
+  void _dismissWarningDialog() {
+    _warningDialogTimer?.cancel();
+    _warningDialogTimer = null;
+    if (_warningDialogContext != null && _warningDialogContext!.mounted) {
+      try {
+        Navigator.of(_warningDialogContext!).pop();
+      } catch (_) {}
+    }
+    _warningDialogContext = null;
+  }
 
   @override
   void initState() {
@@ -77,7 +115,16 @@ class _InwardScreenState extends State<InwardScreen> {
     // Hardware barcode scanner support
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
-      if (ModalRoute.of(context)?.isCurrent != true) return;
+
+      // If the duplicate/warning dialog is currently showing, dismiss it immediately on next scan!
+      final bool wasWarningShowing = _warningDialogContext != null;
+      if (wasWarningShowing) {
+        _dismissWarningDialog();
+      }
+
+      // If a route other than the auto-dismissing warning dialog is on top (e.g. model picker), ignore
+      if (!wasWarningShowing && ModalRoute.of(context)?.isCurrent != true) return;
+
       _lastScanTime = DateTime.now();
       FocusScope.of(context).unfocus();
       if (_stage == InwardStage.scanning) {
@@ -162,8 +209,10 @@ class _InwardScreenState extends State<InwardScreen> {
 
   @override
   void dispose() {
+    _dismissWarningDialog();
     _scannerSub?.call();
     _wsSubscription?.cancel();
+    _scrollController.dispose();
     _remarksController.dispose();
     super.dispose();
   }
@@ -270,6 +319,8 @@ class _InwardScreenState extends State<InwardScreen> {
     setState(() {
       _inwardType = type;
       _scannedItems.clear();
+      _scannedSerialSet.clear();
+      _lastScanFeedback = null;
       _inwardRequestId = null;
 
       if (type == 'stock_in') {
@@ -288,6 +339,8 @@ class _InwardScreenState extends State<InwardScreen> {
     setState(() {
       _selectedProduct = p;
       _scannedItems.clear();
+      _scannedSerialSet.clear();
+      _lastScanFeedback = null;
       _inwardUnitType = 'indoor';
       _stage = InwardStage.scanning;
     });
@@ -339,6 +392,8 @@ class _InwardScreenState extends State<InwardScreen> {
 
     setState(() {
       _scannedItems.clear();
+      _scannedSerialSet.clear();
+      _lastScanFeedback = null;
       if (_inwardType == 'stock_in') {
         _stage = InwardStage.selectModel;
       } else {
@@ -366,10 +421,11 @@ class _InwardScreenState extends State<InwardScreen> {
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
           itemCountProvider: () => _scannedItems.length,
-          existingSerials: _scannedItems.map((e) => e.serialNumber).toSet(),
-          isDuplicate: (s) =>
-              _scannedItems.any((e) => e.serialNumber == s.trim().toUpperCase()) ||
-              _inFlightSerials.contains(s.trim().toUpperCase()),
+          existingSerials: _scannedSerialSet,
+          isDuplicate: (s) {
+            final sn = s.trim().toUpperCase();
+            return _scannedSerialSet.contains(sn) || _inFlightSerials.contains(sn);
+          },
           onScanned: (serial) => _handleScannedSerial(serial),
         ),
       ),
@@ -377,15 +433,23 @@ class _InwardScreenState extends State<InwardScreen> {
   }
 
   Future<void> _handleScannedSerial(String serial) async {
+    _dismissWarningDialog();
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
     _lastScanTime = DateTime.now();
 
     // 1. Instant synchronous check: Reject immediately if already in batch OR currently in-flight
-    if (_scannedItems.any((it) => it.serialNumber == cleanSerial) ||
+    if (_scannedSerialSet.contains(cleanSerial) ||
         _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: 'Duplicate: Serial "$cleanSerial" already in batch',
+          backgroundColor: const Color(0xFFE11D48),
+        );
+      }
       _showWarningDialog('Duplicate in Current Batch', 'Serial "$cleanSerial" is already scanned in this batch.');
       return;
     }
@@ -409,6 +473,13 @@ class _InwardScreenState extends State<InwardScreen> {
       if (!isValid) {
         HapticFeedback.heavyImpact();
         SoundService().playErrorSound();
+        if (mounted) {
+          TopToast.show(
+            context,
+            message: message ?? 'Cannot register serial "$cleanSerial"',
+            backgroundColor: const Color(0xFFDC2626),
+          );
+        }
         _showWarningDialog('Serial Validation Warning', message ?? 'This serial number cannot be registered.');
         return;
       }
@@ -487,9 +558,10 @@ class _InwardScreenState extends State<InwardScreen> {
         return;
       }
 
-      // 4. Add to scanned items list (with safety duplicate check)
-      if (!_scannedItems.any((it) => it.serialNumber == cleanSerial)) {
+      // 4. Add to scanned items list (instant O(1) set insertion)
+      if (!_scannedSerialSet.contains(cleanSerial)) {
         setState(() {
+          _scannedSerialSet.add(cleanSerial);
           _scannedItems.insert(
             0,
             InwardScannedItem(
@@ -499,16 +571,10 @@ class _InwardScreenState extends State<InwardScreen> {
               isAutoDetected: isAutoDetected,
             ),
           );
+          _lastScanFeedback = '✓ Scanned: $cleanSerial • ${targetProduct.brand} ${targetProduct.model}';
         });
         HapticFeedback.lightImpact();
-
-        if (mounted) {
-          TopToast.show(
-            context,
-            message: '✓ Scanned $cleanSerial • ${targetProduct.brand} ${targetProduct.model} (${_scannedItems.length} total)',
-            backgroundColor: _getInwardTypeColor(_inwardType),
-          );
-        }
+        SoundService().playScannerBeep();
       }
     } catch (e) {
       HapticFeedback.heavyImpact();
@@ -825,28 +891,73 @@ class _InwardScreenState extends State<InwardScreen> {
     );
   }
 
-  void _showWarningDialog(String title, String message) {
+  void _showWarningDialog(String title, String message, {Duration autoDismissDuration = const Duration(seconds: 3)}) {
+    _dismissWarningDialog();
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            const Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706)),
-            const SizedBox(width: 8),
-            Expanded(child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
-          ],
-        ),
-        content: Text(message, style: const TextStyle(fontSize: 13, height: 1.4)),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
+      barrierDismissible: true,
+      builder: (ctx) {
+        _warningDialogContext = ctx;
+        _warningDialogTimer?.cancel();
+        _warningDialogTimer = Timer(autoDismissDuration, () {
+          if (_warningDialogContext != null && ctx.mounted) {
+            try {
+              Navigator.of(ctx).pop();
+            } catch (_) {}
+            _warningDialogContext = null;
+          }
+        });
+
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706)),
+              const SizedBox(width: 8),
+              Expanded(child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+            ],
           ),
-        ],
-      ),
-    );
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message, style: const TextStyle(fontSize: 13, height: 1.4)),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.timer_outlined, size: 13, color: Color(0xFF64748B)),
+                    SizedBox(width: 4),
+                    Text(
+                      'Auto-closing in 3s (or scan next serial)',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
+              onPressed: () => _dismissWarningDialog(),
+              child: const Text('OK', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    ).then((_) {
+      _warningDialogTimer?.cancel();
+      _warningDialogTimer = null;
+      _warningDialogContext = null;
+    });
   }
 
   void _onPressSaveInward() {
@@ -1937,6 +2048,100 @@ class _InwardScreenState extends State<InwardScreen> {
           ),
         ),
 
+        // Real-time scan feedback banner
+        if (_lastScanFeedback != null)
+          Container(
+            width: double.infinity,
+            margin: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFFECFDF5),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFA7F3D0)),
+            ),
+            child: Text(
+              _lastScanFeedback!,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF065F46),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+
+        // Scanned list header
+        if (_scannedItems.isNotEmpty)
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16, vertical: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Scanned Units (${_scannedItems.length})',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+                      ),
+                      Text(
+                        'Newest (#${_scannedItems.length}) at top • #1 at bottom',
+                        style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_scannedItems.length >= 6) ...[
+                  // Jump to Serial #1 (at bottom)
+                  InkWell(
+                    onTap: _jumpToBottom,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFBFDBFE)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.arrow_downward, size: 12, color: Color(0xFF1D4ED8)),
+                          SizedBox(width: 2),
+                          Text('#1 Bottom', style: TextStyle(fontSize: 10.5, color: Color(0xFF1D4ED8), fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Jump to top (newest)
+                  InkWell(
+                    onTap: _jumpToTop,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF1F5F9),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0xFFCBD5E1)),
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.arrow_upward, size: 12, color: Color(0xFF475569)),
+                          SizedBox(width: 2),
+                          Text('Top', style: TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+
         // Scanned Items List
         Expanded(
           child: _scannedItems.isEmpty
@@ -1962,15 +2167,19 @@ class _InwardScreenState extends State<InwardScreen> {
                   ),
                 )
               : ListView.builder(
+                  key: const PageStorageKey('inward_scanned_list'),
+                  controller: _scrollController,
+                  cacheExtent: 600.0,
                   physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16),
                   itemCount: _scannedItems.length,
                   addAutomaticKeepAlives: false,
                   addRepaintBoundaries: true,
                   itemBuilder: (ctx, idx) {
                     final item = _scannedItems[idx];
-                    return Container(
-                      key: ValueKey('${item.serialNumber}_$idx'),
+                    return RepaintBoundary(
+                      key: ValueKey(item.serialNumber),
+                      child: Container(
                         margin: const EdgeInsets.only(bottom: 6),
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                         decoration: BoxDecoration(
@@ -2043,6 +2252,7 @@ class _InwardScreenState extends State<InwardScreen> {
                             InkWell(
                               onTap: () {
                                 setState(() {
+                                  _scannedSerialSet.remove(item.serialNumber);
                                   _scannedItems.removeAt(idx);
                                 });
                               },
@@ -2054,8 +2264,9 @@ class _InwardScreenState extends State<InwardScreen> {
                             ),
                           ],
                         ),
-                      );
-                    },
+                      ),
+                    );
+                  },
                 ),
         ),
 

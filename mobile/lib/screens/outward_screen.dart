@@ -56,6 +56,42 @@ class _OutwardScreenState extends State<OutwardScreen> {
   String? _dispatchRequestId;
   DateTime? _lastScanTime;
 
+  BuildContext? _alertContext;
+  Timer? _alertTimer;
+
+  void _dismissSimpleAlert() {
+    _alertTimer?.cancel();
+    _alertTimer = null;
+    if (_alertContext != null && _alertContext!.mounted) {
+      try {
+        Navigator.of(_alertContext!).pop();
+      } catch (_) {}
+    }
+    _alertContext = null;
+  }
+
+  final ScrollController _scanListScrollController = ScrollController();
+
+  void _jumpToTop() {
+    if (_scanListScrollController.hasClients) {
+      _scanListScrollController.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _jumpToBottom() {
+    if (_scanListScrollController.hasClients) {
+      _scanListScrollController.animateTo(
+        _scanListScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -76,7 +112,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
     // Hardware barcode scanner support
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
-      if (ModalRoute.of(context)?.isCurrent != true) return;
+
+      // If duplicate/alert dialog is currently showing, dismiss immediately on next scan!
+      final bool wasAlertShowing = _alertContext != null;
+      if (wasAlertShowing) {
+        _dismissSimpleAlert();
+      }
+
+      if (!wasAlertShowing && ModalRoute.of(context)?.isCurrent != true) return;
       _lastScanTime = DateTime.now();
       FocusScope.of(context).unfocus();
       if (_selectedShop == null) {
@@ -240,8 +283,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   @override
   void dispose() {
+    _dismissSimpleAlert();
     _scannerSub?.call();
     _wsSubscription?.cancel();
+    _scanListScrollController.dispose();
     _billNumberController.dispose();
     _deliveryRefController.dispose();
     _remarksController.dispose();
@@ -322,6 +367,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   }
 
   Future<void> _handleOutwardScan(String serial) async {
+    _dismissSimpleAlert();
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
 
@@ -330,6 +376,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
+      _showToast('Duplicate: Serial "$cleanSerial" already in batch', const Color(0xFFE11D48));
       _showSimpleAlert('Duplicate Serial', 'Serial "$cleanSerial" is already in this dispatch batch.');
       return;
     }
@@ -1137,22 +1184,67 @@ class _OutwardScreenState extends State<OutwardScreen> {
     );
   }
 
-  void _showSimpleAlert(String title, String message) {
+  void _showSimpleAlert(String title, String message, {Duration autoDismissDuration = const Duration(seconds: 3)}) {
+    _dismissSimpleAlert();
+
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-        content: Text(message, style: const TextStyle(fontSize: 13)),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK', style: TextStyle(color: Colors.white)),
+      barrierDismissible: true,
+      builder: (ctx) {
+        _alertContext = ctx;
+        _alertTimer?.cancel();
+        _alertTimer = Timer(autoDismissDuration, () {
+          if (_alertContext != null && ctx.mounted) {
+            try {
+              Navigator.of(ctx).pop();
+            } catch (_) {}
+            _alertContext = null;
+          }
+        });
+
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message, style: const TextStyle(fontSize: 13, height: 1.4)),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.timer_outlined, size: 13, color: Color(0xFF64748B)),
+                    SizedBox(width: 4),
+                    Text(
+                      'Auto-closing in 3s (or scan next serial)',
+                      style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-    );
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
+              onPressed: () => _dismissSimpleAlert(),
+              child: const Text('OK', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    ).then((_) {
+      _alertTimer?.cancel();
+      _alertTimer = null;
+      _alertContext = null;
+    });
   }
 
   Future<bool?> _showCase3StatusWarningDialog(
@@ -2949,6 +3041,75 @@ class _OutwardScreenState extends State<OutwardScreen> {
           ),
         ),
 
+        // Order hint & quick jump buttons
+        if (_scannedItems.isNotEmpty)
+          Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: context.isTablet ? 24 : 14,
+              vertical: 3,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Newest (#${_scannedItems.length}) at top • #1 at bottom',
+                  style: TextStyle(
+                    fontSize: context.isTablet ? 12 : 10.5,
+                    color: const Color(0xFF64748B),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                if (_scannedItems.length >= 6)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      InkWell(
+                        onTap: _jumpToBottom,
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFFBFDBFE)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.arrow_downward, size: 12, color: Color(0xFF1D4ED8)),
+                              SizedBox(width: 2),
+                              Text('#1 Bottom', style: TextStyle(fontSize: 10.5, color: Color(0xFF1D4ED8), fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      InkWell(
+                        onTap: _jumpToTop,
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFFCBD5E1)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.arrow_upward, size: 12, color: Color(0xFF475569)),
+                              SizedBox(width: 2),
+                              Text('Top', style: TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+
         // List of scanned dispatches
         Expanded(
           child: filteredItems.isEmpty
@@ -2975,6 +3136,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   ),
                 )
               : ListView.builder(
+                  controller: _scanListScrollController,
+                  cacheExtent: 600.0,
                   physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
                   padding: EdgeInsets.symmetric(
                     horizontal: context.isTablet ? 24 : 14,

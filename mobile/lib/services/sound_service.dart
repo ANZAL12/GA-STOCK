@@ -12,6 +12,8 @@ class SoundService {
   AudioPool? _errorPool;
   AudioPlayer? _fallbackErrorPlayer;
   bool _initialized = false;
+  int _lastBeepMs = 0;
+  int _lastErrorMs = 0;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -36,13 +38,16 @@ class SoundService {
       debugPrint('[SoundService] AudioPool initialized with zero-latency scanner_beep.wav');
     } catch (e) {
       debugPrint('[SoundService] AudioPool init failed: $e, setting up fallback player');
-      try {
-        _fallbackPlayer = AudioPlayer();
-        await _fallbackPlayer!.setPlayerMode(PlayerMode.lowLatency);
-        await _fallbackPlayer!.setSource(AssetSource('sounds/scanner_beep.wav'));
-      } catch (err) {
-        debugPrint('[SoundService] Fallback player error: $err');
-      }
+    }
+
+    // Always create pre-warmed single fallback player to prevent leak of unmanaged players
+    try {
+      _fallbackPlayer = AudioPlayer();
+      await _fallbackPlayer!.setPlayerMode(PlayerMode.lowLatency);
+      await _fallbackPlayer!.setReleaseMode(ReleaseMode.stop);
+      await _fallbackPlayer!.setSource(AssetSource('sounds/scanner_beep.wav'));
+    } catch (err) {
+      debugPrint('[SoundService] Fallback player error: $err');
     }
 
     try {
@@ -55,25 +60,32 @@ class SoundService {
       debugPrint('[SoundService] AudioPool initialized with error notification sound');
     } catch (e) {
       debugPrint('[SoundService] Error AudioPool init failed: $e, setting up fallback error player');
-      try {
-        _fallbackErrorPlayer = AudioPlayer();
-        await _fallbackErrorPlayer!.setPlayerMode(PlayerMode.lowLatency);
-        await _fallbackErrorPlayer!.setSource(AssetSource('sounds/universfield-error-notification-129258.mp3'));
-      } catch (err) {
-        debugPrint('[SoundService] Fallback error player error: $err');
-      }
+    }
+
+    try {
+      _fallbackErrorPlayer = AudioPlayer();
+      await _fallbackErrorPlayer!.setPlayerMode(PlayerMode.lowLatency);
+      await _fallbackErrorPlayer!.setReleaseMode(ReleaseMode.stop);
+      await _fallbackErrorPlayer!.setSource(AssetSource('sounds/universfield-error-notification-129258.mp3'));
+    } catch (err) {
+      debugPrint('[SoundService] Fallback error player error: $err');
     }
 
     _initialized = true;
   }
 
   void playScannerBeep() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // 45ms audio throttle window prevents Android native AudioTrack buffer exhaustion during burst scans
+    if (now - _lastBeepMs < 45) return;
+    _lastBeepMs = now;
+
     // 1. Immediate hardware system click (0ms response guarantee)
     try {
       SystemSound.play(SystemSoundType.click);
     } catch (_) {}
 
-    // 2. Instant preloaded sound playback from pool
+    // 2. Instant preloaded sound playback from pool or dedicated player
     try {
       if (_pool != null) {
         _pool!.start(volume: 1.0);
@@ -81,9 +93,6 @@ class SoundService {
         _fallbackPlayer!.seek(Duration.zero).then((_) {
           _fallbackPlayer!.resume();
         });
-      } else {
-        // Emergency uninitialized playback
-        AudioPlayer().play(AssetSource('sounds/scanner_beep.wav'), volume: 1.0);
       }
     } catch (e) {
       debugPrint('[SoundService] playScannerBeep error: $e');
@@ -91,6 +100,10 @@ class SoundService {
   }
 
   void playErrorSound() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastErrorMs < 80) return;
+    _lastErrorMs = now;
+
     try {
       HapticFeedback.heavyImpact();
     } catch (_) {}
@@ -102,8 +115,6 @@ class SoundService {
         _fallbackErrorPlayer!.seek(Duration.zero).then((_) {
           _fallbackErrorPlayer!.resume();
         });
-      } else {
-        AudioPlayer().play(AssetSource('sounds/universfield-error-notification-129258.mp3'), volume: 1.0);
       }
     } catch (e) {
       debugPrint('[SoundService] playErrorSound error: $e');

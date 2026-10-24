@@ -535,10 +535,11 @@ class OfflineManager {
 
     // return or damaged
     if (entry != null) {
+      final bool isDispatched = entry['st'] == 'dispatched' || entry['d'] == true;
       return {
         'is_valid': true,
-        'requires_confirmation': entry['st'] != 'dispatched',
-        'message': entry['st'] == 'dispatched'
+        'requires_confirmation': !isDispatched,
+        'message': isDispatched
             ? 'Matched to previously dispatched unit (${entry['m']}).'
             : 'Serial is currently marked as ${entry['st']} in local inventory.',
         'registered_model_id': entry['p'],

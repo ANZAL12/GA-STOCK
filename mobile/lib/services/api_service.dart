@@ -602,6 +602,13 @@ class ApiService {
       return _inwardSerialValidateCache[cacheKey]!;
     }
 
+    // 0ms in-memory fast-path: If serial is in local memory cache, validate immediately
+    if (OfflineManager().serials.containsKey(cleanSerial)) {
+      final localResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = localResult;
+      return localResult;
+    }
+
     // Fast-path offline check if connection is down
     if (!OfflineManager().isOnline) {
       final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
@@ -720,6 +727,13 @@ class ApiService {
 
     if (_outwardSerialCheckCache.containsKey(cacheKey)) {
       return _outwardSerialCheckCache[cacheKey]!;
+    }
+
+    // 0ms in-memory fast-path: If serial is in local memory cache, check immediately without network latency
+    if (OfflineManager().serials.containsKey(cleanSerial)) {
+      final localResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = localResult;
+      return localResult;
     }
 
     // Fast-path offline check if connection is known to be down

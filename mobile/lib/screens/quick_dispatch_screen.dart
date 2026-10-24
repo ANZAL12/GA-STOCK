@@ -60,6 +60,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   String? _lastScanFeedback;
   String _activeFilterModel = 'ALL';
 
+  final ScrollController _scrollController = ScrollController();
   final TextEditingController _manualController = TextEditingController();
   final TextEditingController _billNumberController = TextEditingController();
   final TextEditingController _deliveryRefController = TextEditingController();
@@ -71,6 +72,26 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
   bool _isSubmitting = false;
   DateTime? _lastScanTime;
+
+  void _jumpToTop() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  void _jumpToBottom() {
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
+    }
+  }
 
   void _indexProducts(List<Product> prods) {
     _products = prods;
@@ -193,6 +214,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   void dispose() {
     _scannerSub?.call();
     _wsSub?.cancel();
+    _scrollController.dispose();
     _manualController.dispose();
     _billNumberController.dispose();
     _deliveryRefController.dispose();
@@ -1629,14 +1651,71 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         Padding(
           padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 4),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                _activeFilterModel == 'ALL'
-                    ? 'Scanned Items (${_scannedItems.length})'
-                    : 'Scanned Items (${displayedItems.length} / ${_scannedItems.length})',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _activeFilterModel == 'ALL'
+                          ? 'Scanned Items (${_scannedItems.length})'
+                          : 'Scanned Items (${displayedItems.length} / ${_scannedItems.length})',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+                    ),
+                    if (_scannedItems.isNotEmpty)
+                      Text(
+                        'Newest (#$_sequenceCounter) at top • #1 at bottom',
+                        style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                      ),
+                  ],
+                ),
               ),
+              if (_scannedItems.length >= 6) ...[
+                // Jump to Serial #1 (at bottom)
+                InkWell(
+                  onTap: _jumpToBottom,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF6FF),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.arrow_downward, size: 12, color: Color(0xFF1D4ED8)),
+                        SizedBox(width: 2),
+                        Text('#1 Bottom', style: TextStyle(fontSize: 10.5, color: Color(0xFF1D4ED8), fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                // Jump to top (newest)
+                InkWell(
+                  onTap: _jumpToTop,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.arrow_upward, size: 12, color: Color(0xFF475569)),
+                        SizedBox(width: 2),
+                        Text('Top', style: TextStyle(fontSize: 10.5, color: Color(0xFF475569), fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
               if (_scannedItems.isNotEmpty)
                 TextButton(
                   onPressed: () async {
@@ -1675,6 +1754,8 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 )
               : ListView.separated(
                   key: const PageStorageKey('quick_dispatch_scanned_list'),
+                  controller: _scrollController,
+                  cacheExtent: 600.0,
                   addAutomaticKeepAlives: false,
                   addRepaintBoundaries: true,
                   padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 4),

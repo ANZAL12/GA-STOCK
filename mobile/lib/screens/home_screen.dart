@@ -298,11 +298,30 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             const OfflineBanner(),
             Expanded(
-              child: RefreshIndicator(
-                onRefresh: () async {
-                  await _refreshQueueCount();
-                  await OfflineManager().syncFromBackend();
-                },
+              child: Stack(
+                children: [
+                  // Centered watermark logo
+                  Positioned.fill(
+                    child: Center(
+                      child: IgnorePointer(
+                        child: Opacity(
+                          opacity: 0.09,
+                          child: Image.asset(
+                            'assets/images/logo.png',
+                            width: isTablet ? 360 : 250,
+                            height: isTablet ? 360 : 250,
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Foreground Operations
+                  RefreshIndicator(
+                    onRefresh: () async {
+                      await _refreshQueueCount();
+                      await OfflineManager().syncFromBackend();
+                    },
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.symmetric(
@@ -392,9 +411,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-      ),
-    ],
+      ],
+    ),
   ),
+],
+),
 ),
 ),
 );
@@ -412,7 +433,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     if (isTablet) {
       return Material(
-        color: Colors.white,
+        color: Colors.white.withValues(alpha: 0.90),
         borderRadius: BorderRadius.circular(20),
         elevation: 0,
         child: InkWell(
@@ -511,7 +532,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Material(
-      color: Colors.white,
+      color: Colors.white.withValues(alpha: 0.90),
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         onTap: onTap,

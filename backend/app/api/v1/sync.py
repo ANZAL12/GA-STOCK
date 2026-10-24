@@ -115,16 +115,20 @@ async def get_offline_snapshot(
             OutwardLine.unit_type,
             Shop.name.label("shop_name"),
             Shop.city.label("shop_city"),
+            Product.model.label("product_model"),
+            Product.brand.label("product_brand"),
         )
         .outerjoin(Shop, OutwardLine.shop_id == Shop.id)
+        .outerjoin(Product, OutwardLine.product_id == Product.id)
         .distinct()
     )
-    for disp_text, disp_prod_id, disp_unit_type, disp_s_name, disp_s_city in outward_disp_res.all():
+    for disp_text, disp_prod_id, disp_unit_type, disp_s_name, disp_s_city, disp_p_model, disp_p_brand in outward_disp_res.all():
         clean_disp = disp_text.strip().upper()
+        disp_model_name = f"{disp_p_brand or ''} {disp_p_model or ''}".strip() or "Previously Dispatched"
         if clean_disp not in serials_map:
             serials_map[clean_disp] = {
                 "p": str(disp_prod_id) if disp_prod_id else None,
-                "m": "Previously Dispatched",
+                "m": disp_model_name,
                 "st": "dispatched",
                 "u": disp_unit_type,
                 "d": True,
