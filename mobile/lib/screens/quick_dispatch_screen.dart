@@ -465,6 +465,9 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     String search = '';
     Product? chosenProduct;
     String chosenUnitType = 'indoor';
+    bool isSyncing = false;
+    StreamSubscription? sheetWsSub;
+    Timer? debounceTimer;
 
     final result = await showModalBottomSheet(
       context: context,
@@ -473,6 +476,48 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
           final isTablet = context.isTablet;
+
+          sheetWsSub ??= WebSocketService().stream.listen((event) {
+            final type = event['event']?.toString() ?? event['type']?.toString();
+            final data = event['data'];
+            if ((type == 'product_created' || type == 'product_updated') && data is Map<String, dynamic>) {
+              try {
+                final newProd = Product.fromJson(data);
+                _api.updateCachedProduct(newProd);
+                if (mounted) {
+                  setState(() {
+                    _products.removeWhere((p) => p.id == newProd.id);
+                    _products.insert(0, newProd);
+                    _indexProducts(_products);
+                  });
+                }
+                if (ctx.mounted) {
+                  setModalState(() {});
+                }
+              } catch (_) {}
+            }
+          });
+
+          Future<void> syncFreshModels({String? query}) async {
+            setModalState(() => isSyncing = true);
+            try {
+              final fresh = await _api.getProducts(forceRefresh: true);
+              if (mounted) {
+                setState(() {
+                  _products = fresh;
+                  _indexProducts(_products);
+                });
+              }
+              if (ctx.mounted) {
+                setModalState(() => isSyncing = false);
+              }
+            } catch (_) {
+              if (ctx.mounted) {
+                setModalState(() => isSyncing = false);
+              }
+            }
+          }
+
           final filtered = _products.where((p) {
             final q = search.toLowerCase();
             return p.name.toLowerCase().contains(q) ||
@@ -526,6 +571,17 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                         ),
                       ),
                       IconButton(
+                        tooltip: 'Sync Models from Server',
+                        icon: isSyncing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF0284C7)),
+                              )
+                            : const Icon(Icons.sync_rounded, color: Color(0xFF0284C7)),
+                        onPressed: isSyncing ? null : () => syncFreshModels(query: search),
+                      ),
+                      IconButton(
                         icon: const Icon(Icons.close),
                         onPressed: () => Navigator.pop(ctx),
                       ),
@@ -537,8 +593,23 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                   child: TextField(
                     autofocus: false,
                     decoration: InputDecoration(
-                      hintText: 'Search brand or model...',
+                      hintText: 'Search brand or model (e.g. GXI 360)...',
                       prefixIcon: const Icon(Icons.search, size: 20),
+                      suffixIcon: isSyncing
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : (search.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear, size: 18),
+                                  onPressed: () => setModalState(() => search = ''),
+                                )
+                              : null),
                       filled: true,
                       fillColor: const Color(0xFFF8FAFC),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -547,7 +618,17 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                         borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
                       ),
                     ),
-                    onChanged: (val) => setModalState(() => search = val),
+                    onChanged: (val) {
+                      setModalState(() => search = val);
+                      if (val.trim().length >= 2) {
+                        debounceTimer?.cancel();
+                        debounceTimer = Timer(const Duration(milliseconds: 500), () {
+                          if (filtered.isEmpty && !isSyncing) {
+                            syncFreshModels(query: val);
+                          }
+                        });
+                      }
+                    },
                   ),
                 ),
                 if (chosenProduct != null && chosenProduct!.hasDualSerial)
@@ -596,46 +677,98 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                     ),
                   ),
                 Expanded(
-                  child: ListView.separated(
-                    padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 8),
-                    itemCount: filtered.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 6),
-                    itemBuilder: (c, i) {
-                      final p = filtered[i];
-                      final isSelected = chosenProduct?.id == p.id;
-                      return ListTile(
-                        tileColor: isSelected ? const Color(0xFFEEF2FF) : Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          side: BorderSide(
-                            color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
-                            width: isSelected ? 1.5 : 1.0,
+                  child: filtered.isEmpty
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
+                                const SizedBox(height: 12),
+                                Text(
+                                  search.isEmpty
+                                      ? 'No models available'
+                                      : 'No local match for "$search"',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                    color: Color(0xFF1E293B),
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                                const SizedBox(height: 6),
+                                const Text(
+                                  'If this model was just added on the admin dashboard, tap below to sync immediately.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                ),
+                                const SizedBox(height: 16),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF0284C7),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                  icon: isSyncing
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                        )
+                                      : const Icon(Icons.cloud_sync_outlined, size: 18),
+                                  label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
+                                  onPressed: isSyncing ? null : () => syncFreshModels(query: search),
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      : RefreshIndicator(
+                          onRefresh: () => syncFreshModels(query: search),
+                          child: ListView.separated(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 8),
+                            itemCount: filtered.length,
+                            separatorBuilder: (_, _) => const SizedBox(height: 6),
+                            itemBuilder: (c, i) {
+                              final p = filtered[i];
+                              final isSelected = chosenProduct?.id == p.id;
+                              return ListTile(
+                                tileColor: isSelected ? const Color(0xFFEEF2FF) : Colors.white,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  side: BorderSide(
+                                    color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+                                    width: isSelected ? 1.5 : 1.0,
+                                  ),
+                                ),
+                                title: Text(
+                                  '${p.brand} ${p.model}',
+                                  style: TextStyle(
+                                    fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  p.name,
+                                  style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                ),
+                                trailing: isSelected
+                                    ? const Icon(Icons.check_circle, color: Color(0xFF4F46E5), size: 22)
+                                    : const Icon(Icons.chevron_right, color: Color(0xFF94A3B8), size: 20),
+                                onTap: () {
+                                  if (p.hasDualSerial) {
+                                    setModalState(() => chosenProduct = p);
+                                  } else {
+                                    Navigator.pop(ctx, p);
+                                  }
+                                },
+                              );
+                            },
                           ),
                         ),
-                        title: Text(
-                          '${p.brand} ${p.model}',
-                          style: TextStyle(
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                            fontSize: 14,
-                          ),
-                        ),
-                        subtitle: Text(
-                          p.name,
-                          style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
-                        ),
-                        trailing: isSelected
-                            ? const Icon(Icons.check_circle, color: Color(0xFF4F46E5), size: 22)
-                            : const Icon(Icons.chevron_right, color: Color(0xFF94A3B8), size: 20),
-                        onTap: () {
-                          if (p.hasDualSerial) {
-                            setModalState(() => chosenProduct = p);
-                          } else {
-                            Navigator.pop(ctx, p);
-                          }
-                        },
-                      );
-                    },
-                  ),
                 ),
                 if (chosenProduct != null && chosenProduct!.hasDualSerial)
                   Padding(
@@ -663,6 +796,9 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         },
       ),
     );
+
+    sheetWsSub?.cancel();
+    debounceTimer?.cancel();
 
     if (result is Product && mounted) {
       final p = result;

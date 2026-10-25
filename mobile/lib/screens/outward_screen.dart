@@ -49,6 +49,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   // Scanned lines
   final List<OutwardScanResult> _scannedItems = [];
+  final Set<String> _scannedSerialSet = <String>{};
+  int _sequenceCounter = 1;
+  final List<String> _scanQueue = [];
+  bool _isProcessingQueue = false;
   String _activeFilterModelId = 'ALL';
   String _outwardUnitType = 'indoor';
   bool _submitting = false;
@@ -121,7 +125,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       if (!wasAlertShowing && ModalRoute.of(context)?.isCurrent != true) return;
       _lastScanTime = DateTime.now();
-      FocusScope.of(context).unfocus();
+      if (FocusScope.of(context).hasFocus) {
+        FocusScope.of(context).unfocus();
+      }
       if (_selectedShop == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -161,25 +167,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
             _products.removeWhere((p) => p.id == newProd.id);
             _products.insert(0, newProd);
           });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.bolt, color: Colors.amber, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '⚡ Instant Update: Added ${newProd.brand} ${newProd.model}',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-              ),
-              duration: const Duration(seconds: 3),
-              backgroundColor: const Color(0xFF1E1B4B),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
         } catch (_) {}
       } else if (type == 'product_updated' && data is Map<String, dynamic>) {
         try {
@@ -356,9 +343,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
           itemCountProvider: () => _scannedItems.length,
-          existingSerials: _scannedItems.map((e) => e.serialNumber).toSet(),
+          existingSerials: _scannedSerialSet,
           isDuplicate: (s) =>
-              _scannedItems.any((e) => e.serialNumber == s.trim().toUpperCase()) ||
+              _scannedSerialSet.contains(s.trim().toUpperCase()) ||
+              _scanQueue.contains(s.trim().toUpperCase()) ||
               _inFlightSerials.contains(s.trim().toUpperCase()),
           onScanned: (serial) => _handleOutwardScan(serial),
         ),
@@ -366,14 +354,16 @@ class _OutwardScreenState extends State<OutwardScreen> {
     );
   }
 
-  Future<void> _handleOutwardScan(String serial) async {
+  void _handleOutwardScan(String serial) {
     _dismissSimpleAlert();
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
+    _lastScanTime = DateTime.now();
 
-    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in-flight
-    if (_scannedItems.any((item) => item.serialNumber == cleanSerial) ||
-        _inFlightSerials.contains(cleanSerial)) {
+    // 1. Instant synchronous check in O(1): Reject immediately if already in batch OR currently in FIFO queue
+    if (_scannedSerialSet.contains(cleanSerial) ||
+        _scanQueue.contains(cleanSerial) ||
+        _scannedItems.any((item) => item.serialNumber == cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
       _showToast('Duplicate: Serial "$cleanSerial" already in batch', const Color(0xFFE11D48));
@@ -381,6 +371,34 @@ class _OutwardScreenState extends State<OutwardScreen> {
       return;
     }
 
+    _scanQueue.add(cleanSerial);
+
+    if (!_isProcessingQueue) {
+      _processOutwardScanQueue();
+    }
+  }
+
+  Future<void> _processOutwardScanQueue() async {
+    if (_isProcessingQueue) return;
+    _isProcessingQueue = true;
+
+    while (_scanQueue.isNotEmpty && mounted) {
+      final cleanSerial = _scanQueue.removeAt(0);
+      try {
+        await _processSingleOutwardSerial(cleanSerial);
+      } catch (e) {
+        debugPrint('[OutwardScreen] Error processing outward serial $cleanSerial: $e');
+      }
+    }
+
+    _isProcessingQueue = false;
+  }
+
+  Future<void> _processSingleOutwardSerial(String cleanSerial) async {
+    if (_scannedSerialSet.contains(cleanSerial) ||
+        _scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+      return;
+    }
     _inFlightSerials.add(cleanSerial);
 
     try {
@@ -446,6 +464,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
         HapticFeedback.lightImpact();
         final unitType = (res['unit_type'] as String?) ?? (_selectedProduct?.hasDualSerial == true ? _outwardUnitType : null);
         if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+          final seq = _sequenceCounter++;
+          _scannedSerialSet.add(cleanSerial);
           setState(() {
             _scannedItems.insert(
               0,
@@ -457,6 +477,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 isFlaggedForReview: isDamaged,
                 warningMessage: isDamaged ? 'Damaged item added after confirmation.' : msg,
                 unitType: unitType,
+                sequenceNumber: seq,
               ),
             );
           });
@@ -472,6 +493,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
         HapticFeedback.mediumImpact();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
         if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+          final seq = _sequenceCounter++;
+          _scannedSerialSet.add(cleanSerial);
           setState(() {
             _scannedItems.insert(
               0,
@@ -482,6 +505,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 isMatched: false,
                 warningMessage: 'Old pre-go-live stock recorded. Never blocked.',
                 unitType: unitType,
+                sequenceNumber: seq,
               ),
             );
           });
@@ -520,6 +544,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
         if (proceed) {
           final unitType = (res['unit_type'] as String?) ?? (_selectedProduct?.hasDualSerial == true ? _outwardUnitType : null);
+          final seq = _sequenceCounter++;
+          _scannedSerialSet.add(cleanSerial);
           setState(() {
             _scannedItems.insert(
               0,
@@ -531,6 +557,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 isFlaggedForReview: true,
                 warningMessage: isDamaged ? 'Damaged item added after confirmation.' : msg,
                 unitType: unitType,
+                sequenceNumber: seq,
               ),
             );
           });
@@ -571,6 +598,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
           if (dialogResult != null && dialogResult['action'] == 'add') {
             final String? chosenUnitType = dialogResult['unit_type'];
             if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+              final seq = _sequenceCounter++;
+              _scannedSerialSet.add(cleanSerial);
               setState(() {
                 _scannedItems.insert(
                   0,
@@ -582,6 +611,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     isFlaggedForReview: isDamaged,
                     warningMessage: isDamaged ? 'Damaged item added after confirmation.' : null,
                     unitType: chosenUnitType,
+                    sequenceNumber: seq,
                   ),
                 );
                 // Switch active model to matchedProd so staff can see and scan the matching unit!
@@ -871,14 +901,55 @@ class _OutwardScreenState extends State<OutwardScreen> {
   }
 
   void _showModelSwitchBottomSheet() {
+    String sheetSearch = '';
+    bool isSyncing = false;
+    StreamSubscription? sheetWsSub;
+    Timer? debounceTimer;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
-        String sheetSearch = '';
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
+            sheetWsSub ??= WebSocketService().stream.listen((event) {
+              final type = event['event']?.toString() ?? event['type']?.toString();
+              final data = event['data'];
+              if ((type == 'product_created' || type == 'product_updated') && data is Map<String, dynamic>) {
+                try {
+                  final newProd = Product.fromJson(data);
+                  _api.updateCachedProduct(newProd);
+                  if (mounted) {
+                    setState(() {
+                      _products.removeWhere((p) => p.id == newProd.id);
+                      _products.insert(0, newProd);
+                    });
+                  }
+                  if (ctx.mounted) {
+                    setSheetState(() {});
+                  }
+                } catch (_) {}
+              }
+            });
+
+            Future<void> syncFreshModels({String? query}) async {
+              setSheetState(() => isSyncing = true);
+              try {
+                final fresh = await _api.getProducts(forceRefresh: true);
+                if (mounted) {
+                  setState(() => _products = fresh);
+                }
+                if (ctx.mounted) {
+                  setSheetState(() => isSyncing = false);
+                }
+              } catch (_) {
+                if (ctx.mounted) {
+                  setSheetState(() => isSyncing = false);
+                }
+              }
+            }
+
             final filteredProds = _products.where((p) {
               final q = sheetSearch.toLowerCase();
               return p.name.toLowerCase().contains(q) ||
@@ -887,7 +958,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
             }).toList();
 
             return Container(
-              height: MediaQuery.of(context).size.height * 0.75,
+              height: MediaQuery.of(context).size.height * 0.78,
               decoration: const BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -909,11 +980,25 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       children: [
                         const Icon(Icons.swap_horiz, color: Color(0xFF4F46E5)),
                         const SizedBox(width: 8),
-                        const Text(
-                          'Switch / Add Model for this Shop',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        const Expanded(
+                          child: Text(
+                            'Switch / Add Model for this Shop',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                        const Spacer(),
+                        // Real-time Sync Button
+                        IconButton(
+                          tooltip: 'Sync Models from Server',
+                          icon: isSyncing
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                                )
+                              : const Icon(Icons.sync_rounded, color: Color(0xFF4F46E5)),
+                          onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
+                        ),
                         IconButton(
                           icon: const Icon(Icons.close),
                           onPressed: () => Navigator.pop(ctx),
@@ -926,8 +1011,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     child: TextField(
                       autofocus: false,
                       decoration: InputDecoration(
-                        hintText: 'Search brand or model...',
+                        hintText: 'Search brand or model (e.g. GXI 360)...',
                         prefixIcon: const Icon(Icons.search, size: 20),
+                        suffixIcon: isSyncing
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : (sheetSearch.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear, size: 18),
+                                    onPressed: () => setSheetState(() => sheetSearch = ''),
+                                  )
+                                : null),
                         filled: true,
                         fillColor: const Color(0xFFF8FAFC),
                         border: OutlineInputBorder(
@@ -937,74 +1037,134 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       ),
                       onChanged: (val) {
                         setSheetState(() => sheetSearch = val);
+                        if (val.trim().length >= 2) {
+                          debounceTimer?.cancel();
+                          debounceTimer = Timer(const Duration(milliseconds: 500), () {
+                            if (filteredProds.isEmpty && !isSyncing) {
+                              syncFreshModels(query: val);
+                            }
+                          });
+                        }
                       },
                     ),
                   ),
                   Expanded(
-                    child: ListView.separated(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      itemCount: filteredProds.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (c, i) {
-                        final p = filteredProds[i];
-                        final isSelected = p.id == _selectedProduct?.id;
-                        final countInBatch = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct!.id) == p.id).length;
+                    child: filteredProds.isEmpty
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    sheetSearch.isEmpty
+                                        ? 'No models available'
+                                        : 'No local match for "$sheetSearch"',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                      color: Color(0xFF1E293B),
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  const Text(
+                                    'If this model was just added on the admin dashboard, tap below to sync immediately into this dispatch window.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  ElevatedButton.icon(
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF4F46E5),
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                    ),
+                                    icon: isSyncing
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                          )
+                                        : const Icon(Icons.cloud_sync_outlined, size: 18),
+                                    label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
+                                    onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : RefreshIndicator(
+                            onRefresh: () => syncFreshModels(query: sheetSearch),
+                            child: ListView.separated(
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              itemCount: filteredProds.length,
+                              separatorBuilder: (_, _) => const SizedBox(height: 8),
+                              itemBuilder: (c, i) {
+                                final p = filteredProds[i];
+                                final isSelected = p.id == _selectedProduct?.id;
+                                final countInBatch = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct!.id) == p.id).length;
 
-                        return ListTile(
-                          tileColor: isSelected ? const Color(0xFFEEF2FF) : Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            side: BorderSide(
-                              color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
-                              width: isSelected ? 1.5 : 1.0,
-                            ),
-                          ),
-                          leading: CircleAvatar(
-                            backgroundColor: isSelected ? const Color(0xFF4F46E5) : const Color(0xFFF1F5F9),
-                            foregroundColor: isSelected ? Colors.white : const Color(0xFF475569),
-                            child: Icon(isSelected ? Icons.check : Icons.devices, size: 20),
-                          ),
-                          title: Text(
-                            p.name,
-                            style: TextStyle(
-                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
-                              fontSize: 13,
-                            ),
-                          ),
-                          subtitle: Text(
-                            p.currentStockQty < 0
-                                ? '${p.brand} • ${p.model} (${p.currentStockQty} - Negative Stock)'
-                                : '${p.brand} • ${p.model} (${p.currentStockQty} on shelves)',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF64748B),
-                              fontWeight: p.currentStockQty < 0 ? FontWeight.bold : FontWeight.normal,
-                            ),
-                          ),
-                          trailing: countInBatch > 0
-                              ? Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF10B981),
-                                    borderRadius: BorderRadius.circular(10),
+                                return ListTile(
+                                  tileColor: isSelected ? const Color(0xFFEEF2FF) : Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                    side: BorderSide(
+                                      color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+                                      width: isSelected ? 1.5 : 1.0,
+                                    ),
                                   ),
-                                  child: Text(
-                                    '$countInBatch in dispatch',
-                                    style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                  leading: CircleAvatar(
+                                    backgroundColor: isSelected ? const Color(0xFF4F46E5) : const Color(0xFFF1F5F9),
+                                    foregroundColor: isSelected ? Colors.white : const Color(0xFF475569),
+                                    child: Icon(isSelected ? Icons.check : Icons.devices, size: 20),
                                   ),
-                                )
-                              : null,
-                          onTap: () {
-                            setState(() {
-                              _selectedProduct = p;
-                              _activeFilterModelId = 'ALL';
-                            });
-                            Navigator.pop(ctx);
-                            _showToast('Active model: ${p.brand} ${p.model}', const Color(0xFF4F46E5));
-                          },
-                        );
-                      },
-                    ),
+                                  title: Text(
+                                    p.name,
+                                    style: TextStyle(
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    p.currentStockQty < 0
+                                        ? '${p.brand} • ${p.model} (${p.currentStockQty} - Negative Stock)'
+                                        : '${p.brand} • ${p.model} (${p.currentStockQty} on shelves)',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF64748B),
+                                      fontWeight: p.currentStockQty < 0 ? FontWeight.bold : FontWeight.normal,
+                                    ),
+                                  ),
+                                  trailing: countInBatch > 0
+                                      ? Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF10B981),
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          child: Text(
+                                            '$countInBatch in dispatch',
+                                            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
+                                        )
+                                      : null,
+                                  onTap: () {
+                                    setState(() {
+                                      _selectedProduct = p;
+                                      _activeFilterModelId = 'ALL';
+                                    });
+                                    Navigator.pop(ctx);
+                                    _showToast('Active model: ${p.brand} ${p.model}', const Color(0xFF4F46E5));
+                                  },
+                                );
+                              },
+                            ),
+                          ),
                   ),
                 ],
               ),
@@ -1012,7 +1172,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
           },
         );
       },
-    );
+    ).whenComplete(() {
+      sheetWsSub?.cancel();
+      debounceTimer?.cancel();
+    });
   }
 
   Future<void> _showUnitTypeMismatchDialog({
@@ -1873,6 +2036,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
       setState(() {
         _submitting = false;
         _scannedItems.clear();
+        _scannedSerialSet.clear();
+        _sequenceCounter = 1;
+        _scanQueue.clear();
+        _isProcessingQueue = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Dispatch saved offline • Will auto-sync when online!')),
@@ -2047,6 +2214,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
         setState(() {
           _submitting = false;
           _scannedItems.clear();
+          _scannedSerialSet.clear();
+          _sequenceCounter = 1;
+          _scanQueue.clear();
+          _isProcessingQueue = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Dispatch saved to offline queue • Will auto-sync when connected!')),
@@ -2190,6 +2361,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _currentStep = 1;
         _selectedProduct = null;
         _scannedItems.clear();
+        _scannedSerialSet.clear();
+        _sequenceCounter = 1;
+        _scanQueue.clear();
+        _isProcessingQueue = false;
         _billNumberController.clear();
         _deliveryRefController.clear();
         _remarksController.clear();
@@ -2489,16 +2664,55 @@ class _OutwardScreenState extends State<OutwardScreen> {
           ],
           const SizedBox(height: 14),
 
-          const Text(
-            'Select Model to Dispatch:',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Select Model to Dispatch:',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
+              ),
+              InkWell(
+                onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Row(
+                    children: [
+                      _loadingProducts
+                          ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
+                          : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
+                      const SizedBox(width: 4),
+                      Text(
+                        _loadingProducts ? 'Syncing...' : 'Sync Models',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
 
           TextField(
             decoration: InputDecoration(
-              hintText: 'Search appliance model...',
+              hintText: 'Search appliance model (e.g. GXI 360)...',
               prefixIcon: const Icon(Icons.search, size: 20),
+              suffixIcon: _loadingProducts
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : (_productSearch.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear, size: 18),
+                          onPressed: () => setState(() => _productSearch = ''),
+                        )
+                      : null),
               filled: true,
               fillColor: Colors.white,
               border: OutlineInputBorder(
@@ -2506,83 +2720,140 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
               ),
             ),
-            onChanged: (val) => setState(() => _productSearch = val),
+            onChanged: (val) {
+              setState(() => _productSearch = val);
+              if (val.trim().length >= 2 && filtered.isEmpty && !_loadingProducts) {
+                _loadMetadata(forceRefresh: true);
+              }
+            },
           ),
           const SizedBox(height: 10),
 
           Expanded(
-            child: ListView.separated(
-              itemCount: filtered.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (ctx, idx) {
-                final p = filtered[idx];
-
-                return Material(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  child: InkWell(
-                    onTap: () {
-                      setState(() {
-                        _selectedProduct = p;
-                        _currentStep = 3;
-                      });
-                    },
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
+            child: filtered.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  p.name,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${p.brand} • ${p.model}',
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
-                                ),
-                                if (p.hasDualSerial) ...[
-                                  const SizedBox(height: 4),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFEFF6FF),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: const Text(
-                                      'Dual Serial Model: Scan Indoor & Outdoor units as 2 separate serials',
-                                      style: TextStyle(fontSize: 10, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w500),
-                                    ),
-                                  ),
-                                ],
-                              ],
+                          const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
+                          const SizedBox(height: 12),
+                          Text(
+                            _productSearch.isEmpty
+                                ? 'No models available'
+                                : 'No local match for "$_productSearch"',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: Color(0xFF1E293B),
                             ),
+                            textAlign: TextAlign.center,
                           ),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                '${p.currentStockQty}',
-                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                              ),
-                              const Text('on shelves', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
-                            ],
+                          const SizedBox(height: 6),
+                          const Text(
+                            'If this model was just added on the admin dashboard, tap below to sync immediately.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF4F46E5),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            icon: _loadingProducts
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  )
+                                : const Icon(Icons.cloud_sync_outlined, size: 18),
+                            label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
+                            onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
                           ),
                         ],
                       ),
                     ),
+                  )
+                : RefreshIndicator(
+                    onRefresh: () => _loadMetadata(forceRefresh: true),
+                    child: ListView.separated(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (ctx, idx) {
+                        final p = filtered[idx];
+
+                        return Material(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                          child: InkWell(
+                            onTap: () {
+                              setState(() {
+                                _selectedProduct = p;
+                                _currentStep = 3;
+                              });
+                            },
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          p.name,
+                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${p.brand} • ${p.model}',
+                                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
+                                        ),
+                                        if (p.hasDualSerial) ...[
+                                          const SizedBox(height: 4),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFFEFF6FF),
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                            child: const Text(
+                                              'Dual Serial Model: Scan Indoor & Outdoor units as 2 separate serials',
+                                              style: TextStyle(fontSize: 10, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w500),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Text(
+                                        '${p.currentStockQty}',
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                      ),
+                                      const Text('on shelves', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
@@ -3187,7 +3458,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
                                 ),
                                 child: Text(
-                                  '#${filteredItems.length - idx}',
+                                  item.sequenceNumber > 0
+                                      ? '#${item.sequenceNumber}'
+                                      : '#${filteredItems.length - idx}',
                                   style: TextStyle(
                                     fontSize: context.isTablet ? 12 : 10,
                                     fontWeight: FontWeight.bold,
@@ -3251,7 +3524,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
                               InkWell(
                                 borderRadius: BorderRadius.circular(16),
                                 onTap: () {
-                                  setState(() => _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber));
+                                  setState(() {
+                                    _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
+                                    _scannedSerialSet.remove(item.serialNumber);
+                                  });
                                 },
                                 child: Padding(
                                   padding: const EdgeInsets.all(4),

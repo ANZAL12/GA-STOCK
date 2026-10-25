@@ -174,6 +174,7 @@ class OutwardScanResult {
   final String? lastShopName;
   final String? currentStatus;
   String? unitType; // 'indoor', 'outdoor', or null
+  final int sequenceNumber;
 
   OutwardScanResult({
     required this.serialNumber,
@@ -186,6 +187,7 @@ class OutwardScanResult {
     this.lastShopName,
     this.currentStatus,
     this.unitType,
+    this.sequenceNumber = 0,
   });
 }
 

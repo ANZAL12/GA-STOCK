@@ -76,8 +76,8 @@ class SoundService {
 
   void playScannerBeep() {
     final now = DateTime.now().millisecondsSinceEpoch;
-    // 45ms audio throttle window prevents Android native AudioTrack buffer exhaustion during burst scans
-    if (now - _lastBeepMs < 45) return;
+    // 80ms audio throttle window prevents Android native AudioTrack buffer exhaustion during burst scans
+    if (now - _lastBeepMs < 80) return;
     _lastBeepMs = now;
 
     // 1. Immediate hardware system click (0ms response guarantee)

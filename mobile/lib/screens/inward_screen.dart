@@ -6,6 +6,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
@@ -24,12 +25,14 @@ class InwardScannedItem {
   final Product product;
   String? unitType; // 'indoor' or 'outdoor'
   final bool isAutoDetected;
+  final int sequenceNumber;
 
   InwardScannedItem({
     required this.serialNumber,
     required this.product,
     this.unitType,
     this.isAutoDetected = false,
+    required this.sequenceNumber,
   });
 }
 
@@ -56,6 +59,9 @@ class _InwardScreenState extends State<InwardScreen> {
 
   final List<InwardScannedItem> _scannedItems = [];
   final Set<String> _scannedSerialSet = <String>{};
+  int _sequenceCounter = 1;
+  final List<String> _scanQueue = [];
+  bool _isProcessingQueue = false;
   String? _lastScanFeedback;
   final ScrollController _scrollController = ScrollController();
 
@@ -126,7 +132,9 @@ class _InwardScreenState extends State<InwardScreen> {
       if (!wasWarningShowing && ModalRoute.of(context)?.isCurrent != true) return;
 
       _lastScanTime = DateTime.now();
-      FocusScope.of(context).unfocus();
+      if (FocusScope.of(context).hasFocus) {
+        FocusScope.of(context).unfocus();
+      }
       if (_stage == InwardStage.scanning) {
         _handleScannedSerial(barcode);
       } else {
@@ -320,6 +328,9 @@ class _InwardScreenState extends State<InwardScreen> {
       _inwardType = type;
       _scannedItems.clear();
       _scannedSerialSet.clear();
+      _sequenceCounter = 1;
+      _scanQueue.clear();
+      _isProcessingQueue = false;
       _lastScanFeedback = null;
       _inwardRequestId = null;
 
@@ -338,9 +349,8 @@ class _InwardScreenState extends State<InwardScreen> {
   void _onModelSelectedForStockIn(Product p) {
     setState(() {
       _selectedProduct = p;
-      _scannedItems.clear();
-      _scannedSerialSet.clear();
-      _lastScanFeedback = null;
+      // Keep all previously scanned items and serials intact for multi-model batching
+      _lastScanFeedback = 'Active model: ${p.brand} ${p.model}';
       _inwardUnitType = 'indoor';
       _stage = InwardStage.scanning;
     });
@@ -358,6 +368,10 @@ class _InwardScreenState extends State<InwardScreen> {
     }
 
     if (_stage == InwardStage.selectModel) {
+      if (_scannedItems.isNotEmpty && _selectedProduct != null) {
+        setState(() => _stage = InwardStage.scanning);
+        return false;
+      }
       setState(() => _stage = InwardStage.selectCase);
       return false;
     }
@@ -393,6 +407,9 @@ class _InwardScreenState extends State<InwardScreen> {
     setState(() {
       _scannedItems.clear();
       _scannedSerialSet.clear();
+      _sequenceCounter = 1;
+      _scanQueue.clear();
+      _isProcessingQueue = false;
       _lastScanFeedback = null;
       if (_inwardType == 'stock_in') {
         _stage = InwardStage.selectModel;
@@ -424,7 +441,7 @@ class _InwardScreenState extends State<InwardScreen> {
           existingSerials: _scannedSerialSet,
           isDuplicate: (s) {
             final sn = s.trim().toUpperCase();
-            return _scannedSerialSet.contains(sn) || _inFlightSerials.contains(sn);
+            return _scannedSerialSet.contains(sn) || _scanQueue.contains(sn) || _inFlightSerials.contains(sn);
           },
           onScanned: (serial) => _handleScannedSerial(serial),
         ),
@@ -432,15 +449,14 @@ class _InwardScreenState extends State<InwardScreen> {
     );
   }
 
-  Future<void> _handleScannedSerial(String serial) async {
+  void _handleScannedSerial(String serial) {
     _dismissWarningDialog();
     final cleanSerial = serial.trim().toUpperCase();
     if (cleanSerial.isEmpty) return;
     _lastScanTime = DateTime.now();
 
-    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in-flight
-    if (_scannedSerialSet.contains(cleanSerial) ||
-        _inFlightSerials.contains(cleanSerial)) {
+    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in FIFO queue
+    if (_scannedSerialSet.contains(cleanSerial) || _scanQueue.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
       if (mounted) {
@@ -454,17 +470,126 @@ class _InwardScreenState extends State<InwardScreen> {
       return;
     }
 
+    // 2. Enqueue in strict FIFO order
+    _scanQueue.add(cleanSerial);
+
+    // 3. Start processing loop if idle
+    if (!_isProcessingQueue) {
+      _processScanQueue();
+    }
+  }
+
+  Future<void> _processScanQueue() async {
+    if (_isProcessingQueue) return;
+    _isProcessingQueue = true;
+
+    while (_scanQueue.isNotEmpty && mounted) {
+      final cleanSerial = _scanQueue.removeAt(0);
+      try {
+        await _processSingleSerial(cleanSerial);
+      } catch (e) {
+        debugPrint('[InwardScreen] Exception processing serial $cleanSerial: $e');
+      }
+    }
+
+    _isProcessingQueue = false;
+  }
+
+  Future<void> _processSingleSerial(String cleanSerial) async {
+    // Re-verify it wasn't added already
+    if (_scannedSerialSet.contains(cleanSerial)) return;
     _inFlightSerials.add(cleanSerial);
 
     try {
+      // =========================================================================
+      // CASE 1: STOCK IN (Direct from Company) - 0ms INSTANT LOCAL FAST-PATH
+      // =========================================================================
+      if (_inwardType == 'stock_in') {
+        if (_selectedProduct == null) {
+          _showWarningDialog('Model Required', 'Please select an appliance model before scanning.');
+          return;
+        }
 
-      // 2. Live validation against backend
-      final String? reqProdId = _inwardType == 'stock_in' ? _selectedProduct?.id : null;
-      final result = await _api.validateInwardSerial(
-        reqProdId,
-        cleanSerial,
-        inwardType: _inwardType,
-      );
+        // Fast in-memory check against local godown inventory snapshot in 0ms:
+        final localEntry = OfflineManager().serials[cleanSerial];
+        if (localEntry != null && localEntry['st'] == 'available') {
+          HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
+          _showWarningDialog(
+            'Already in Stock',
+            'Serial "$cleanSerial" is already registered in godown inventory as available (${localEntry['m'] ?? ""}).',
+          );
+          return;
+        }
+
+        final targetProduct = _selectedProduct!;
+        final String? unitType = targetProduct.hasDualSerial ? _inwardUnitType : null;
+        final seq = _sequenceCounter++;
+
+        // Add to batch INSTANTLY (0ms latency, zero UI freeze, stable sequence number)
+        setState(() {
+          _scannedSerialSet.add(cleanSerial);
+          _scannedItems.insert(
+            0,
+            InwardScannedItem(
+              serialNumber: cleanSerial,
+              product: targetProduct,
+              unitType: unitType,
+              isAutoDetected: false,
+              sequenceNumber: seq,
+            ),
+          );
+          _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${targetProduct.brand} ${targetProduct.model}';
+        });
+
+        // Background sequential validation only if online (1 request at a time, never chokes socket pool)
+        if (OfflineManager().isOnline) {
+          try {
+            final res = await _api.validateInwardSerial(
+              targetProduct.id,
+              cleanSerial,
+              inwardType: 'stock_in',
+            );
+            if (res['is_valid'] == false && mounted) {
+              setState(() {
+                _scannedSerialSet.remove(cleanSerial);
+                _scannedItems.removeWhere((it) => it.serialNumber == cleanSerial);
+              });
+              HapticFeedback.heavyImpact();
+              SoundService().playErrorSound();
+              _showWarningDialog('Validation Error', res['message'] ?? 'Serial "$cleanSerial" cannot be registered.');
+            }
+          } catch (_) {
+            // Transient network failure during burst: batch save will validate atomically
+          }
+        }
+        return;
+      }
+
+      // =========================================================================
+      // CASE 2: RETURN & DAMAGED INWARD
+      // =========================================================================
+      // Fast check local snapshot first (0ms)
+      Map<String, dynamic>? rawResult;
+      if (OfflineManager().serials.containsKey(cleanSerial)) {
+        rawResult = OfflineManager().validateInwardSerialOffline(null, cleanSerial, inwardType: _inwardType);
+      }
+
+      // If not in local snapshot, query backend sequentially (guaranteed 1 socket at a time)
+      if (rawResult == null || rawResult['registered_model_id'] == null) {
+        try {
+          rawResult = await _api.validateInwardSerial(
+            null,
+            cleanSerial,
+            inwardType: _inwardType,
+          );
+        } catch (_) {
+          // Handled by fallback below
+        }
+      }
+
+      final Map<String, dynamic> result = rawResult ??
+          OfflineManager().validateInwardSerialOffline(null, cleanSerial, inwardType: _inwardType);
 
       final bool isValid = result['is_valid'] ?? true;
       final String? message = result['message'];
@@ -495,61 +620,47 @@ class _InwardScreenState extends State<InwardScreen> {
         }
       }
 
-      // 3. Determine the Product
       Product? targetProduct;
       String? unitType;
       bool isAutoDetected = false;
 
-      if (_inwardType == 'stock_in') {
-        // Stock In: Model is fixed to the upfront selected model
-        targetProduct = _selectedProduct;
-        if (targetProduct != null && targetProduct.hasDualSerial) {
-          unitType = _inwardUnitType;
+      final registeredId = result['registered_model_id']?.toString();
+      if (registeredId != null) {
+        targetProduct = _findProductById(registeredId);
+        if (targetProduct == null && result['model'] != null) {
+          targetProduct = Product(
+            id: registeredId,
+            name: result['registered_model_name'] ?? '${result['brand'] ?? ''} ${result['model'] ?? ''}',
+            brand: result['brand'] ?? '',
+            model: result['model'] ?? '',
+            categoryId: '',
+            categoryName: 'Appliance',
+            currentStockQty: 0,
+            unit: 'unit',
+            serialNumberRequired: true,
+            outOfStockReminder: false,
+            hasDualSerial: result['has_dual_serial'] == true,
+          );
+        }
+        isAutoDetected = true;
+        unitType = result['unit_type']?.toString();
+
+        if (targetProduct != null && targetProduct.hasDualSerial && unitType == null) {
+          unitType = await _showSelectUnitTypeDialog(cleanSerial, targetProduct);
+          if (unitType == null) return;
         }
       } else {
-        // Return or Damaged: Look up auto-detected model from backend response
-        final registeredId = result['registered_model_id']?.toString();
-        if (registeredId != null) {
-          targetProduct = _findProductById(registeredId);
-          if (targetProduct == null && result['model'] != null) {
-            // Product not yet in memory list, construct instance from backend details
-            targetProduct = Product(
-              id: registeredId,
-              name: result['registered_model_name'] ?? '${result['brand'] ?? ''} ${result['model'] ?? ''}',
-              brand: result['brand'] ?? '',
-              model: result['model'] ?? '',
-              categoryId: '',
-              categoryName: 'Appliance',
-              currentStockQty: 0,
-              unit: 'unit',
-              serialNumberRequired: true,
-              outOfStockReminder: false,
-              hasDualSerial: result['has_dual_serial'] == true,
-            );
-          }
-          isAutoDetected = true;
-          unitType = result['unit_type']?.toString();
+        HapticFeedback.mediumImpact();
+        final chosenProduct = await _showSelectModelForSerialDialog(cleanSerial);
+        if (chosenProduct == null) {
+          return;
+        }
+        targetProduct = chosenProduct;
+        isAutoDetected = false;
 
-          // If dual serial model and unit_type not stored previously, ask user
-          if (targetProduct != null && targetProduct.hasDualSerial && unitType == null) {
-            unitType = await _showSelectUnitTypeDialog(cleanSerial, targetProduct);
-            if (unitType == null) return; // User cancelled unit selection
-          }
-        } else {
-          // "THE STRANGE CASE": Serial is NOT recorded in system!
-          // Ask staff to select the model after scanning this serial!
-          HapticFeedback.mediumImpact();
-          final chosenProduct = await _showSelectModelForSerialDialog(cleanSerial);
-          if (chosenProduct == null) {
-            return; // Staff cancelled
-          }
-          targetProduct = chosenProduct;
-          isAutoDetected = false;
-
-          if (targetProduct.hasDualSerial) {
-            unitType = await _showSelectUnitTypeDialog(cleanSerial, targetProduct);
-            if (unitType == null) return;
-          }
+        if (targetProduct.hasDualSerial) {
+          unitType = await _showSelectUnitTypeDialog(cleanSerial, targetProduct);
+          if (unitType == null) return;
         }
       }
 
@@ -558,8 +669,8 @@ class _InwardScreenState extends State<InwardScreen> {
         return;
       }
 
-      // 4. Add to scanned items list (instant O(1) set insertion)
       if (!_scannedSerialSet.contains(cleanSerial)) {
+        final seq = _sequenceCounter++;
         setState(() {
           _scannedSerialSet.add(cleanSerial);
           _scannedItems.insert(
@@ -569,12 +680,11 @@ class _InwardScreenState extends State<InwardScreen> {
               product: targetProduct!,
               unitType: unitType,
               isAutoDetected: isAutoDetected,
+              sequenceNumber: seq,
             ),
           );
-          _lastScanFeedback = '✓ Scanned: $cleanSerial • ${targetProduct.brand} ${targetProduct.model}';
+          _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${targetProduct.brand} ${targetProduct.model}';
         });
-        HapticFeedback.lightImpact();
-        SoundService().playScannerBeep();
       }
     } catch (e) {
       HapticFeedback.heavyImpact();
@@ -604,8 +714,12 @@ class _InwardScreenState extends State<InwardScreen> {
           ),
         );
       },
-      pageBuilder: (ctx, anim1, anim2) {
+                      pageBuilder: (ctx, anim1, anim2) {
         String filter = '';
+        bool isSyncing = false;
+        StreamSubscription? dialogWsSub;
+        Timer? debounceTimer;
+
         return SafeArea(
           child: Center(
             child: SingleChildScrollView(
@@ -622,6 +736,43 @@ class _InwardScreenState extends State<InwardScreen> {
                 clipBehavior: Clip.antiAlias,
                 child: StatefulBuilder(
                   builder: (context, setModalState) {
+                    dialogWsSub ??= WebSocketService().stream.listen((event) {
+                      final type = event['event']?.toString() ?? event['type']?.toString();
+                      final data = event['data'];
+                      if ((type == 'product_created' || type == 'product_updated') && data is Map<String, dynamic>) {
+                        try {
+                          final newProd = Product.fromJson(data);
+                          _api.updateCachedProduct(newProd);
+                          if (mounted) {
+                            setState(() {
+                              _products.removeWhere((p) => p.id == newProd.id);
+                              _products.insert(0, newProd);
+                            });
+                          }
+                          if (ctx.mounted) {
+                            setModalState(() {});
+                          }
+                        } catch (_) {}
+                      }
+                    });
+
+                    Future<void> syncFreshModels({String? query}) async {
+                      setModalState(() => isSyncing = true);
+                      try {
+                        final fresh = await _api.getProducts(forceRefresh: true);
+                        if (mounted) {
+                          setState(() => _products = fresh);
+                        }
+                        if (ctx.mounted) {
+                          setModalState(() => isSyncing = false);
+                        }
+                      } catch (_) {
+                        if (ctx.mounted) {
+                          setModalState(() => isSyncing = false);
+                        }
+                      }
+                    }
+
                     final filtered = _products.where((p) {
                       final q = filter.toLowerCase();
                       return p.name.toLowerCase().contains(q) ||
@@ -664,6 +815,17 @@ class _InwardScreenState extends State<InwardScreen> {
                                   ],
                                 ),
                               ),
+                              IconButton(
+                                tooltip: 'Sync Models from Server',
+                                icon: isSyncing
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                                      )
+                                    : const Icon(Icons.sync_rounded, color: Color(0xFF4F46E5)),
+                                onPressed: isSyncing ? null : () => syncFreshModels(query: filter),
+                              ),
                               InkWell(
                                 borderRadius: BorderRadius.circular(16),
                                 onTap: () => Navigator.pop(ctx, null),
@@ -699,24 +861,58 @@ class _InwardScreenState extends State<InwardScreen> {
                           TextField(
                             autofocus: false,
                             decoration: InputDecoration(
-                              hintText: 'Search brand or model...',
+                              hintText: 'Search brand or model (e.g. GXI 360)...',
                               prefixIcon: const Icon(Icons.search, size: 18),
+                              suffixIcon: isSyncing
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(10),
+                                      child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                                    )
+                                  : null,
                               isDense: true,
                               filled: true,
                               fillColor: const Color(0xFFF1F5F9),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
                             ),
-                            onChanged: (val) => setModalState(() => filter = val),
+                            onChanged: (val) {
+                              setModalState(() => filter = val);
+                              if (val.trim().length >= 2) {
+                                debounceTimer?.cancel();
+                                debounceTimer = Timer(const Duration(milliseconds: 500), () {
+                                  if (filtered.isEmpty && !isSyncing) {
+                                    syncFreshModels(query: val);
+                                  }
+                                });
+                              }
+                            },
                           ),
                           const SizedBox(height: 10),
                           ConstrainedBox(
                             constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.38),
                             child: filtered.isEmpty
-                                ? const Center(
+                                ? Center(
                                     child: Padding(
-                                      padding: EdgeInsets.all(24),
-                                      child: Text('No models match your search.', style: TextStyle(color: Color(0xFF94A3B8))),
+                                      padding: const EdgeInsets.all(16),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Text('No models match your search locally.', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
+                                          const SizedBox(height: 8),
+                                          ElevatedButton.icon(
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor: const Color(0xFF4F46E5),
+                                              foregroundColor: Colors.white,
+                                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                            ),
+                                            icon: isSyncing
+                                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                                : const Icon(Icons.cloud_sync_outlined, size: 16),
+                                            label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
+                                            onPressed: isSyncing ? null : () => syncFreshModels(query: filter),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   )
                                 : ListView.separated(
@@ -736,7 +932,11 @@ class _InwardScreenState extends State<InwardScreen> {
                                           style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                                         ),
                                         trailing: const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
-                                        onTap: () => Navigator.pop(ctx, p),
+                                        onTap: () {
+                                          dialogWsSub?.cancel();
+                                          debounceTimer?.cancel();
+                                          Navigator.pop(ctx, p);
+                                        },
                                       );
                                     },
                                   ),
@@ -1324,6 +1524,13 @@ class _InwardScreenState extends State<InwardScreen> {
       );
 
       if (mounted) {
+        setState(() {
+          _scannedItems.clear();
+          _scannedSerialSet.clear();
+          _sequenceCounter = 1;
+          _scanQueue.clear();
+          _isProcessingQueue = false;
+        });
         Navigator.pop(context);
       }
     } catch (e) {
@@ -1752,6 +1959,32 @@ class _InwardScreenState extends State<InwardScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (_scannedItems.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF0FDF4),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF86EFAC)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_outline, size: 20, color: Color(0xFF16A34A)),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '${_scannedItems.length} unit(s) in batch. Selecting a model keeps all previous scans.',
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF14532D), fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _stage = InwardStage.scanning),
+                    child: const Text('Resume Scan', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF16A34A))),
+                  ),
+                ],
+              ),
+            ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
@@ -1770,8 +2003,17 @@ class _InwardScreenState extends State<InwardScreen> {
                   ),
                 ),
                 TextButton(
-                  onPressed: () => setState(() => _stage = InwardStage.selectCase),
-                  child: const Text('Back', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
+                  onPressed: () {
+                    if (_scannedItems.isNotEmpty && _selectedProduct != null) {
+                      setState(() => _stage = InwardStage.scanning);
+                    } else {
+                      setState(() => _stage = InwardStage.selectCase);
+                    }
+                  },
+                  child: Text(
+                    _scannedItems.isNotEmpty ? 'Cancel' : 'Back',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                  ),
                 ),
               ],
             ),
@@ -2087,7 +2329,7 @@ class _InwardScreenState extends State<InwardScreen> {
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
                       ),
                       Text(
-                        'Newest (#${_scannedItems.length}) at top • #1 at bottom',
+                        'Newest (#${_scannedItems.isNotEmpty ? _scannedItems.first.sequenceNumber : 0}) at top • #1 at bottom',
                         style: const TextStyle(fontSize: 10.5, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
                       ),
                     ],
@@ -2196,7 +2438,7 @@ class _InwardScreenState extends State<InwardScreen> {
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
-                                '#${_scannedItems.length - idx}',
+                                '#${item.sequenceNumber}',
                                 style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
                               ),
                             ),
@@ -2312,6 +2554,7 @@ class _InwardScreenState extends State<InwardScreen> {
   Widget _buildScanningHeader() {
     if (_inwardType == 'stock_in' && _selectedProduct != null) {
       final p = _selectedProduct!;
+      final distinctModels = _scannedItems.map((e) => e.product.id).toSet().length;
       return Container(
         width: double.infinity,
         color: Colors.white,
@@ -2322,9 +2565,29 @@ class _InwardScreenState extends State<InwardScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    p.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF0F172A)),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          p.name,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF0F172A)),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFEEF2FF),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: const Color(0xFFC7D2FE)),
+                        ),
+                        child: const Text(
+                          'Active',
+                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -2342,7 +2605,9 @@ class _InwardScreenState extends State<InwardScreen> {
                 border: Border.all(color: _getInwardTypeColor(_inwardType).withOpacity(0.3)),
               ),
               child: Text(
-                '${_scannedItems.length} Scanned',
+                distinctModels > 1
+                    ? '${_scannedItems.length} Scanned ($distinctModels models)'
+                    : '${_scannedItems.length} Scanned',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _getInwardTypeColor(_inwardType)),
               ),
             ),
