@@ -42,7 +42,7 @@ class OfflineBanner extends StatelessWidget {
                                 ? 'Cache empty • Connect to server once to download stock'
                                 : pendingCount > 0
                                     ? '${offlineManager.serials.length} serials cached • $pendingCount queued'
-                                    : '${offlineManager.serials.length} serials cached • Instant matching',
+                                    : '${offlineManager.serials.length} serials cached',
                             style: const TextStyle(
                               color: Color(0xFFFEF3C7),
                               fontSize: 11,

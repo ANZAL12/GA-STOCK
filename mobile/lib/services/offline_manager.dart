@@ -148,7 +148,7 @@ class OfflineManager {
 
   void _startHealthChecks() {
     _healthCheckTimer?.cancel();
-    _healthCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 45), (_) async {
       await checkServerHealth(timeoutSeconds: 5);
     });
   }

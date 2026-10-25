@@ -143,13 +143,16 @@ class HardwareScannerService {
 
     debugPrint('[HardwareScannerService] Scanned barcode: $barcode');
 
-    // Dismiss focus from any text fields or buttons so trailing scanner keys have no focus target
-    FocusManager.instance.primaryFocus?.unfocus();
+    // Dismiss focus only if an active element actually holds focus, avoiding Android ViewRootImpl surface relayout
+    final currentFocus = FocusManager.instance.primaryFocus;
+    if (currentFocus != null && currentFocus.hasFocus && currentFocus.context != null) {
+      currentFocus.unfocus();
+    }
 
     // Immediate zero-latency audio and haptic feedback
     try {
       SoundService().playScannerBeep();
-      HapticFeedback.mediumImpact();
+      HapticFeedback.lightImpact();
     } catch (_) {}
 
     _scanStreamController.add(barcode);

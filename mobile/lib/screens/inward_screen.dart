@@ -542,27 +542,8 @@ class _InwardScreenState extends State<InwardScreen> {
           _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${targetProduct.brand} ${targetProduct.model}';
         });
 
-        // Background sequential validation only if online (1 request at a time, never chokes socket pool)
-        if (OfflineManager().isOnline) {
-          try {
-            final res = await _api.validateInwardSerial(
-              targetProduct.id,
-              cleanSerial,
-              inwardType: 'stock_in',
-            );
-            if (res['is_valid'] == false && mounted) {
-              setState(() {
-                _scannedSerialSet.remove(cleanSerial);
-                _scannedItems.removeWhere((it) => it.serialNumber == cleanSerial);
-              });
-              HapticFeedback.heavyImpact();
-              SoundService().playErrorSound();
-              _showWarningDialog('Validation Error', res['message'] ?? 'Serial "$cleanSerial" cannot be registered.');
-            }
-          } catch (_) {
-            // Transient network failure during burst: batch save will validate atomically
-          }
-        }
+        // In stock_in mode, local 0ms memory check above already guaranteed uniqueness and stock availability.
+        // The final atomic batch submission validates all serials together on the server.
         return;
       }
 
@@ -2411,7 +2392,7 @@ class _InwardScreenState extends State<InwardScreen> {
               : ListView.builder(
                   key: const PageStorageKey('inward_scanned_list'),
                   controller: _scrollController,
-                  cacheExtent: 600.0,
+                  cacheExtent: 250.0,
                   physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
                   padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16),
                   itemCount: _scannedItems.length,

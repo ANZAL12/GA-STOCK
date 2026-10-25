@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
@@ -27,6 +28,10 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
   bool _loading = true;
   String? _error;
 
+  // 30-second cooldown tracking per billNumber
+  final Map<String, int> _printCooldowns = {};
+  Timer? _listCooldownTimer;
+
   @override
   void initState() {
     super.initState();
@@ -40,8 +45,38 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
 
   @override
   void dispose() {
+    _listCooldownTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _startListCooldown(String billNumber) {
+    setState(() {
+      _printCooldowns[billNumber] = 30;
+    });
+    _listCooldownTimer?.cancel();
+    _listCooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        final toRemove = <String>[];
+        for (final entry in _printCooldowns.entries) {
+          if (entry.value <= 1) {
+            toRemove.add(entry.key);
+          } else {
+            _printCooldowns[entry.key] = entry.value - 1;
+          }
+        }
+        for (final k in toRemove) {
+          _printCooldowns.remove(k);
+        }
+        if (_printCooldowns.isEmpty) {
+          timer.cancel();
+        }
+      });
+    });
   }
 
   Future<void> _loadBills({String? search, bool forceRefresh = false}) async {
@@ -68,6 +103,47 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
       context,
       MaterialPageRoute(builder: (_) => BillDetailScreen(billNumber: item.billNumber)),
     );
+  }
+
+  Future<void> _printBillToOfficePc(String billNumber) async {
+    final cd = _printCooldowns[billNumber] ?? 0;
+    if (cd > 0) {
+      TopToast.show(
+        context,
+        message: 'Please wait ${cd}s before printing Bill #$billNumber again.',
+        backgroundColor: const Color(0xFFD97706),
+        icon: Icons.hourglass_top_rounded,
+      );
+      return;
+    }
+    _startListCooldown(billNumber);
+
+    TopToast.show(
+      context,
+      message: 'Sending Bill #$billNumber to Office PC Printer...',
+      backgroundColor: const Color(0xFF3C3489),
+      icon: Icons.print_rounded,
+    );
+    try {
+      final res = await _api.printBill(billNumber: billNumber);
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: res['message'] ?? 'Bill #$billNumber sent to Office PC!',
+          backgroundColor: const Color(0xFF059669),
+          icon: Icons.check_circle_rounded,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: 'Print failed: ${e.toString().replaceAll('Exception: ', '')}',
+          backgroundColor: const Color(0xFFEF4444),
+          icon: Icons.error_outline_rounded,
+        );
+      }
+    }
   }
 
   @override
@@ -266,7 +342,37 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                 ],
               ),
             ),
-            Icon(Icons.print, color: const Color(0xFF94A3B8), size: context.isTablet ? 24 : 20),
+            if ((_printCooldowns[bill.billNumber] ?? 0) > 0)
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFCBD5E1)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.hourglass_top_rounded, size: 13, color: Color(0xFF64748B)),
+                    const SizedBox(width: 4),
+                    Text(
+                      '${_printCooldowns[bill.billNumber]}s',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF64748B),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              IconButton(
+                icon: Icon(Icons.print_rounded, color: const Color(0xFF3C3489), size: context.isTablet ? 26 : 22),
+                tooltip: 'Print to Office PC',
+                onPressed: () => _printBillToOfficePc(bill.billNumber),
+              ),
           ],
         ),
       ),
@@ -310,10 +416,43 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   bool _loading = true;
   String? _error;
 
+  // Office PC Print State
+  bool _isPrintingToOfficePc = false;
+  List<Map<String, dynamic>> _officePrinters = [];
+  String? _selectedOfficePrinter;
+
+  // 30-second cooldown timer
+  int _printCooldownSeconds = 0;
+  Timer? _cooldownTimer;
+
   @override
   void initState() {
     super.initState();
     _load();
+    _loadOfficePrinters();
+  }
+
+  @override
+  void dispose() {
+    _cooldownTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startPrintCooldown() {
+    setState(() => _printCooldownSeconds = 30);
+    _cooldownTimer?.cancel();
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_printCooldownSeconds <= 1) {
+        timer.cancel();
+        setState(() => _printCooldownSeconds = 0);
+      } else {
+        setState(() => _printCooldownSeconds--);
+      }
+    });
   }
 
   Future<void> _load() async {
@@ -323,6 +462,77 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       if (mounted) setState(() { _detail = d; _loading = false; });
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _loading = false; });
+    }
+  }
+
+  Future<void> _loadOfficePrinters() async {
+    try {
+      final res = await _api.getOfficePrinters();
+      final List raw = res['printers'] ?? [];
+      final printers = raw.map((p) => Map<String, dynamic>.from(p as Map)).toList();
+      final def = res['default_printer'] as String?;
+      if (mounted) {
+        setState(() {
+          _officePrinters = printers;
+          _selectedOfficePrinter = def ?? (printers.isNotEmpty ? printers.first['name'] as String? : null);
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _printToOfficePc() async {
+    if (_printCooldownSeconds > 0 || _isPrintingToOfficePc) {
+      TopToast.show(
+        context,
+        message: 'Please wait ${_printCooldownSeconds}s before printing again.',
+        backgroundColor: const Color(0xFFD97706),
+        icon: Icons.hourglass_top_rounded,
+      );
+      return;
+    }
+    _startPrintCooldown();
+    setState(() => _isPrintingToOfficePc = true);
+    TopToast.show(
+      context,
+      message: 'Sending Challan #${widget.billNumber} to Office PC Printer...',
+      backgroundColor: const Color(0xFF3C3489),
+      icon: Icons.print_rounded,
+    );
+    try {
+      final Map<String, dynamic> res;
+      if (_detail != null) {
+        final doc = await _buildPdf(_detail!);
+        final bytes = await doc.save();
+        res = await _api.printRawPdf(
+          pdfBytes: bytes,
+          printerName: _selectedOfficePrinter,
+          jobName: 'Challan ${widget.billNumber}',
+        );
+      } else {
+        res = await _api.printBill(
+          billNumber: widget.billNumber,
+          printerName: _selectedOfficePrinter,
+        );
+      }
+      if (mounted) {
+        setState(() => _isPrintingToOfficePc = false);
+        TopToast.show(
+          context,
+          message: res['message'] ?? 'Printed on Office PC Printer!',
+          backgroundColor: const Color(0xFF059669),
+          icon: Icons.check_circle_rounded,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isPrintingToOfficePc = false);
+        TopToast.show(
+          context,
+          message: 'Print failed: ${e.toString().replaceAll('Exception: ', '')}',
+          backgroundColor: const Color(0xFFEF4444),
+          icon: Icons.error_outline_rounded,
+        );
+      }
     }
   }
 
@@ -928,30 +1138,6 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  Future<void> _directPrint() async {
-    if (_detail == null || _isGeneratingPdf) return;
-    setState(() => _isGeneratingPdf = true);
-    try {
-      final doc = await _buildPdf(_detail!);
-      await Printing.layoutPdf(
-        name: 'Bill_${_detail!.billNumber}',
-        onLayout: (_) async => doc.save(),
-      );
-    } catch (e) {
-      if (mounted) {
-        TopToast.show(
-          context,
-          message: 'Direct print unavailable ($e). Opening preview...',
-          backgroundColor: const Color(0xFFD97706),
-          icon: Icons.info_outline_rounded,
-        );
-        _openPdfPreview();
-      }
-    } finally {
-      if (mounted) setState(() => _isGeneratingPdf = false);
-    }
-  }
-
   Future<void> _sharePdf() async {
     if (_detail == null || _isGeneratingPdf) return;
     setState(() => _isGeneratingPdf = true);
@@ -1003,9 +1189,29 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             ),
             IconButton(
               iconSize: context.isTablet ? 26 : 22,
-              icon: const Icon(Icons.print, color: Color(0xFF3C3489)),
-              tooltip: 'Direct Print',
-              onPressed: _isGeneratingPdf ? null : _directPrint,
+              icon: _isPrintingToOfficePc
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF3C3489)),
+                    )
+                  : _printCooldownSeconds > 0
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE2E8F0),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            '${_printCooldownSeconds}s',
+                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                          ),
+                        )
+                      : const Icon(Icons.print_rounded, color: Color(0xFF3C3489)),
+              tooltip: _printCooldownSeconds > 0
+                  ? 'Wait ${_printCooldownSeconds}s'
+                  : 'Print to Office PC',
+              onPressed: (_isPrintingToOfficePc || _printCooldownSeconds > 0) ? null : _printToOfficePc,
             ),
             if (context.isTablet) const SizedBox(width: 8),
           ],
@@ -1052,10 +1258,10 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                       child: SizedBox(
                         height: context.isTablet ? 58 : 48,
                         child: OutlinedButton.icon(
-                          onPressed: _isGeneratingPdf ? null : _sharePdf,
-                          icon: Icon(Icons.share_outlined, size: context.isTablet ? 22 : 18),
+                          onPressed: _isGeneratingPdf ? null : _openPdfPreview,
+                          icon: Icon(Icons.picture_as_pdf_outlined, size: context.isTablet ? 22 : 18),
                           label: Text(
-                            'Share PDF',
+                            'View / Share',
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: context.isTablet ? 15 : 13,
@@ -1075,26 +1281,43 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                       child: SizedBox(
                         height: context.isTablet ? 58 : 48,
                         child: ElevatedButton.icon(
-                          onPressed: _isGeneratingPdf ? null : _openPdfPreview,
-                          icon: _isGeneratingPdf
+                          onPressed: (_isPrintingToOfficePc || _printCooldownSeconds > 0)
+                              ? null
+                              : _printToOfficePc,
+                          icon: _isPrintingToOfficePc
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
                                   child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                                 )
-                              : Icon(Icons.picture_as_pdf_rounded, size: context.isTablet ? 22 : 20),
+                              : Icon(
+                                  _printCooldownSeconds > 0
+                                      ? Icons.hourglass_top_rounded
+                                      : Icons.print_rounded,
+                                  size: context.isTablet ? 22 : 20,
+                                ),
                           label: Text(
-                            'View & Print PDF',
+                            _isPrintingToOfficePc
+                                ? 'Printing on Office PC...'
+                                : _printCooldownSeconds > 0
+                                    ? 'Print on Office PC (${_printCooldownSeconds}s)'
+                                    : 'Print on Office PC',
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: context.isTablet ? 16 : 14,
                             ),
                           ),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF3C3489),
+                            backgroundColor: _printCooldownSeconds > 0
+                                ? const Color(0xFF94A3B8)
+                                : const Color(0xFF059669),
                             foregroundColor: Colors.white,
+                            disabledBackgroundColor: _printCooldownSeconds > 0
+                                ? const Color(0xFF94A3B8)
+                                : null,
+                            disabledForegroundColor: Colors.white,
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12)),
-                            elevation: 1,
+                            elevation: _printCooldownSeconds > 0 ? 0 : 1.5,
                           ),
                         ),
                       ),
@@ -1107,12 +1330,96 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
+  Widget _buildOfficePrinterBar() {
+    final hasPrinters = _officePrinters.isNotEmpty;
+    return Container(
+      margin: EdgeInsets.only(bottom: context.isTablet ? 16 : 12),
+      padding: EdgeInsets.symmetric(
+        horizontal: context.isTablet ? 16 : 12,
+        vertical: context.isTablet ? 10 : 8,
+      ),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEEF2FF),
+        borderRadius: BorderRadius.circular(context.isTablet ? 14 : 10),
+        border: Border.all(color: const Color(0xFFC7D2FE)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF3C3489),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: const Icon(Icons.print_rounded, size: 16, color: Colors.white),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Office PC Print Server (Tailscale)',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF3C3489)),
+                ),
+                Text(
+                  hasPrinters
+                      ? 'Target: ${_selectedOfficePrinter ?? "Default Printer"}'
+                      : 'Connecting to Office PC...',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF334155), fontWeight: FontWeight.w500),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          if (hasPrinters && _officePrinters.length > 1)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.arrow_drop_down_circle_outlined, color: Color(0xFF3C3489), size: 20),
+              tooltip: 'Switch Office PC Printer',
+              onSelected: (val) => setState(() => _selectedOfficePrinter = val),
+              itemBuilder: (ctx) => _officePrinters.map((p) {
+                final name = p['name'] as String;
+                final isDef = p['is_default'] == true;
+                return PopupMenuItem<String>(
+                  value: name,
+                  child: Row(
+                    children: [
+                      Icon(
+                        _selectedOfficePrinter == name ? Icons.check_circle : Icons.circle_outlined,
+                        size: 16,
+                        color: _selectedOfficePrinter == name ? const Color(0xFF059669) : Colors.grey,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(name, style: const TextStyle(fontSize: 12))),
+                      if (isDef)
+                        Container(
+                          margin: const EdgeInsets.only(left: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFDCFCE7),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text('Default', style: TextStyle(fontSize: 9, color: Color(0xFF166534))),
+                        ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDetail(BillDetail bill) {
     return SingleChildScrollView(
       padding: EdgeInsets.all(context.isTablet ? 26 : 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Office PC printer status
+          _buildOfficePrinterBar(),
+
           // ── Bill info card
           _infoCard(bill),
           SizedBox(height: context.isTablet ? 22 : 16),
@@ -1515,6 +1822,42 @@ class BillPdfViewerScreen extends StatelessWidget {
         backgroundColor: Colors.white,
         elevation: 0,
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
+        actions: [
+          TextButton.icon(
+            style: TextButton.styleFrom(foregroundColor: const Color(0xFF3C3489)),
+            icon: const Icon(Icons.print_outlined, size: 18),
+            label: const Text('Office PC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            onPressed: () async {
+              try {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Sending bill to Office PC Printer via Tailscale...'),
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+                final doc = await onBuildPdf(bill);
+                final bytes = await doc.save();
+                final res = await ApiService().printRawPdf(
+                  pdfBytes: bytes,
+                  jobName: 'Challan ${bill.billNumber}',
+                );
+                if (context.mounted) {
+                  TopToast.show(context, message: res['message'] ?? 'Printed to Office PC!');
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  TopToast.show(
+                    context,
+                    message: 'Print failed: ${e.toString().replaceAll('Exception: ', '')}',
+                    backgroundColor: const Color(0xFFEF4444),
+                    icon: Icons.error_outline_rounded,
+                  );
+                }
+              }
+            },
+          ),
+          const SizedBox(width: 6),
+        ],
       ),
       body: PdfPreview(
         build: (format) async {

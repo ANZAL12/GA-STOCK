@@ -968,4 +968,127 @@ class ApiService {
       throw Exception(msg);
     }
   }
+
+  // --- TAILSCALE OFFICE PRINT SERVER ---
+
+  Future<Map<String, dynamic>> getOfficePrinters() async {
+    final uri = Uri.parse('$_baseUrl/print/printers');
+    final res = await _authenticatedGet(uri);
+    if (res.statusCode == 200) {
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } else {
+      String msg = 'Failed to load printers from Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> printBill({
+    required String billNumber,
+    String? printerName,
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/print/bill');
+    final payload = <String, dynamic>{
+      'bill_number': billNumber.trim(),
+      'dry_run': dryRun,
+    };
+    if (printerName != null && printerName.isNotEmpty) {
+      payload['printer_name'] = printerName;
+    }
+
+    final res = await _authenticatedPost(uri, body: jsonEncode(payload));
+    if (res.statusCode == 200) {
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } else {
+      String msg = 'Failed to print bill on Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> printGodownReport({
+    required String reportType,
+    String? printerName,
+    String? categoryId,
+    String? shopId,
+    String? productId,
+    String? dateFrom,
+    String? dateTo,
+    bool? isMatched,
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/print/godown-report');
+    final payload = <String, dynamic>{
+      'report_type': reportType,
+      'dry_run': dryRun,
+    };
+    if (printerName != null && printerName.isNotEmpty) payload['printer_name'] = printerName;
+    if (categoryId != null) payload['category_id'] = categoryId;
+    if (shopId != null) payload['shop_id'] = shopId;
+    if (productId != null) payload['product_id'] = productId;
+    if (dateFrom != null) payload['date_from'] = dateFrom;
+    if (dateTo != null) payload['date_to'] = dateTo;
+    if (isMatched != null) payload['is_matched'] = isMatched;
+
+    final res = await _authenticatedPost(uri, body: jsonEncode(payload));
+    if (res.statusCode == 200) {
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } else {
+      String msg = 'Failed to print Godown Report on Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> printRawPdf({
+    required List<int> pdfBytes,
+    String? printerName,
+    String? jobName,
+    bool dryRun = false,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/print/raw-pdf');
+    final payload = <String, dynamic>{
+      'pdf_base64': base64Encode(pdfBytes),
+      'dry_run': dryRun,
+    };
+    if (printerName != null && printerName.isNotEmpty) payload['printer_name'] = printerName;
+    if (jobName != null) payload['job_name'] = jobName;
+
+    final res = await _authenticatedPost(uri, body: jsonEncode(payload));
+    if (res.statusCode == 200) {
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } else {
+      String msg = 'Failed to print document on Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> printTestSlip({String? printerName, bool dryRun = false}) async {
+    final uri = Uri.parse('$_baseUrl/print/test');
+    final payload = <String, dynamic>{
+      if (printerName != null && printerName.isNotEmpty) 'printer_name': printerName,
+      'dry_run': dryRun,
+    };
+
+    final res = await _authenticatedPost(uri, body: jsonEncode(payload));
+    if (res.statusCode == 200) {
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } else {
+      String msg = 'Test print failed on Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
 }

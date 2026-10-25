@@ -6,6 +6,7 @@ from app.api.v1.categories import router as categories_router
 from app.api.v1.devices import router as devices_router
 from app.api.v1.inward import router as inward_router
 from app.api.v1.outward import router as outward_router
+from app.api.v1.print import router as print_router
 from app.api.v1.products import router as products_router
 from app.api.v1.reports import router as reports_router
 from app.api.v1.returns import router as returns_router
@@ -30,3 +31,4 @@ api_router.include_router(reports_router)
 api_router.include_router(audit_router)
 api_router.include_router(websocket_router)
 api_router.include_router(sync_router)
+api_router.include_router(print_router)

@@ -14,6 +14,7 @@ import 'serial_lookup_screen.dart';
 import 'offline_queue_screen.dart';
 import 'print_bill_screen.dart';
 import 'quick_dispatch_screen.dart';
+import 'godown_report_print_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -161,15 +162,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final cardPrint = _buildActionCard(
       isTablet: isTablet,
-      title: 'Print / Export Bill',
+      title: 'Godown Bill Print',
       icon: Icons.print_rounded,
       iconColor: const Color(0xFF7C3AED),
       iconBg: const Color(0xFFF5F3FF),
-      badgeText: 'PDF / Print',
+      badgeText: 'Office PC',
       onTap: () {
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const PrintBillScreen()),
+        );
+      },
+    );
+
+    final cardReportPrint = _buildActionCard(
+      isTablet: isTablet,
+      title: 'Stock Status Report',
+      icon: Icons.table_chart_rounded,
+      iconColor: const Color(0xFF0D9488),
+      iconBg: const Color(0xFFCCFBF1),
+      badgeText: 'Inventory Spool',
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const GodownReportPrintScreen()),
         );
       },
     );
@@ -373,23 +389,21 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Expanded(child: cardPrint),
                         const SizedBox(width: 20),
-                        Expanded(child: cardAddShop),
+                        Expanded(child: cardReportPrint),
                       ],
                     ),
                   ),
-                  if (cardQueue != null) ...[
-                    const SizedBox(height: 20),
-                    IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(child: cardQueue),
-                          const SizedBox(width: 20),
-                          const Expanded(child: SizedBox()),
-                        ],
-                      ),
+                  const SizedBox(height: 20),
+                  IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(child: cardAddShop),
+                        const SizedBox(width: 20),
+                        Expanded(child: cardQueue ?? const SizedBox()),
+                      ],
                     ),
-                  ],
+                  ),
                 ] else ...[
                   cardInward,
                   const SizedBox(height: 14),
@@ -400,6 +414,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   cardTrace,
                   const SizedBox(height: 14),
                   cardPrint,
+                  const SizedBox(height: 14),
+                  cardReportPrint,
                   const SizedBox(height: 14),
                   cardAddShop,
                   if (cardQueue != null) ...[

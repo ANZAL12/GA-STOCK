@@ -59,6 +59,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   final Set<String> _inFlightSerials = <String>{};
   String? _dispatchRequestId;
   DateTime? _lastScanTime;
+  String? _lastScanFeedback;
 
   BuildContext? _alertContext;
   Timer? _alertTimer;
@@ -480,17 +481,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
+            _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${_selectedProduct!.brand} ${_selectedProduct!.model}';
           });
-          _showToast(
-            '${isDamaged ? "Damaged unit added" : "Matched"}: $cleanSerial (${_selectedProduct!.model})',
-            isDamaged ? const Color(0xFFD97706) : const Color(0xFF059669),
-          );
         }
       }
 
       // --- CASE 2: RECORDED ONLY (Unmatched pre-go-live stock) ---
       else if (caseVal == 2 || caseName == 'unmatched') {
-        HapticFeedback.mediumImpact();
+        HapticFeedback.lightImpact();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
         if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
           final seq = _sequenceCounter++;
@@ -508,8 +506,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
+            _lastScanFeedback = '✓ Scanned #$seq (Old Stock): $cleanSerial • ${_selectedProduct!.brand} ${_selectedProduct!.model}';
           });
-          _showToast('Recorded only: $cleanSerial (${_selectedProduct!.model})', const Color(0xFF475569));
         }
       }
 
@@ -2083,70 +2081,141 @@ class _OutwardScreenState extends State<OutwardScreen> {
         }
       }
 
+      int printCooldownSeconds = 0;
+      Timer? printCooldownTimer;
+
       await showDialog(
         context: context,
-        builder: (ctx) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.check_circle, color: Color(0xFF059669)),
-              SizedBox(width: 8),
-              Text('Dispatch Recorded!'),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Dispatched $totalUnits unit(s) across ${byProduct.length} model(s) to ${_selectedShop!.name}:',
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, height: 1.4),
-              ),
-              const SizedBox(height: 10),
-              ...modelSummaries.map((s) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.check, size: 14, color: Color(0xFF059669)),
-                        const SizedBox(width: 6),
-                        Expanded(child: Text(s, style: const TextStyle(fontSize: 12))),
-                      ],
-                    ),
-                  )),
-              const Divider(height: 16),
-              Text(
-                '• $totalMatched Matched (Tracked Inward)\n• $totalRecorded Recorded only (Old Stock)',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-              ),
-            ],
-          ),
-          actions: [
-            if (finalBillNumber.isNotEmpty)
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: const Color(0xFF3C3489),
-                  side: const BorderSide(color: Color(0xFF3C3489)),
-                ),
-                icon: const Icon(Icons.picture_as_pdf, size: 16),
-                label: const Text('View & Print Bill'),
-                onPressed: () {
-                  Navigator.pop(ctx);
-                  Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => BillDetailScreen(billNumber: finalBillNumber),
-                    ),
-                  );
-                },
-              ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF059669)),
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Finish', style: TextStyle(color: Colors.white)),
+        builder: (ctx) => StatefulBuilder(
+          builder: (dialogCtx, setDialogState) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.check_circle, color: Color(0xFF059669)),
+                SizedBox(width: 8),
+                Text('Dispatch Recorded!'),
+              ],
             ),
-          ],
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Dispatched $totalUnits unit(s) across ${byProduct.length} model(s) to ${_selectedShop!.name}:',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, height: 1.4),
+                ),
+                const SizedBox(height: 10),
+                ...modelSummaries.map((s) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.check, size: 14, color: Color(0xFF059669)),
+                          const SizedBox(width: 6),
+                          Expanded(child: Text(s, style: const TextStyle(fontSize: 12))),
+                        ],
+                      ),
+                    )),
+                const Divider(height: 16),
+                Text(
+                  '• $totalMatched Matched (Tracked Inward)\n• $totalRecorded Recorded only (Old Stock)',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                ),
+              ],
+            ),
+            actions: [
+              if (finalBillNumber.isNotEmpty) ...[
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: printCooldownSeconds > 0
+                        ? const Color(0xFF94A3B8)
+                        : const Color(0xFF059669),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(0xFF94A3B8),
+                    disabledForegroundColor: Colors.white,
+                  ),
+                  icon: Icon(
+                    printCooldownSeconds > 0 ? Icons.hourglass_top_rounded : Icons.print_rounded,
+                    size: 16,
+                  ),
+                  label: Text(
+                    printCooldownSeconds > 0
+                        ? 'Print on Office PC (${printCooldownSeconds}s)'
+                        : 'Print on Office PC',
+                  ),
+                  onPressed: printCooldownSeconds > 0
+                      ? null
+                      : () async {
+                          setDialogState(() => printCooldownSeconds = 30);
+                          printCooldownTimer?.cancel();
+                          printCooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+                            if (printCooldownSeconds <= 1) {
+                              t.cancel();
+                              setDialogState(() => printCooldownSeconds = 0);
+                            } else {
+                              setDialogState(() => printCooldownSeconds--);
+                            }
+                          });
+
+                          TopToast.show(
+                            context,
+                            message: 'Sending Bill #$finalBillNumber to Office PC...',
+                            backgroundColor: const Color(0xFF3C3489),
+                            icon: Icons.print_rounded,
+                          );
+                          try {
+                            final res = await _api.printBill(billNumber: finalBillNumber);
+                            if (dialogCtx.mounted) {
+                              TopToast.show(
+                                dialogCtx,
+                                message: res['message'] ?? 'Printed to Office PC!',
+                                backgroundColor: const Color(0xFF059669),
+                                icon: Icons.check_circle_rounded,
+                              );
+                            }
+                          } catch (e) {
+                            if (dialogCtx.mounted) {
+                              TopToast.show(
+                                dialogCtx,
+                                message: 'Print failed: ${e.toString().replaceAll('Exception: ', '')}',
+                                backgroundColor: const Color(0xFFEF4444),
+                                icon: Icons.error_outline_rounded,
+                              );
+                            }
+                          }
+                        },
+                ),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF3C3489),
+                    side: const BorderSide(color: Color(0xFF3C3489)),
+                  ),
+                  icon: const Icon(Icons.visibility, size: 16),
+                  label: const Text('View Bill'),
+                  onPressed: () {
+                    printCooldownTimer?.cancel();
+                    Navigator.pop(ctx);
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => BillDetailScreen(billNumber: finalBillNumber),
+                      ),
+                    );
+                  },
+                ),
+              ],
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF64748B)),
+                onPressed: () {
+                  printCooldownTimer?.cancel();
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Finish', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
         ),
       );
+      printCooldownTimer?.cancel();
 
       if (!mounted) return;
       Navigator.pop(context);
@@ -3312,6 +3381,29 @@ class _OutwardScreenState extends State<OutwardScreen> {
           ),
         ),
 
+        // Real-time scan feedback banner (zero-latency, replaces heavy TopToast overlay on every scan)
+        if (_lastScanFeedback != null)
+          Container(
+            width: double.infinity,
+            margin: EdgeInsets.symmetric(horizontal: context.isTablet ? 24 : 14, vertical: 3),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFFECFDF5),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFA7F3D0)),
+            ),
+            child: Text(
+              _lastScanFeedback!,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF065F46),
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+
         // Order hint & quick jump buttons
         if (_scannedItems.isNotEmpty)
           Padding(
@@ -3408,7 +3500,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 )
               : ListView.builder(
                   controller: _scanListScrollController,
-                  cacheExtent: 600.0,
+                  cacheExtent: 250.0,
                   physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
                   padding: EdgeInsets.symmetric(
                     horizontal: context.isTablet ? 24 : 14,
