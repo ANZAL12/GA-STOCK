@@ -265,12 +265,29 @@ function buildBillPdf(bill) {
     } else {
       const serialStrings = lines.map((l, lIdx) => {
         const uType = l.unit_type && l.unit_type.trim() ? ` [${l.unit_type.toUpperCase()}]` : '';
-        return `${lIdx + 1}. ${l.serial_text}${uType}`;
+        return `${lIdx + 1}.\u00A0${l.serial_text}${uType}`;
       });
 
+      const maxLen = serialStrings.length > 0 ? Math.max(...serialStrings.map((s) => s.length)) : 0;
+      const itemsPerLine = maxLen > 28 ? 2 : 3;
+      const colWidth = itemsPerLine === 2 ? 52 : 34;
+
       const chunkedLines = [];
-      for (let i = 0; i < serialStrings.length; i += 3) {
-        chunkedLines.push(serialStrings.slice(i, i + 3).join('          '));
+      for (let i = 0; i < serialStrings.length; i += itemsPerLine) {
+        const rowItems = serialStrings.slice(i, i + itemsPerLine);
+        if (rowItems.length === 1) {
+          chunkedLines.push(rowItems[0]);
+        } else {
+          let rowStr = '';
+          for (let c = 0; c < rowItems.length; c++) {
+            if (c === rowItems.length - 1) {
+              rowStr += rowItems[c];
+            } else {
+              rowStr += rowItems[c].padEnd(colWidth, ' ');
+            }
+          }
+          chunkedLines.push(rowStr);
+        }
       }
 
       serialRows.push([

@@ -461,12 +461,23 @@ def export_bill_to_pdf(bill: dict[str, Any]) -> bytes:
                 s_text = l.get("serial_text") if isinstance(l, dict) else getattr(l, "serial_text", "-")
                 u_type = l.get("unit_type") if isinstance(l, dict) else getattr(l, "unit_type", None)
                 u_tag = f" [{u_type.upper()}]" if (u_type and str(u_type).strip()) else ""
-                serial_entries.append(f"{l_idx}. {s_text}{u_tag}")
+                serial_entries.append(f"{l_idx}.&nbsp;{s_text}{u_tag}")
+
+            max_len = max((len(s.replace("&nbsp;", " ")) for s in serial_entries), default=0)
+            items_per_line = 2 if max_len > 28 else 3
+            col_width = 52 if items_per_line == 2 else 34
 
             formatted_lines = []
-            for k in range(0, len(serial_entries), 3):
-                chunk = serial_entries[k:k+3]
-                formatted_lines.append("&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;".join(chunk))
+            for k in range(0, len(serial_entries), items_per_line):
+                chunk = serial_entries[k:k+items_per_line]
+                row_parts = []
+                for c_idx, item_str in enumerate(chunk):
+                    if c_idx == len(chunk) - 1:
+                        row_parts.append(item_str)
+                    else:
+                        pad_len = max(2, col_width - len(item_str.replace("&nbsp;", " ")))
+                        row_parts.append(item_str + ("&nbsp;" * pad_len))
+                formatted_lines.append("".join(row_parts))
 
             body_html = "<br/>".join(formatted_lines)
             serial_table_data.append([

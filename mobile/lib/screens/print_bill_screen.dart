@@ -887,13 +887,33 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         final uType = (l.unitType != null && l.unitType!.trim().isNotEmpty)
             ? ' [${l.unitType!.toUpperCase()}]'
             : '';
-        serialStrings.add('${j + 1}. ${l.serialText}$uType');
+        serialStrings.add('${j + 1}.\u00A0${l.serialText}$uType');
       }
 
+      int maxLen = 0;
+      for (final s in serialStrings) {
+        if (s.length > maxLen) maxLen = s.length;
+      }
+      final itemsPerLine = maxLen > 28 ? 2 : 3;
+      final colWidth = itemsPerLine == 2 ? 52 : 34;
+
       final lines = <String>[];
-      for (int k = 0; k < serialStrings.length; k += 3) {
-        final end = (k + 3 < serialStrings.length) ? k + 3 : serialStrings.length;
-        lines.add(serialStrings.sublist(k, end).join('          '));
+      for (int k = 0; k < serialStrings.length; k += itemsPerLine) {
+        final end = (k + itemsPerLine < serialStrings.length) ? k + itemsPerLine : serialStrings.length;
+        final rowItems = serialStrings.sublist(k, end);
+        if (rowItems.length == 1) {
+          lines.add(rowItems[0]);
+        } else {
+          final buffer = StringBuffer();
+          for (int c = 0; c < rowItems.length; c++) {
+            if (c == rowItems.length - 1) {
+              buffer.write(rowItems[c]);
+            } else {
+              buffer.write(rowItems[c].padRight(colWidth, ' '));
+            }
+          }
+          lines.add(buffer.toString());
+        }
       }
 
       batchWidgets.add(
