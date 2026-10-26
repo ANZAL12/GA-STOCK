@@ -503,8 +503,8 @@ export const ReportsPage: React.FC = () => {
                           </div>
                         </td>
                         <td className="py-3 px-4 text-slate-600">{item.category_name}</td>
-                        <td className={`py-3 px-4 text-right font-bold ${item.current_stock_qty < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
-                          {item.current_stock_qty}
+                        <td className="py-3 px-4 text-right font-bold text-slate-900">
+                          {Math.max(0, item.current_stock_qty)}
                         </td>
                         <td className="py-3 px-4 text-right text-emerald-700 font-bold">
                           {item.available_count}

@@ -268,9 +268,9 @@ async def print_godown_report(
             "Unmatched Outward", "Status",
         ]
         for p, cat_name, avail, disp, dam, tot_rec, unm_cnt in db_rows:
-            label = "Low/Negative" if p.current_stock_qty <= 0 else "In Stock"
+            label = "Out of Stock" if p.current_stock_qty <= 0 else "In Stock"
             rows.append([
-                p.name, cat_name, p.brand, p.model, p.current_stock_qty,
+                p.name, cat_name, p.brand, p.model, max(0, p.current_stock_qty),
                 avail, disp, dam, tot_rec, unm_cnt, label
             ])
 

@@ -532,7 +532,7 @@ async def update_serial_status(
 
     if old_status == SerialStatus.available and req.new_status != SerialStatus.available:
         # Stock leaves available pool
-        product.current_stock_qty = product.current_stock_qty - 1
+        product.current_stock_qty = max(0, product.current_stock_qty - 1)
     elif old_status != SerialStatus.available and req.new_status == SerialStatus.available:
         # Stock returns to available pool
         product.current_stock_qty += 1

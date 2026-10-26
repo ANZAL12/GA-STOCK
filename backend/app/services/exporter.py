@@ -1,7 +1,7 @@
 import csv
 import io
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -74,16 +74,52 @@ def export_to_excel(sheet_title: str, headers: list[str], rows: list[list[Any]])
     return buf.getvalue()
 
 
-def export_to_pdf(title: str, subtitle: str, headers: list[str], rows: list[list[Any]]) -> bytes:
+class GeneralReportNumberedCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_page_number(num_pages)
+            canvas.Canvas.showPage(self)
+        canvas.Canvas.save(self)
+
+    def draw_page_number(self, page_count):
+        self.saveState()
+        self.setFont("Helvetica", 7)
+        self.setFillColor(colors.HexColor("#64748B"))
+        page_w, page_h = A4
+        text = f"Global Agencies Godown Management  •  Page {self._pageNumber} of {page_count}"
+        self.drawCentredString(page_w / 2.0, 14, text)
+        self.restoreState()
+
+
+def export_to_pdf(
+    title: str,
+    subtitle: str,
+    headers: list[str],
+    rows: list[list[Any]],
+    col_widths: Optional[list[float]] = None,
+) -> bytes:
+    """
+    Renders tabular godown reports calibrated for true A4 Portrait fit (595 x 842 pt).
+    Computes proportional column widths to ensure the table never exceeds page margins.
+    """
     buf = io.BytesIO()
-    # Use landscape for wide tabular reports
     doc = SimpleDocTemplate(
         buf,
-        pagesize=landscape(A4),
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=36,
-        bottomMargin=36,
+        pagesize=A4,
+        leftMargin=28,
+        rightMargin=28,
+        topMargin=26,
+        bottomMargin=26,
     )
     styles = getSampleStyleSheet()
 
@@ -91,61 +127,77 @@ def export_to_pdf(title: str, subtitle: str, headers: list[str], rows: list[list
         "ReportTitle",
         parent=styles["Heading1"],
         fontName="Helvetica-Bold",
-        fontSize=16,
-        leading=20,
+        fontSize=13,
+        leading=15,
         textColor=colors.HexColor("#1E1B4B"),
     )
     sub_style = ParagraphStyle(
         "ReportSubtitle",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=10,
-        leading=14,
+        fontSize=8,
+        leading=10,
         textColor=colors.HexColor("#64748B"),
     )
     cell_style = ParagraphStyle(
         "TableCell",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=8,
-        leading=10,
+        fontSize=7,
+        leading=8.5,
     )
     head_style = ParagraphStyle(
         "TableHead",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=11,
+        fontSize=7.5,
+        leading=9,
         textColor=colors.white,
     )
 
     story = [
         Paragraph(title, title_style),
         Paragraph(f"{subtitle}  •  Generated: {datetime.now().strftime('%d %b %Y, %I:%M %p')}", sub_style),
-        Spacer(1, 15),
+        Spacer(1, 8),
     ]
+
+    # Proportional column width distribution to guarantee true A4 width fit (538 pt)
+    content_width = 538.0
+    if not col_widths and headers:
+        col_weights = []
+        for c_idx in range(len(headers)):
+            h_text = headers[c_idx]
+            max_len = max(len(h_text), 6)
+            for r in rows[:100]:
+                if c_idx < len(r):
+                    max_len = max(max_len, len(str(r[c_idx] or "")))
+            col_weights.append(min(max_len, 32))
+        tot_weight = sum(col_weights) or 1.0
+        col_widths = [(w / tot_weight) * content_width for w in col_weights]
 
     # Convert headers & rows to Paragraphs
     table_data = [[Paragraph(h, head_style) for h in headers]]
     for r in rows:
         table_data.append([Paragraph(str(v) if v is not None else "", cell_style) for v in r])
 
-    t = Table(table_data, repeatRows=1)
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
     t.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3C3489")),
                 ("ALIGN", (0, 0), (-1, -1), "LEFT"),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
             ]
         )
     )
     story.append(t)
-    doc.build(story)
+    doc.build(story, canvasmaker=GeneralReportNumberedCanvas)
     return buf.getvalue()
 
 

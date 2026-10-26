@@ -85,6 +85,7 @@ async def list_products(
     responses = []
     for prod, cat_name, has_dual in rows:
         resp = ProductResponse.model_validate(prod)
+        resp.current_stock_qty = max(0, prod.current_stock_qty)
         resp.category_name = cat_name
         resp.has_dual_serial = has_dual
         responses.append(resp)
@@ -117,6 +118,7 @@ async def get_product(
 
     prod, cat_name, has_dual = row
     resp = ProductResponse.model_validate(prod)
+    resp.current_stock_qty = max(0, prod.current_stock_qty)
     resp.category_name = cat_name
     resp.has_dual_serial = has_dual
     return resp

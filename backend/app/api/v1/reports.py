@@ -221,7 +221,8 @@ async def get_stock_by_model(
     export_rows = []
     for p, cat_name, avail, disp, dam, tot_rec, unm_cnt in rows:
         oos_rem = (p.current_stock_qty <= 0 and p.has_had_inward)
-        label = f"Negative ({p.current_stock_qty})" if p.current_stock_qty < 0 else ("No tracked stock left" if oos_rem else None)
+        label = "No tracked stock left" if oos_rem else None
+        stock_qty = max(0, p.current_stock_qty)
 
         items.append(
             StockByModelItem(
@@ -236,7 +237,7 @@ async def get_stock_by_model(
                 damaged_count=dam,
                 total_received=tot_rec,
                 unmatched_dispatched_count=unm_cnt,
-                current_stock_qty=p.current_stock_qty,
+                current_stock_qty=stock_qty,
                 out_of_stock_reminder=oos_rem,
                 reminder_label=label,
             )
@@ -249,7 +250,7 @@ async def get_stock_by_model(
                     cat_name,
                     p.brand,
                     p.model,
-                    p.current_stock_qty,
+                    stock_qty,
                     avail,
                     disp,
                     dam,

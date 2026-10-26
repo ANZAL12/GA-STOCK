@@ -654,9 +654,9 @@ async def create_outward_batch(
     batch.unmatched_count = unmatched_cnt
     batch.flagged_count = flagged_cnt
 
-    # 10. Update product stock (allow negative numbers if outward exceeds stock)
-    outward_units_count = (len(cleaned_items) // 2) if (cat and cat.has_dual_serial) else len(cleaned_items)
-    product.current_stock_qty = product.current_stock_qty - outward_units_count
+    # 10. Update product stock: strictly based on inward scanned and matched outward scanned (never negative)
+    matched_units_count = (matched_cnt // 2) if (cat and cat.has_dual_serial) else matched_cnt
+    product.current_stock_qty = max(0, product.current_stock_qty - matched_units_count)
 
     # 11. Audit Log
     audit = AuditLog(
@@ -1205,8 +1205,8 @@ async def create_outward_multi_batch(
         batch.unmatched_count = unmatched_cnt
         batch.flagged_count = flagged_cnt
 
-        outward_units_count = (len(batch_cleaned) // 2) if (cat and cat.has_dual_serial) else len(batch_cleaned)
-        product.current_stock_qty = product.current_stock_qty - outward_units_count
+        matched_units_count = (matched_cnt // 2) if (cat and cat.has_dual_serial) else matched_cnt
+        product.current_stock_qty = max(0, product.current_stock_qty - matched_units_count)
 
         total_units_dispatched += len(batch_cleaned)
         total_matched_all += matched_cnt

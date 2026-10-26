@@ -798,8 +798,8 @@ export const StockPage: React.FC = () => {
                 <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
                   Current Stock
                 </span>
-                <span className={`text-lg font-bold ${p.current_stock_qty < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
-                  {p.current_stock_qty} <span className={`text-xs font-normal ${p.current_stock_qty < 0 ? 'text-rose-500 font-semibold' : 'text-slate-500'}`}>{p.unit}s</span>
+                <span className="text-lg font-bold text-slate-900">
+                  {Math.max(0, p.current_stock_qty)} <span className="text-xs font-normal text-slate-500">{p.unit}s</span>
                 </span>
               </div>
 

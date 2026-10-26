@@ -72,11 +72,9 @@ class ProductResponse(BaseModel):
 
     @computed_field
     def stock_status_label(self) -> str:
-        if self.current_stock_qty < 0:
-            return f"{self.current_stock_qty} in stock (Negative)"
-        if self.current_stock_qty == 0 and self.has_had_inward:
+        if self.current_stock_qty <= 0 and self.has_had_inward:
             return "No tracked stock left"
-        if self.current_stock_qty == 0 and not self.has_had_inward:
+        if self.current_stock_qty <= 0 and not self.has_had_inward:
             return "0 units (untracked)"
         return f"{self.current_stock_qty} in stock"
 
