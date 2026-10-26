@@ -1011,6 +1011,7 @@ class ApiService {
     String? productId,
     String? dateFrom,
     String? dateTo,
+    String? inwardType,
     bool? isMatched,
     bool dryRun = false,
   }) async {
@@ -1025,6 +1026,7 @@ class ApiService {
     if (productId != null) payload['product_id'] = productId;
     if (dateFrom != null) payload['date_from'] = dateFrom;
     if (dateTo != null) payload['date_to'] = dateTo;
+    if (inwardType != null && inwardType.isNotEmpty) payload['inward_type'] = inwardType;
     if (isMatched != null) payload['is_matched'] = isMatched;
 
     final res = await _authenticatedPost(uri, body: jsonEncode(payload));

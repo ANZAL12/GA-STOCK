@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -13,13 +13,13 @@ from app.database import get_db
 from app.models.category import Category
 from app.models.enums import HistoryAction, SerialStatus
 from app.models.history import SerialHistory
-from app.models.inward import InwardBatch
+from app.models.inward import InwardBatch, InwardLine
 from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
 from app.models.serial import SerialNumber
 from app.models.shop import Shop
 from app.models.user import User
-from app.services.exporter import export_bill_to_pdf, export_to_pdf
+from app.services.exporter import export_bill_to_pdf, export_inward_register_to_pdf, export_to_pdf
 from app.services.print_service import PrintService
 
 router = APIRouter(prefix="/print", tags=["print"])
@@ -34,7 +34,7 @@ class PrintBillRequest(BaseModel):
 class PrintReportRequest(BaseModel):
     report_type: str = Field(
         ...,
-        description="One of: 'stock_by_model', 'stock_out', 'unmatched_outward', 'damaged', 'today_summary'",
+        description="One of: 'today_inward_serials', 'stock_by_model', 'stock_out', 'unmatched_outward', 'damaged', 'today_summary'",
     )
     printer_name: Optional[str] = Field(None, description="Office PC printer name. If null, default is used.")
     category_id: Optional[uuid.UUID] = None
@@ -42,6 +42,7 @@ class PrintReportRequest(BaseModel):
     product_id: Optional[uuid.UUID] = None
     date_from: Optional[date] = None
     date_to: Optional[date] = None
+    inward_type: Optional[str] = None
     is_matched: Optional[bool] = None
     dry_run: bool = Field(False, description="If true, verifies PDF rendering and printer DC without spooling paper.")
 
@@ -90,9 +91,129 @@ async def print_godown_report(
     subtitle = f"Global Agencies Godown Management  •  Printed by {current_user.full_name}"
     headers: list[str] = []
     rows: list[list[Any]] = []
+    pdf_bytes: Optional[bytes] = None
+    records_count: int = 0
+
+    # 0. TODAY INWARD SERIAL REGISTER (GROUPED BY MODEL)
+    if rtype in ("today_inward_serials", "today_inward_by_model", "inward_serials"):
+        today = date.today()
+        target_date_from = payload.date_from or today
+        target_date_to = payload.date_to or today
+
+        report_title = (
+            "Today Inward Serial Register"
+            if target_date_from == today and target_date_to == today
+            else f"Inward Serial Register ({target_date_from} to {target_date_to})"
+        )
+
+        query = (
+            select(
+                InwardBatch,
+                InwardLine,
+                SerialNumber,
+                Product,
+                Category.name.label("category_name"),
+                User.full_name.label("receiver_name"),
+            )
+            .join(InwardLine, InwardBatch.id == InwardLine.batch_id)
+            .join(SerialNumber, InwardLine.serial_number_id == SerialNumber.id)
+            .join(Product, InwardBatch.product_id == Product.id)
+            .join(Category, Product.category_id == Category.id)
+            .join(User, InwardBatch.received_by_user_id == User.id)
+            .where(
+                or_(
+                    InwardBatch.transaction_date.between(target_date_from, target_date_to),
+                    func.date(InwardBatch.created_at).between(target_date_from, target_date_to),
+                )
+            )
+            .order_by(
+                Product.brand.asc(),
+                Product.model.asc(),
+                InwardBatch.created_at.asc(),
+                SerialNumber.serial_number.asc(),
+            )
+        )
+
+        if payload.product_id:
+            query = query.where(InwardBatch.product_id == payload.product_id)
+        if payload.category_id:
+            query = query.where(Product.category_id == payload.category_id)
+        if getattr(payload, "inward_type", None):
+            query = query.where(InwardBatch.inward_type == payload.inward_type)
+
+        result = await db.execute(query)
+        db_rows = result.all()
+
+        groups_map: dict[uuid.UUID, dict[str, Any]] = {}
+        stock_in_cnt = 0
+        returns_cnt = 0
+        damaged_cnt = 0
+
+        for b, line, sn, prod, cat_name, u_name in db_rows:
+            if prod.id not in groups_map:
+                groups_map[prod.id] = {
+                    "product_id": prod.id,
+                    "brand": prod.brand or "Unknown",
+                    "model": prod.model or prod.name,
+                    "product_name": prod.name,
+                    "category": cat_name,
+                    "serials": [],
+                }
+
+            inw_type = b.inward_type or "stock_in"
+            if inw_type == "return":
+                returns_cnt += 1
+                inw_label = "Return"
+            elif inw_type == "damaged":
+                damaged_cnt += 1
+                inw_label = "Damaged"
+            else:
+                stock_in_cnt += 1
+                inw_label = "Stock In"
+
+            time_str = b.created_at.strftime("%I:%M %p") if b.created_at else "-"
+
+            groups_map[prod.id]["serials"].append({
+                "serial_number": sn.serial_number,
+                "unit_type": sn.unit_type or "-",
+                "inward_type": inw_label,
+                "reference": b.invoice_reference or "-",
+                "time": time_str,
+                "received_by": u_name,
+            })
+
+        model_groups = list(groups_map.values())
+        total_serials = len(db_rows)
+        records_count = total_serials
+
+        totals = {
+            "total_models": len(model_groups),
+            "total_serials": total_serials,
+            "stock_in": stock_in_cnt,
+            "returns": returns_cnt,
+            "damaged": damaged_cnt,
+        }
+
+        filter_desc = "All Models"
+        if payload.product_id and model_groups:
+            first_grp = model_groups[0]
+            filter_desc = f"{first_grp['brand']} {first_grp['model']}"
+        elif payload.product_id:
+            p_res = await db.execute(select(Product).where(Product.id == payload.product_id))
+            p_obj = p_res.scalar_one_or_none()
+            if p_obj:
+                filter_desc = f"{p_obj.brand} {p_obj.model}"
+
+        pdf_bytes = export_inward_register_to_pdf(
+            title=report_title,
+            subtitle=subtitle,
+            filter_desc=filter_desc,
+            model_groups=model_groups,
+            totals=totals,
+        )
 
     # 1. STOCK BY MODEL
-    if rtype == "stock_by_model":
+    elif rtype == "stock_by_model":
         report_title = "Godown Stock by Model Report"
         sn_counts = (
             select(
@@ -259,14 +380,15 @@ async def print_godown_report(
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported report_type '{payload.report_type}'. Choose stock_by_model, stock_out, unmatched_outward, damaged, or today_summary."
+            detail=f"Unsupported report_type '{payload.report_type}'. Choose today_inward_serials, stock_by_model, stock_out, unmatched_outward, damaged, or today_summary."
         )
 
-    if not rows:
-        rows.append(["No records found matching criteria", "-", "-", "-", "-", "-", "-"])
-
-    # Generate PDF bytes
-    pdf_bytes = export_to_pdf(report_title, subtitle, headers, rows)
+    # Generate PDF bytes if not already generated
+    if pdf_bytes is None:
+        if not rows:
+            rows.append(["No records found matching criteria", "-", "-", "-", "-", "-", "-"])
+        pdf_bytes = export_to_pdf(report_title, subtitle, headers, rows)
+        records_count = len(rows)
 
     # Dispatch to office PC printer
     job_name = f"{report_title} - {date.today()}"
@@ -282,11 +404,11 @@ async def print_godown_report(
 
     return {
         "success": True,
-        "message": f"Successfully sent '{report_title}' ({len(rows)} records) to '{print_res['printer']}' on Office PC.",
+        "message": f"Successfully sent '{report_title}' ({records_count} records) to '{print_res['printer']}' on Office PC.",
         "printer": print_res["printer"],
         "pages": print_res.get("pages", 1),
         "job_name": job_name,
-        "records_count": len(rows),
+        "records_count": records_count,
     }
 
 

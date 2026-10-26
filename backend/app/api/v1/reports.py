@@ -24,7 +24,7 @@ from app.schemas.reports import (
     StockByModelItem,
     TodayTimelineItem,
 )
-from app.services.exporter import export_to_csv, export_to_excel, export_to_pdf
+from app.services.exporter import export_inward_register_to_pdf, export_to_csv, export_to_excel, export_to_pdf
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -543,3 +543,173 @@ async def get_damaged_report(
         )
 
     return items
+
+
+@router.get("/today-inward-serials")
+async def get_today_inward_serials_report(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    product_id: Optional[uuid.UUID] = Query(None, description="Filter by product"),
+    inward_type: Optional[str] = Query(None, description="Filter by inward type (stock_in, return, damaged)"),
+    date_from: Optional[date] = Query(None, description="Filter from date"),
+    date_to: Optional[date] = Query(None, description="Filter to date"),
+    export: Optional[str] = Query(None, pattern="^(csv|xlsx|pdf)$"),
+):
+    """
+    Today Inward Serial Register (Grouped by Model):
+    Lists every serial number inwarded today, grouped by product model with inward type and timestamps.
+    """
+    today = date.today()
+    target_date_from = date_from or today
+    target_date_to = date_to or today
+
+    report_title = (
+        "Today Inward Serial Register"
+        if target_date_from == today and target_date_to == today
+        else f"Inward Serial Register ({target_date_from} to {target_date_to})"
+    )
+
+    query = (
+        select(
+            InwardBatch,
+            InwardLine,
+            SerialNumber,
+            Product,
+            Category.name.label("category_name"),
+            User.full_name.label("receiver_name"),
+        )
+        .join(InwardLine, InwardBatch.id == InwardLine.batch_id)
+        .join(SerialNumber, InwardLine.serial_number_id == SerialNumber.id)
+        .join(Product, InwardBatch.product_id == Product.id)
+        .join(Category, Product.category_id == Category.id)
+        .join(User, InwardBatch.received_by_user_id == User.id)
+        .where(
+            or_(
+                InwardBatch.transaction_date.between(target_date_from, target_date_to),
+                func.date(InwardBatch.created_at).between(target_date_from, target_date_to),
+            )
+        )
+        .order_by(
+            Product.brand.asc(),
+            Product.model.asc(),
+            InwardBatch.created_at.asc(),
+            SerialNumber.serial_number.asc(),
+        )
+    )
+
+    if product_id:
+        query = query.where(InwardBatch.product_id == product_id)
+    if inward_type:
+        query = query.where(InwardBatch.inward_type == inward_type)
+
+    result = await db.execute(query)
+    db_rows = result.all()
+
+    groups_map: dict[uuid.UUID, dict[str, Any]] = {}
+    export_rows = []
+    stock_in_cnt = 0
+    returns_cnt = 0
+    damaged_cnt = 0
+
+    for idx, (b, line, sn, prod, cat_name, u_name) in enumerate(db_rows, start=1):
+        if prod.id not in groups_map:
+            groups_map[prod.id] = {
+                "product_id": prod.id,
+                "brand": prod.brand or "Unknown",
+                "model": prod.model or prod.name,
+                "product_name": prod.name,
+                "category": cat_name,
+                "serials": [],
+            }
+
+        inw_type = b.inward_type or "stock_in"
+        if inw_type == "return":
+            returns_cnt += 1
+            inw_label = "Return"
+        elif inw_type == "damaged":
+            damaged_cnt += 1
+            inw_label = "Damaged"
+        else:
+            stock_in_cnt += 1
+            inw_label = "Stock In"
+
+        time_str = b.created_at.strftime("%I:%M %p") if b.created_at else "-"
+
+        item_data = {
+            "serial_number": sn.serial_number,
+            "unit_type": sn.unit_type or "-",
+            "inward_type": inw_label,
+            "reference": b.invoice_reference or "-",
+            "time": time_str,
+            "received_by": u_name,
+        }
+        groups_map[prod.id]["serials"].append(item_data)
+
+        if export:
+            export_rows.append([
+                idx,
+                prod.brand,
+                prod.model,
+                sn.serial_number,
+                sn.unit_type or "-",
+                inw_label,
+                b.invoice_reference or "-",
+                time_str,
+                u_name,
+            ])
+
+    model_groups = list(groups_map.values())
+    total_serials = len(db_rows)
+
+    if export == "pdf":
+        totals = {
+            "total_models": len(model_groups),
+            "total_serials": total_serials,
+            "stock_in": stock_in_cnt,
+            "returns": returns_cnt,
+            "damaged": damaged_cnt,
+        }
+        filter_desc = "All Models"
+        if product_id and model_groups:
+            first_grp = model_groups[0]
+            filter_desc = f"{first_grp['brand']} {first_grp['model']}"
+        elif product_id:
+            p_res = await db.execute(select(Product).where(Product.id == product_id))
+            p_obj = p_res.scalar_one_or_none()
+            if p_obj:
+                filter_desc = f"{p_obj.brand} {p_obj.model}"
+
+        pdf_bytes = export_inward_register_to_pdf(
+            title=report_title,
+            subtitle=f"Global Agencies Godown Management  •  Exported by {current_user.full_name}",
+            filter_desc=filter_desc,
+            model_groups=model_groups,
+            totals=totals,
+        )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=today_inward_register_{target_date_from}.pdf"},
+        )
+    elif export in ("csv", "xlsx"):
+        headers = ["#", "Brand", "Model", "Serial Number", "Unit", "Inward Type", "Reference", "Time", "Received By"]
+        return create_export_response(
+            export,
+            report_title,
+            f"Global Agencies Godown Management  •  {total_serials} serials inwarded",
+            headers,
+            export_rows,
+            f"today_inward_register_{target_date_from}",
+        )
+
+    return {
+        "report_title": report_title,
+        "date_from": str(target_date_from),
+        "date_to": str(target_date_to),
+        "total_models": len(model_groups),
+        "total_serials": total_serials,
+        "stock_in_count": stock_in_cnt,
+        "returns_count": returns_cnt,
+        "damaged_count": damaged_cnt,
+        "groups": model_groups,
+    }

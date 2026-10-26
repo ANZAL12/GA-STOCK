@@ -149,6 +149,288 @@ def export_to_pdf(title: str, subtitle: str, headers: list[str], rows: list[list
     return buf.getvalue()
 
 
+class InwardRegisterNumberedCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        num_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self.draw_page_number(num_pages)
+            canvas.Canvas.showPage(self)
+        canvas.Canvas.save(self)
+
+    def draw_page_number(self, page_count):
+        self.saveState()
+        self.setFont("Helvetica", 7.5)
+        self.setFillColor(colors.HexColor("#64748B"))
+        page_w, page_h = landscape(A4)
+        text = f"Global Agencies Godown Management  •  Today Inward Serial Register  •  Page {self._pageNumber} of {page_count}"
+        self.drawCentredString(page_w / 2.0, 18, text)
+        self.restoreState()
+
+
+def export_inward_register_to_pdf(
+    title: str,
+    subtitle: str,
+    filter_desc: str,
+    model_groups: list[dict[str, Any]],
+    totals: dict[str, int],
+) -> bytes:
+    """
+    Renders official Today Inward Serial Register grouped cleanly by model for A4 landscape print.
+    """
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=36,
+        rightMargin=36,
+        topMargin=32,
+        bottomMargin=32,
+    )
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "RegTitle",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=15,
+        leading=18,
+        textColor=colors.HexColor("#1E1B4B"),
+    )
+    sub_style = ParagraphStyle(
+        "RegSub",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#64748B"),
+    )
+    model_bar_left = ParagraphStyle(
+        "ModelBarLeft",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=9.5,
+        leading=12,
+        textColor=colors.white,
+    )
+    model_bar_right = ParagraphStyle(
+        "ModelBarRight",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=9,
+        leading=12,
+        textColor=colors.HexColor("#FEF08A"),
+        alignment=2,
+    )
+    head_style = ParagraphStyle(
+        "RegTh",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#334155"),
+        alignment=0,
+    )
+    cell_style = ParagraphStyle(
+        "RegTd",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor("#0F172A"),
+    )
+    serial_cell = ParagraphStyle(
+        "RegSn",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#1E1B4B"),
+    )
+    badge_stock_in = ParagraphStyle(
+        "BadgeIn",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor("#047857"),
+    )
+    badge_return = ParagraphStyle(
+        "BadgeRet",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor("#4338CA"),
+    )
+    badge_damaged = ParagraphStyle(
+        "BadgeDam",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor("#B91C1C"),
+    )
+
+    story = []
+
+    # 1. Header Banner
+    story.append(Paragraph(title, title_style))
+    story.append(Spacer(1, 3))
+    gen_time = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    meta_line = f"{subtitle}  •  Generated: {gen_time}"
+    story.append(Paragraph(meta_line, sub_style))
+    story.append(Spacer(1, 8))
+
+    # 2. Stats summary bar
+    total_models = totals.get("total_models", 0)
+    total_serials = totals.get("total_serials", 0)
+    stock_in = totals.get("stock_in", 0)
+    returns = totals.get("returns", 0)
+    damaged = totals.get("damaged", 0)
+
+    summary_data = [
+        [
+            Paragraph(f"<b>Filter:</b> {filter_desc}", cell_style),
+            Paragraph(f"<b>Models Inwarded:</b> {total_models}", cell_style),
+            Paragraph(f"<b>Total Serials:</b> <font color='#3C3489'><b>{total_serials}</b></font>", cell_style),
+            Paragraph(f"<b>Stock In:</b> <font color='#059669'><b>{stock_in}</b></font>", cell_style),
+            Paragraph(f"<b>Returns:</b> <font color='#4338CA'><b>{returns}</b></font>", cell_style),
+            Paragraph(f"<b>Damaged:</b> <font color='#DC2626'><b>{damaged}</b></font>", cell_style),
+        ]
+    ]
+    summary_table = Table(summary_data, colWidths=[209, 110, 110, 110, 110, 120])
+    summary_table.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F1F5F9")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ])
+    )
+    story.append(summary_table)
+    story.append(Spacer(1, 12))
+
+    if not model_groups:
+        no_rec = ParagraphStyle("NoRec", parent=styles["Normal"], fontName="Helvetica", fontSize=10, textColor=colors.HexColor("#64748B"), alignment=1)
+        story.append(Spacer(1, 40))
+        story.append(Paragraph("No inward serial numbers found matching criteria for today.", no_rec))
+        doc.build(story, canvasmaker=InwardRegisterNumberedCanvas)
+        return buf.getvalue()
+
+    # Column widths total = 769 pt
+    col_widths = [32, 175, 75, 85, 128, 84, 190]
+
+    for grp in model_groups:
+        brand = grp.get("brand") or "Unknown"
+        model = grp.get("model") or "Model"
+        pname = grp.get("product_name") or ""
+        cat = grp.get("category") or ""
+        serials = grp.get("serials") or []
+        count = len(serials)
+
+        # Model Header Bar
+        left_txt = f"{brand.upper()} &nbsp;•&nbsp; <b>{model}</b> &nbsp; <font color='#E0E7FF' size=8.5>({pname}) &nbsp;[{cat}]</font>"
+        right_txt = f"TOTAL: {count} UNIT{'S' if count != 1 else ''}"
+        model_bar = Table(
+            [[Paragraph(left_txt, model_bar_left), Paragraph(right_txt, model_bar_right)]],
+            colWidths=[619, 150],
+        )
+        model_bar.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#3C3489")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ])
+        )
+
+        # Serials Table
+        table_rows = [
+            [
+                Paragraph("#", head_style),
+                Paragraph("Serial Number", head_style),
+                Paragraph("Unit Type", head_style),
+                Paragraph("Inward Type", head_style),
+                Paragraph("Invoice / DC Ref", head_style),
+                Paragraph("Time", head_style),
+                Paragraph("Received By", head_style),
+            ]
+        ]
+
+        for idx, s in enumerate(serials, start=1):
+            itype = s.get("inward_type", "Stock In")
+            if "Return" in itype:
+                b_style = badge_return
+            elif "Damaged" in itype:
+                b_style = badge_damaged
+            else:
+                b_style = badge_stock_in
+
+            table_rows.append([
+                Paragraph(str(idx), cell_style),
+                Paragraph(s.get("serial_number", "-"), serial_cell),
+                Paragraph(s.get("unit_type", "-").capitalize() if s.get("unit_type") else "-", cell_style),
+                Paragraph(itype, b_style),
+                Paragraph(s.get("reference") or "-", cell_style),
+                Paragraph(s.get("time") or "-", cell_style),
+                Paragraph(s.get("received_by") or "-", cell_style),
+            ])
+
+        serials_table = Table(table_rows, colWidths=col_widths, repeatRows=1)
+        serials_table.setStyle(
+            TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+            ])
+        )
+
+        story.append(model_bar)
+        story.append(serials_table)
+        story.append(Spacer(1, 10))
+
+    # Verification / Sign-off Footer
+    sign_data = [
+        [
+            Paragraph(f"<b>Report Summary:</b> {total_serials} Total Serial(s) across {total_models} Model(s).", cell_style),
+            Paragraph("Godown Inward Verifier Signature: ___________________________", cell_style),
+        ]
+    ]
+    sign_table = Table(sign_data, colWidths=[400, 369])
+    sign_table.setStyle(
+        TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ])
+    )
+    story.append(Spacer(1, 6))
+    story.append(sign_table)
+
+    doc.build(story, canvasmaker=InwardRegisterNumberedCanvas)
+    return buf.getvalue()
+
+
+
 class BillNumberedCanvas(canvas.Canvas):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

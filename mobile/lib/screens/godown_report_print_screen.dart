@@ -21,11 +21,16 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
   String? _selectedPrinter;
 
   // Selected Report Options
-  String _selectedReportType = 'stock_by_model';
+  String _selectedReportType = 'today_inward_serials';
   Product? _selectedProduct;
   Shop? _selectedShop;
   DateTime? _dateFrom;
   DateTime? _dateTo;
+  String? _selectedInwardType;
+
+  // Model Filter Search State
+  final TextEditingController _modelSearchController = TextEditingController();
+  String _modelSearchQuery = '';
 
   // Filter Data
   List<Product> _products = [];
@@ -38,8 +43,26 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
   @override
   void initState() {
     super.initState();
+    final now = DateTime.now();
+    _dateFrom = now;
+    _dateTo = now;
     _fetchPrinters();
     _loadFilterCatalogs();
+  }
+
+  @override
+  void dispose() {
+    _modelSearchController.dispose();
+    super.dispose();
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  String _formatDate(DateTime dt) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
   }
 
   Future<void> _fetchPrinters() async {
@@ -108,6 +131,7 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
         shopId: _selectedShop?.id,
         dateFrom: _dateFrom?.toIso8601String().split('T').first,
         dateTo: _dateTo?.toIso8601String().split('T').first,
+        inwardType: _selectedInwardType,
       );
 
       final msg = res['message'] ?? 'Print job submitted successfully to Office PC!';
@@ -175,7 +199,9 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
             const SizedBox(height: 18),
 
             // ── OPTIONAL FILTERS ───────────────────────────────────────────
-            if (_selectedReportType == 'stock_by_model' || _selectedReportType == 'stock_out') ...[
+            if (_selectedReportType == 'today_inward_serials' ||
+                _selectedReportType == 'stock_by_model' ||
+                _selectedReportType == 'stock_out') ...[
               _buildSectionHeader('Report Filters (Optional)', Icons.filter_list_rounded),
               const SizedBox(height: 10),
               _buildFilterSection(isTablet),
@@ -391,6 +417,13 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
   Widget _buildReportTypeSelector(bool isTablet) {
     final reports = [
       {
+        'id': 'today_inward_serials',
+        'title': 'Today Inward Serial Register',
+        'subtitle': 'Serials inwarded today grouped by model with inward type and timestamps',
+        'icon': Icons.assignment_turned_in_rounded,
+        'color': const Color(0xFF4F46E5),
+      },
+      {
         'id': 'stock_by_model',
         'title': 'Stock by Model Report',
         'subtitle': 'Available stock, dispatches, damaged, and negative alert counts',
@@ -496,6 +529,211 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
     );
   }
 
+  // ── SEARCHABLE MODEL FILTER ───────────────────────────────────────────────
+  Widget _buildSearchableModelFilter(bool isTablet) {
+    final query = _modelSearchQuery.trim().toLowerCase();
+    final matching = query.isEmpty
+        ? <Product>[]
+        : _products.where((p) {
+            final brand = p.brand.toLowerCase();
+            final model = p.model.toLowerCase();
+            final name = p.name.toLowerCase();
+            return brand.contains(query) || model.contains(query) || name.contains(query);
+          }).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // 1. Search Box
+        TextField(
+          controller: _modelSearchController,
+          decoration: InputDecoration(
+            labelText: 'Search & Filter by Model',
+            labelStyle: const TextStyle(fontSize: 12),
+            hintText: 'Type brand, model, or name (e.g. Haier, 183V)...',
+            hintStyle: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+            prefixIcon: const Icon(Icons.search_rounded, size: 20, color: Color(0xFF4F46E5)),
+            suffixIcon: _modelSearchController.text.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear_rounded, size: 18),
+                    onPressed: () {
+                      setState(() {
+                        _modelSearchController.clear();
+                        _modelSearchQuery = '';
+                      });
+                    },
+                  )
+                : null,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 1.5),
+            ),
+          ),
+          onChanged: (val) {
+            setState(() => _modelSearchQuery = val);
+          },
+        ),
+
+        // 2. Search Results Drop-down Panel
+        if (_modelSearchQuery.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Container(
+            constraints: const BoxConstraints(maxHeight: 180),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFCBD5E1)),
+              boxShadow: const [
+                BoxShadow(color: Color(0x0C000000), blurRadius: 6, offset: Offset(0, 3)),
+              ],
+            ),
+            child: matching.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      'No models found matching "$_modelSearchQuery"',
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    ),
+                  )
+                : ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    itemCount: matching.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                    itemBuilder: (context, idx) {
+                      final p = matching[idx];
+                      final isCurrent = _selectedProduct?.id == p.id;
+                      return InkWell(
+                        onTap: () {
+                          setState(() {
+                            _selectedProduct = p;
+                            _modelSearchController.clear();
+                            _modelSearchQuery = '';
+                          });
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFEEF2FF),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  p.brand.toUpperCase(),
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF4338CA),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  '${p.model}  •  ${p.name}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: isCurrent ? FontWeight.bold : FontWeight.w500,
+                                    color: isCurrent ? const Color(0xFF4F46E5) : const Color(0xFF0F172A),
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (isCurrent)
+                                const Icon(Icons.check_rounded, size: 16, color: Color(0xFF4F46E5)),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+
+        const SizedBox(height: 8),
+
+        // 3. Current Selection Status Card
+        if (_selectedProduct != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEEF2FF),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFC7D2FE)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF4F46E5),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.check, color: Colors.white, size: 12),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Filtered Model: ${_selectedProduct!.brand} ${_selectedProduct!.model}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF1E1B4B),
+                        ),
+                      ),
+                      Text(
+                        _selectedProduct!.name,
+                        style: const TextStyle(fontSize: 11, color: Color(0xFF6366F1)),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => setState(() => _selectedProduct = null),
+                  icon: const Icon(Icons.close_rounded, size: 14, color: Color(0xFF4338CA)),
+                  label: const Text('Show All', style: TextStyle(fontSize: 11, color: Color(0xFF4338CA), fontWeight: FontWeight.bold)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Row(
+              children: const [
+                Icon(Icons.layers_outlined, size: 16, color: Color(0xFF64748B)),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'All Models Selected (Register will include all serials inwarded today grouped by model)',
+                    style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   // ── FILTER SECTION ────────────────────────────────────────────────────────
   Widget _buildFilterSection(bool isTablet) {
     return Container(
@@ -506,29 +744,93 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
         border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (_selectedReportType == 'stock_by_model') ...[
-            DropdownButtonFormField<Product?>(
-              initialValue: _selectedProduct,
+          // ── SEARCHABLE MODEL FILTER (for today inward & stock by model)
+          if (_selectedReportType == 'today_inward_serials' || _selectedReportType == 'stock_by_model') ...[
+            _buildSearchableModelFilter(isTablet),
+          ],
+
+          // ── TODAY INWARD EXTRA FILTERS (Inward Type & Date)
+          if (_selectedReportType == 'today_inward_serials') ...[
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String?>(
+              initialValue: _selectedInwardType,
               decoration: const InputDecoration(
-                labelText: 'Filter by Specific Model',
+                labelText: 'Filter Inward Type',
                 labelStyle: TextStyle(fontSize: 12),
                 contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 border: OutlineInputBorder(),
               ),
-              items: [
-                const DropdownMenuItem<Product?>(
+              items: const [
+                DropdownMenuItem<String?>(
                   value: null,
-                  child: Text('All Models in Godown', style: TextStyle(fontSize: 13)),
+                  child: Text('All Inward Types (Stock In, Return, Damaged)', style: TextStyle(fontSize: 13)),
                 ),
-                ..._products.map((p) => DropdownMenuItem<Product?>(
-                      value: p,
-                      child: Text('${p.brand} ${p.model}', style: const TextStyle(fontSize: 13)),
-                    )),
+                DropdownMenuItem<String?>(
+                  value: 'stock_in',
+                  child: Text('Stock In (Direct from Company)', style: TextStyle(fontSize: 13)),
+                ),
+                DropdownMenuItem<String?>(
+                  value: 'return',
+                  child: Text('Customer / Shop Return', style: TextStyle(fontSize: 13)),
+                ),
+                DropdownMenuItem<String?>(
+                  value: 'damaged',
+                  child: Text('Damaged Stock', style: TextStyle(fontSize: 13)),
+                ),
               ],
-              onChanged: (p) => setState(() => _selectedProduct = p),
+              onChanged: (val) => setState(() => _selectedInwardType = val),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFE2E8F0)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.calendar_today_rounded, size: 16, color: Color(0xFF4F46E5)),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Register Date: ${_formatDate(_dateFrom ?? DateTime.now())}',
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: _dateFrom ?? DateTime.now(),
+                        firstDate: DateTime(2025),
+                        lastDate: DateTime.now().add(const Duration(days: 1)),
+                      );
+                      if (picked != null) {
+                        setState(() {
+                          _dateFrom = picked;
+                          _dateTo = picked;
+                        });
+                      }
+                    },
+                    child: const Text('Change Date', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
+                  ),
+                  if (_dateFrom != null && !_isSameDay(_dateFrom!, DateTime.now()))
+                    IconButton(
+                      tooltip: 'Reset to Today',
+                      icon: const Icon(Icons.refresh_rounded, size: 18, color: Color(0xFF64748B)),
+                      onPressed: () => setState(() {
+                        _dateFrom = DateTime.now();
+                        _dateTo = DateTime.now();
+                      }),
+                    ),
+                ],
+              ),
             ),
           ],
+
           if (_selectedReportType == 'stock_out') ...[
             DropdownButtonFormField<Shop?>(
               initialValue: _selectedShop,
