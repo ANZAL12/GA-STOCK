@@ -316,6 +316,22 @@ class OfflineManager {
             ApiService().updateProductStock(pid, qty);
           }
         }
+        ApiService().clearSerialCaches();
+        syncFromBackend(silent: true);
+      } else if (event == 'serial_updated') {
+        if (data is Map<String, dynamic>) {
+          final sn = data['serial']?.toString().toUpperCase();
+          final status = data['status']?.toString();
+          if (sn != null && status != null) {
+            final entry = _serials[sn] ?? <String, dynamic>{};
+            entry['st'] = status;
+            entry['d'] = (status == 'dispatched');
+            entry['dmg'] = (status == 'damaged');
+            _serials[sn] = entry;
+            _saveToDisk();
+          }
+        }
+        ApiService().clearSerialCaches();
         syncFromBackend(silent: true);
       } else if (event == 'serial_deleted') {
         final sn = data?['serial']?.toString().toUpperCase();
@@ -323,6 +339,8 @@ class OfflineManager {
           _serials.remove(sn);
           _saveToDisk();
         }
+        ApiService().clearSerialCaches();
+        syncFromBackend(silent: true);
       }
     } catch (_) {}
   }
@@ -554,6 +572,61 @@ class OfflineManager {
       'requires_confirmation': true,
       'message': 'Serial not found in local inventory. Please assign model.',
     };
+  }
+
+  /// Syncs live server outward check response into local offline serials map
+  void updateSerialFromCheckOutward(String serialNumber, Map<String, dynamic> data) {
+    final cleanSerial = serialNumber.trim().toUpperCase();
+    final isDispatched = data['is_already_dispatched'] == true || data['is_dispatched'] == true;
+    final isDamaged = data['is_damaged'] == true;
+    final status = isDispatched ? 'dispatched' : (isDamaged ? 'damaged' : (data['current_status'] ?? 'available'));
+
+    final entry = _serials[cleanSerial] ?? <String, dynamic>{};
+    entry['st'] = status;
+    entry['d'] = isDispatched;
+    entry['dmg'] = isDamaged;
+    if (data['registered_model_id'] != null) {
+      entry['p'] = data['registered_model_id'].toString();
+    }
+    if (data['registered_model_name'] != null) {
+      entry['m'] = data['registered_model_name'].toString();
+    }
+    if (data['unit_type'] != null) {
+      entry['u'] = data['unit_type'].toString();
+    }
+    _serials[cleanSerial] = entry;
+  }
+
+  /// Syncs live server inward validation response into local offline serials map
+  void updateSerialFromValidateInward(String serialNumber, Map<String, dynamic> data, {String inwardType = 'stock_in'}) {
+    final cleanSerial = serialNumber.trim().toUpperCase();
+    final entry = _serials[cleanSerial] ?? <String, dynamic>{};
+    if (inwardType == 'stock_in' && data['is_valid'] == true) {
+      entry['st'] = 'available';
+      entry['d'] = false;
+      entry['dmg'] = false;
+    } else if (inwardType == 'damaged' && data['is_valid'] == true) {
+      entry['st'] = 'damaged';
+      entry['d'] = false;
+      entry['dmg'] = true;
+    }
+    if (data['registered_model_id'] != null) {
+      entry['p'] = data['registered_model_id'].toString();
+    }
+    if (data['registered_model_name'] != null) {
+      entry['m'] = data['registered_model_name'].toString();
+    }
+    if (data['unit_type'] != null) {
+      entry['u'] = data['unit_type'].toString();
+    }
+    _serials[cleanSerial] = entry;
+  }
+
+  /// Removes serial from offline cache when deleted on server
+  void removeSerial(String serialNumber) {
+    final cleanSerial = serialNumber.trim().toUpperCase();
+    _serials.remove(cleanSerial);
+    _saveToDisk();
   }
 
   // --- OFFLINE SERIAL LIFECYCLE LOOKUP ---

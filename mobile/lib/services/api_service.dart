@@ -41,6 +41,11 @@ class ApiService {
   final Map<String, Map<String, dynamic>> _outwardSerialCheckCache = {};
   final Map<String, Map<String, dynamic>> _inwardSerialValidateCache = {};
 
+  void clearSerialCaches() {
+    _outwardSerialCheckCache.clear();
+    _inwardSerialValidateCache.clear();
+  }
+
   String get baseUrl => _baseUrl;
   User? get currentUser => _currentUser;
   String? get deviceUid => _deviceUid;
@@ -596,25 +601,6 @@ class ApiService {
     String inwardType = 'stock_in',
   }) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
-    final cacheKey = '$productId:$cleanSerial:$inwardType';
-
-    if (_inwardSerialValidateCache.containsKey(cacheKey)) {
-      return _inwardSerialValidateCache[cacheKey]!;
-    }
-
-    // 0ms in-memory fast-path: If serial is in local memory cache, validate immediately
-    if (OfflineManager().serials.containsKey(cleanSerial)) {
-      final localResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
-      _inwardSerialValidateCache[cacheKey] = localResult;
-      return localResult;
-    }
-
-    // Fast-path offline check if connection is down
-    if (!OfflineManager().isOnline) {
-      final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
-      _inwardSerialValidateCache[cacheKey] = offlineResult;
-      return offlineResult;
-    }
 
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
@@ -624,15 +610,15 @@ class ApiService {
       queryParams['product_id'] = productId;
     }
 
+    // Network is #1 priority! Live validation with 3-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
-      // Fast check: 1200ms timeout with 0 retries
-      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1200));
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 3));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        _inwardSerialValidateCache[cacheKey] = data;
         OfflineManager().markOnline();
+        OfflineManager().updateSerialFromValidateInward(cleanSerial, data, inwardType: inwardType);
         return data;
       } else {
         String msg = 'Validation error';
@@ -643,9 +629,21 @@ class ApiService {
         throw Exception(msg);
       }
     } catch (e) {
+      final errStr = e.toString();
+      // If it's a validation business logic rejection from the server, rethrow so the UI displays it
+      if (!errStr.contains('TimeoutException') &&
+          !errStr.contains('SocketException') &&
+          !errStr.contains('ClientException') &&
+          !errStr.contains('HandshakeException') &&
+          !errStr.contains('Connection refused') &&
+          !errStr.contains('Connection reset') &&
+          !errStr.contains('Network is unreachable')) {
+        rethrow;
+      }
+
+      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
-      _inwardSerialValidateCache[cacheKey] = offlineResult;
       return offlineResult;
     }
   }
@@ -723,25 +721,6 @@ class ApiService {
     String serialNumber,
   ) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
-    final cacheKey = '${productId ?? "any"}:$cleanSerial';
-
-    if (_outwardSerialCheckCache.containsKey(cacheKey)) {
-      return _outwardSerialCheckCache[cacheKey]!;
-    }
-
-    // 0ms in-memory fast-path: If serial is in local memory cache, check immediately without network latency
-    if (OfflineManager().serials.containsKey(cleanSerial)) {
-      final localResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
-      _outwardSerialCheckCache[cacheKey] = localResult;
-      return localResult;
-    }
-
-    // Fast-path offline check if connection is known to be down
-    if (!OfflineManager().isOnline) {
-      final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
-      _outwardSerialCheckCache[cacheKey] = offlineResult;
-      return offlineResult;
-    }
 
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
@@ -749,15 +728,16 @@ class ApiService {
     if (productId != null && productId.isNotEmpty) {
       queryParams['product_id'] = productId;
     }
+
+    // Network is #1 priority! Try live server query for several seconds (3s) before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
-      // Fast check: 1200ms timeout, 0 retries so offline scanning never freezes
-      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1200));
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 3));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        _outwardSerialCheckCache[cacheKey] = data;
         OfflineManager().markOnline();
+        OfflineManager().updateSerialFromCheckOutward(cleanSerial, data);
         return data;
       } else {
         String msg = 'Serial check failed';
@@ -768,10 +748,20 @@ class ApiService {
         throw Exception(msg);
       }
     } catch (e) {
-      // Server down, network drop, or timeout -> instantly mark offline and match from local cache
+      final errStr = e.toString();
+      if (!errStr.contains('TimeoutException') &&
+          !errStr.contains('SocketException') &&
+          !errStr.contains('ClientException') &&
+          !errStr.contains('HandshakeException') &&
+          !errStr.contains('Connection refused') &&
+          !errStr.contains('Connection reset') &&
+          !errStr.contains('Network is unreachable')) {
+        rethrow;
+      }
+
+      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
-      _outwardSerialCheckCache[cacheKey] = offlineResult;
       return offlineResult;
     }
   }
@@ -879,27 +869,18 @@ class ApiService {
       throw Exception('Serial number cannot be empty');
     }
 
-    // 1. Fast-path offline check if connection is known to be down
-    if (!OfflineManager().isOnline) {
-      return OfflineManager().lookupSerialOffline(cleanSerial);
-    }
-
-    // 2. Online query with fast 1500ms timeout
+    // Network is #1 priority! Try live server query for several seconds (3s) before falling back to offline cache
     try {
       final uri = Uri.parse(
         '$_baseUrl/serials/lookup?serial_number=${Uri.encodeComponent(cleanSerial)}',
       );
-      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1500));
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 3));
 
       if (res.statusCode == 200) {
         OfflineManager().markOnline();
         return SerialLookupDetail.fromJson(jsonDecode(res.body));
       } else if (res.statusCode == 404) {
-        // Check offline snapshot before deciding it's completely missing
-        final offlineDetail = OfflineManager().lookupSerialOffline(cleanSerial);
-        if (offlineDetail.isTracked) {
-          return offlineDetail;
-        }
+        OfflineManager().removeSerial(cleanSerial);
         String msg = 'Serial number "$cleanSerial" not found in system.';
         try {
           final err = jsonDecode(res.body);
@@ -918,7 +899,18 @@ class ApiService {
       if (e is Exception && e.toString().contains('not found in system')) {
         rethrow;
       }
-      // Server down, network drop, or timeout -> instantly mark offline and match from local snapshot
+      final errStr = e.toString();
+      if (!errStr.contains('TimeoutException') &&
+          !errStr.contains('SocketException') &&
+          !errStr.contains('ClientException') &&
+          !errStr.contains('HandshakeException') &&
+          !errStr.contains('Connection refused') &&
+          !errStr.contains('Connection reset') &&
+          !errStr.contains('Network is unreachable')) {
+        rethrow;
+      }
+
+      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       return OfflineManager().lookupSerialOffline(cleanSerial);
     }

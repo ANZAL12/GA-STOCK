@@ -1522,6 +1522,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
   Widget _buildScanView() {
     final isTablet = context.isTablet;
+    final isLandscapeTab = context.isLandscapeTablet;
 
     final Map<String, int> modelCounts = {};
     for (var item in _scannedItems) {
@@ -1547,14 +1548,14 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
           color: Colors.white,
           padding: EdgeInsets.symmetric(
             horizontal: isTablet ? 24 : 16,
-            vertical: isTablet ? 14 : 10,
+            vertical: isLandscapeTab ? 6 : (isTablet ? 14 : 10),
           ),
           child: Row(
             children: [
               Image.asset(
                 'assets/images/shop_icon.png',
-                width: isTablet ? 28 : 22,
-                height: isTablet ? 28 : 22,
+                width: isLandscapeTab ? 20 : (isTablet ? 28 : 22),
+                height: isLandscapeTab ? 20 : (isTablet ? 28 : 22),
                 fit: BoxFit.contain,
                 errorBuilder: (c, e, s) => const Icon(Icons.storefront, size: 20),
               ),
@@ -1567,13 +1568,13 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                       _selectedShop!.name,
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: isTablet ? 16 : 14,
+                        fontSize: isLandscapeTab ? 14 : (isTablet ? 16 : 14),
                         color: const Color(0xFF0F172A),
                       ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
-                    if (_selectedShop!.city.trim().isNotEmpty)
+                    if (_selectedShop!.city.trim().isNotEmpty && !isLandscapeTab)
                       Text(
                         _selectedShop!.city.trim(),
                         style: TextStyle(fontSize: isTablet ? 12 : 11, color: const Color(0xFF64748B)),
@@ -1587,6 +1588,13 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 skipTraversal: true,
                 child: TextButton(
                   focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                  style: isLandscapeTab
+                      ? TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        )
+                      : null,
                   onPressed: () async {
                     if (_scannedItems.isNotEmpty) {
                       final confirm = await _showClearConfirmationDialog();
@@ -1610,96 +1618,184 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
         const Divider(height: 1, color: Color(0xFFE2E8F0)),
 
-        // Scanning controls
+        // Scanning controls (Side-by-side on Landscape Tablet, Stacked on Mobile/Portrait Tablet)
         Padding(
           padding: EdgeInsets.symmetric(
             horizontal: isTablet ? 24 : 16,
-            vertical: isTablet ? 14 : 10,
+            vertical: isLandscapeTab ? 5 : (isTablet ? 14 : 10),
           ),
-          child: Column(
-            children: [
-              Focus(
-                canRequestFocus: false,
-                descendantsAreFocusable: false,
-                skipTraversal: true,
-                child: SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFEA580C),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: EdgeInsets.symmetric(vertical: isTablet ? 18 : 13),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    onPressed: _openCameraScanner,
-                    icon: const Icon(Icons.qr_code_scanner, size: 20),
-                    label: Text(
-                      'Continuous Camera Scan',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: isTablet ? 16 : 14),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _manualController,
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: InputDecoration(
-                        hintText: 'Or enter serial manually...',
-                        prefixIcon: const Icon(Icons.search, size: 18),
-                        filled: true,
-                        fillColor: Colors.white,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(10),
-                          borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+          child: isLandscapeTab
+              ? Row(
+                  children: [
+                    // Manual entry on left (wider)
+                    Expanded(
+                      flex: 6,
+                      child: SizedBox(
+                        height: 38,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _manualController,
+                                textCapitalization: TextCapitalization.characters,
+                                style: const TextStyle(fontSize: 13),
+                                decoration: InputDecoration(
+                                  hintText: 'Or enter serial manually...',
+                                  hintStyle: const TextStyle(fontSize: 12.5),
+                                  prefixIcon: const Icon(Icons.search, size: 16),
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                                  ),
+                                ),
+                                onSubmitted: (val) {
+                                  FocusScope.of(context).unfocus();
+                                  _handleQuickScan(val);
+                                  _manualController.clear();
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Focus(
+                              canRequestFocus: false,
+                              descendantsAreFocusable: false,
+                              skipTraversal: true,
+                              child: ElevatedButton(
+                                focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF1E293B),
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                                  minimumSize: const Size(56, 38),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
+                                onPressed: () {
+                                  FocusScope.of(context).unfocus();
+                                  _handleQuickScan(_manualController.text);
+                                  _manualController.clear();
+                                },
+                                child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      onSubmitted: (val) {
-                        FocusScope.of(context).unfocus();
-                        _handleQuickScan(val);
-                        _manualController.clear();
-                      },
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Focus(
-                    canRequestFocus: false,
-                    descendantsAreFocusable: false,
-                    skipTraversal: true,
-                    child: ElevatedButton(
-                      focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF1E293B),
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    const SizedBox(width: 10),
+                    // Camera scan on right
+                    Expanded(
+                      flex: 4,
+                      child: SizedBox(
+                        height: 38,
+                        child: ElevatedButton.icon(
+                          focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFEA580C),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: _openCameraScanner,
+                          icon: const Icon(Icons.qr_code_scanner, size: 18),
+                          label: const Text(
+                            'Continuous Camera Scan',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ),
-                      onPressed: () {
-                        FocusScope.of(context).unfocus();
-                        _handleQuickScan(_manualController.text);
-                        _manualController.clear();
-                      },
-                      child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
-                  ),
-                ],
-              ),
-            ],
-          ),
+                  ],
+                )
+              : Column(
+                  children: [
+                    Focus(
+                      canRequestFocus: false,
+                      descendantsAreFocusable: false,
+                      skipTraversal: true,
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFEA580C),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: EdgeInsets.symmetric(vertical: isTablet ? 18 : 13),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          onPressed: _openCameraScanner,
+                          icon: const Icon(Icons.qr_code_scanner, size: 20),
+                          label: Text(
+                            'Continuous Camera Scan',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: isTablet ? 16 : 14),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _manualController,
+                            textCapitalization: TextCapitalization.characters,
+                            decoration: InputDecoration(
+                              hintText: 'Or enter serial manually...',
+                              prefixIcon: const Icon(Icons.search, size: 18),
+                              filled: true,
+                              fillColor: Colors.white,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                              ),
+                            ),
+                            onSubmitted: (val) {
+                              FocusScope.of(context).unfocus();
+                              _handleQuickScan(val);
+                              _manualController.clear();
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Focus(
+                          canRequestFocus: false,
+                          descendantsAreFocusable: false,
+                          skipTraversal: true,
+                          child: ElevatedButton(
+                            focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF1E293B),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: () {
+                              FocusScope.of(context).unfocus();
+                              _handleQuickScan(_manualController.text);
+                              _manualController.clear();
+                            },
+                            child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
         ),
 
         // Real-time scan feedback banner
         if (_lastScanFeedback != null)
           Container(
             width: double.infinity,
-            margin: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 2),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            margin: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: isLandscapeTab ? 1 : 2),
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: isLandscapeTab ? 3 : 6),
             decoration: BoxDecoration(
               color: const Color(0xFFECFDF5),
               borderRadius: BorderRadius.circular(8),
@@ -1721,7 +1817,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         if (modelCounts.length > 1)
           Container(
             width: double.infinity,
-            margin: const EdgeInsets.only(top: 4, bottom: 4),
+            margin: EdgeInsets.only(top: isLandscapeTab ? 2 : 4, bottom: isLandscapeTab ? 2 : 4),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16),
@@ -1873,6 +1969,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         ),
 
         // Scanned List (Virtualised & RepaintBounded)
+        // On Landscape Tablets: Render a 2-column Grid to double the visible items per screen height!
         Expanded(
           child: _scannedItems.isEmpty
               ? Center(
@@ -1888,137 +1985,51 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                     ],
                   ),
                 )
-              : ListView.separated(
-                  key: const PageStorageKey('quick_dispatch_scanned_list'),
-                  controller: _scrollController,
-                  cacheExtent: 600.0,
-                  addAutomaticKeepAlives: false,
-                  addRepaintBoundaries: true,
-                  padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 4),
-                  itemCount: displayedItems.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 6),
-                  itemBuilder: (ctx, idx) {
-                    final item = displayedItems[idx];
-                    return RepaintBoundary(
-                      key: ValueKey(item.serialNumber),
-                      child: Material(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(10),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFFE2E8F0)),
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF1F5F9),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  '#${item.sequenceNumber}',
-                                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      item.serialNumber,
-                                      style: const TextStyle(
-                                        fontFamily: 'monospace',
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                        color: Color(0xFF0F172A),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Row(
-                                      children: [
-                                        Flexible(
-                                          child: Text(
-                                            item.modelName,
-                                            style: const TextStyle(fontSize: 11, color: Color(0xFF475569), fontWeight: FontWeight.w500),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                        if (item.unitType != null) ...[
-                                          const SizedBox(width: 6),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                            decoration: BoxDecoration(
-                                              color: item.unitType == 'indoor' ? const Color(0xFFEEF2FF) : const Color(0xFFF0FDFA),
-                                              borderRadius: BorderRadius.circular(4),
-                                            ),
-                                            child: Text(
-                                              item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
-                                              style: TextStyle(
-                                                fontSize: 9.5,
-                                                fontWeight: FontWeight.bold,
-                                                color: item.unitType == 'indoor' ? const Color(0xFF4F46E5) : const Color(0xFF0D9488),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                        const SizedBox(width: 6),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                          decoration: BoxDecoration(
-                                            color: item.isMatched ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
-                                            borderRadius: BorderRadius.circular(4),
-                                          ),
-                                          child: Text(
-                                            item.isMatched ? 'Matched' : 'New Serial',
-                                            style: TextStyle(
-                                              fontSize: 9.5,
-                                              fontWeight: FontWeight.bold,
-                                              color: item.isMatched ? const Color(0xFF059669) : const Color(0xFFB45309),
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 18),
-                                onPressed: () {
-                                  setState(() {
-                                    _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
-                                    _scannedSerialSet.remove(item.serialNumber);
-                                  });
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
+              : isLandscapeTab
+                  ? GridView.builder(
+                      key: const PageStorageKey('quick_dispatch_scanned_grid'),
+                      controller: _scrollController,
+                      cacheExtent: 600.0,
+                      addAutomaticKeepAlives: false,
+                      addRepaintBoundaries: true,
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        childAspectRatio: 5.2,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 5,
                       ),
-                    );
-                  },
-                ),
+                      itemCount: displayedItems.length,
+                      itemBuilder: (ctx, idx) => _buildQuickScanCard(displayedItems[idx]),
+                    )
+                  : ListView.separated(
+                      key: const PageStorageKey('quick_dispatch_scanned_list'),
+                      controller: _scrollController,
+                      cacheExtent: 600.0,
+                      addAutomaticKeepAlives: false,
+                      addRepaintBoundaries: true,
+                      padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 4),
+                      itemCount: displayedItems.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      itemBuilder: (ctx, idx) => _buildQuickScanCard(displayedItems[idx]),
+                    ),
         ),
 
         // Bottom submit bar
         Container(
           color: Colors.white,
-          padding: EdgeInsets.all(isTablet ? 20 : 14),
+          padding: EdgeInsets.all(isLandscapeTab ? 8 : (isTablet ? 20 : 14)),
           child: SafeArea(
             top: false,
             child: SizedBox(
               width: double.infinity,
+              height: isLandscapeTab ? 42 : null,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1E1B4B),
                   foregroundColor: Colors.white,
                   disabledBackgroundColor: const Color(0xFFCBD5E1),
-                  padding: EdgeInsets.symmetric(vertical: isTablet ? 18 : 14),
+                  padding: EdgeInsets.symmetric(vertical: isLandscapeTab ? 10 : (isTablet ? 18 : 14)),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
                 onPressed: _scannedItems.isNotEmpty && !_isSubmitting ? _submitDispatch : null,
@@ -2032,7 +2043,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                         _scannedItems.isNotEmpty
                             ? 'Submit Dispatch (${_scannedItems.length} Serials)'
                             : 'Scan serials to dispatch',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: isTablet ? 16 : 14),
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: isLandscapeTab ? 14 : (isTablet ? 16 : 14)),
                       ),
               ),
             ),
@@ -2040,6 +2051,114 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         ),
       ],
     ),
+    );
+  }
+
+  Widget _buildQuickScanCard(QuickScanItem item) {
+    return RepaintBoundary(
+      key: ValueKey(item.serialNumber),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  '#${item.sequenceNumber}',
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      item.serialNumber,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13.5,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            item.modelName,
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF475569), fontWeight: FontWeight.w500),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (item.unitType != null) ...[
+                          const SizedBox(width: 5),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: item.unitType == 'indoor' ? const Color(0xFFEEF2FF) : const Color(0xFFF0FDFA),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                              style: TextStyle(
+                                fontSize: 9,
+                                fontWeight: FontWeight.bold,
+                                color: item.unitType == 'indoor' ? const Color(0xFF4F46E5) : const Color(0xFF0D9488),
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(width: 5),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: item.isMatched ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            item.isMatched ? 'Matched' : 'New Serial',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: item.isMatched ? const Color(0xFF059669) : const Color(0xFFB45309),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 17),
+                onPressed: () {
+                  setState(() {
+                    _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
+                    _scannedSerialSet.remove(item.serialNumber);
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

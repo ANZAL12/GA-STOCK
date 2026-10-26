@@ -9,6 +9,12 @@ extension ResponsiveContext on BuildContext {
     return media.size.shortestSide >= 600 || media.size.width >= 600;
   }
 
+  /// Whether current orientation is landscape
+  bool get isLandscape => MediaQuery.of(this).orientation == Orientation.landscape;
+
+  /// Whether running on a tablet in landscape mode
+  bool get isLandscapeTablet => isTablet && isLandscape;
+
   /// Screen width
   double get screenWidth => MediaQuery.of(this).size.width;
 

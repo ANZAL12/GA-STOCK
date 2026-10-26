@@ -2964,7 +2964,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           color: Colors.white,
           padding: EdgeInsets.symmetric(
             horizontal: context.isTablet ? 24 : 14,
-            vertical: context.isTablet ? 12 : 8,
+            vertical: context.isLandscapeTablet ? 4 : (context.isTablet ? 12 : 8),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2974,11 +2974,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 children: [
                   Image.asset(
                     'assets/images/shop_icon.png',
-                    width: context.isTablet ? 28 : 22,
-                    height: context.isTablet ? 28 : 22,
+                    width: context.isLandscapeTablet ? 20 : (context.isTablet ? 28 : 22),
+                    height: context.isLandscapeTablet ? 20 : (context.isTablet ? 28 : 22),
                     fit: BoxFit.contain,
                     errorBuilder: (context, error, stackTrace) =>
-                        Icon(Icons.storefront, size: context.isTablet ? 22 : 18, color: const Color(0xFF4F46E5)),
+                        Icon(Icons.storefront, size: context.isLandscapeTablet ? 18 : (context.isTablet ? 22 : 18), color: const Color(0xFF4F46E5)),
                   ),
                   SizedBox(width: context.isTablet ? 10 : 8),
                   Expanded(
@@ -2989,13 +2989,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           _selectedShop!.name,
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            fontSize: context.isTablet ? 16 : 13,
+                            fontSize: context.isLandscapeTablet ? 13.5 : (context.isTablet ? 16 : 13),
                             color: const Color(0xFF0F172A),
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        if (_selectedShop!.city.trim().isNotEmpty)
+                        if (_selectedShop!.city.trim().isNotEmpty && !context.isLandscapeTablet)
                           Text(
                             _selectedShop!.city.trim(),
                             style: TextStyle(
@@ -3010,7 +3010,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: context.isTablet ? 10 : 6,
-                        vertical: context.isTablet ? 4 : 2,
+                        vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
                       ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF1F5F9),
@@ -3020,7 +3020,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       child: Text(
                         'Ref: ${_deliveryRefController.text.trim()}',
                         style: TextStyle(
-                          fontSize: context.isTablet ? 12 : 10,
+                          fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 12 : 10),
                           fontWeight: FontWeight.bold,
                           color: const Color(0xFF475569),
                         ),
@@ -3035,7 +3035,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     child: Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: context.isTablet ? 12 : 8,
-                        vertical: context.isTablet ? 6 : 4,
+                        vertical: context.isLandscapeTablet ? 3 : (context.isTablet ? 6 : 4),
                       ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFEEF2FF),
@@ -3050,7 +3050,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             child: Text(
                               '${_selectedProduct?.brand ?? ""} ${_selectedProduct?.model ?? ""}',
                               style: TextStyle(
-                                fontSize: context.isTablet ? 13 : 11,
+                                fontSize: context.isLandscapeTablet ? 11.5 : (context.isTablet ? 13 : 11),
                                 fontWeight: FontWeight.bold,
                                 color: const Color(0xFF4338CA),
                               ),
@@ -3059,7 +3059,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             ),
                           ),
                           const SizedBox(width: 4),
-                          Icon(Icons.swap_horiz, size: context.isTablet ? 18 : 14, color: const Color(0xFF4338CA)),
+                          Icon(Icons.swap_horiz, size: context.isLandscapeTablet ? 15 : (context.isTablet ? 18 : 14), color: const Color(0xFF4338CA)),
                         ],
                       ),
                     ),
@@ -3067,7 +3067,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 ],
               ),
 
-              SizedBox(height: context.isTablet ? 10 : 6),
+              SizedBox(height: context.isLandscapeTablet ? 3 : (context.isTablet ? 10 : 6)),
 
               // Row 2: Dual Serial Toggle (Compact) & Summary counts
               Row(
@@ -3089,7 +3089,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             child: Container(
                               padding: EdgeInsets.symmetric(
                                 horizontal: context.isTablet ? 12 : 8,
-                                vertical: context.isTablet ? 5 : 3.5,
+                                vertical: context.isLandscapeTablet ? 3 : (context.isTablet ? 5 : 3.5),
                               ),
                               decoration: BoxDecoration(
                                 color: _outwardUnitType == 'indoor' ? Colors.white : Colors.transparent,
@@ -3103,14 +3103,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                 children: [
                                   Icon(
                                     Icons.home_outlined,
-                                    size: context.isTablet ? 16 : 12,
+                                    size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 12),
                                     color: _outwardUnitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF64748B),
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
                                     'Indoor',
                                     style: TextStyle(
-                                      fontSize: context.isTablet ? 13 : 11,
+                                      fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                                       fontWeight: _outwardUnitType == 'indoor' ? FontWeight.bold : FontWeight.w500,
                                       color: _outwardUnitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF64748B),
                                     ),
@@ -3125,7 +3125,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             child: Container(
                               padding: EdgeInsets.symmetric(
                                 horizontal: context.isTablet ? 12 : 8,
-                                vertical: context.isTablet ? 5 : 3.5,
+                                vertical: context.isLandscapeTablet ? 3 : (context.isTablet ? 5 : 3.5),
                               ),
                               decoration: BoxDecoration(
                                 color: _outwardUnitType == 'outdoor' ? Colors.white : Colors.transparent,
@@ -3139,14 +3139,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                 children: [
                                   Icon(
                                     Icons.wb_sunny_outlined,
-                                    size: context.isTablet ? 16 : 12,
+                                    size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 12),
                                     color: _outwardUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFF64748B),
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
                                     'Outdoor',
                                     style: TextStyle(
-                                      fontSize: context.isTablet ? 13 : 11,
+                                      fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                                       fontWeight: _outwardUnitType == 'outdoor' ? FontWeight.bold : FontWeight.w500,
                                       color: _outwardUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFF64748B),
                                     ),
@@ -3165,7 +3165,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   Container(
                     padding: EdgeInsets.symmetric(
                       horizontal: context.isTablet ? 10 : 6,
-                      vertical: context.isTablet ? 4 : 2,
+                      vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
                     ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFECFDF5),
@@ -3175,7 +3175,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     child: Text(
                       '$matchedCount Matched',
                       style: TextStyle(
-                        fontSize: context.isTablet ? 12.5 : 10,
+                        fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 12.5 : 10),
                         fontWeight: FontWeight.bold,
                         color: const Color(0xFF065F46),
                       ),
@@ -3186,7 +3186,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: context.isTablet ? 10 : 6,
-                        vertical: context.isTablet ? 4 : 2,
+                        vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
                       ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF1F5F9),
@@ -3196,7 +3196,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       child: Text(
                         '$recordedOnlyCount Recorded',
                         style: TextStyle(
-                          fontSize: context.isTablet ? 12.5 : 10,
+                          fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 12.5 : 10),
                           fontWeight: FontWeight.bold,
                           color: const Color(0xFF475569),
                         ),
@@ -3207,7 +3207,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   Text(
                     '${_scannedItems.length} Serials',
                     style: TextStyle(
-                      fontSize: context.isTablet ? 14 : 11,
+                      fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
                       fontWeight: FontWeight.bold,
                       color: const Color(0xFF0F172A),
                     ),
@@ -3232,7 +3232,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 bottom: BorderSide(color: Color(0xFFE2E8F0)),
               ),
             ),
-            padding: EdgeInsets.symmetric(vertical: context.isTablet ? 8 : 4),
+            padding: EdgeInsets.symmetric(vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 8 : 4)),
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 24 : 14),
@@ -3246,7 +3246,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     selected: _activeFilterModelId == 'ALL',
                     selectedColor: const Color(0xFF1E1B4B),
                     labelStyle: TextStyle(
-                      fontSize: context.isTablet ? 13 : 11,
+                      fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                       fontWeight: FontWeight.bold,
                       color: _activeFilterModelId == 'ALL' ? Colors.white : const Color(0xFF475569),
                     ),
@@ -3275,13 +3275,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         visualDensity: VisualDensity.compact,
                         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         avatar: isCurrentActive
-                            ? Icon(Icons.bolt, size: context.isTablet ? 16 : 13, color: isSelected ? Colors.amber : const Color(0xFF4F46E5))
+                            ? Icon(Icons.bolt, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 13), color: isSelected ? Colors.amber : const Color(0xFF4F46E5))
                             : null,
                         label: Text('${prod.model} ($count)'),
                         selected: isSelected,
                         selectedColor: const Color(0xFF4F46E5),
                         labelStyle: TextStyle(
-                          fontSize: context.isTablet ? 13 : 11,
+                          fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                           fontWeight: FontWeight.bold,
                           color: isSelected ? Colors.white : const Color(0xFF334155),
                         ),
@@ -3307,10 +3307,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    avatar: Icon(Icons.add, size: context.isTablet ? 16 : 14, color: const Color(0xFF4F46E5)),
+                    avatar: Icon(Icons.add, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 14), color: const Color(0xFF4F46E5)),
                     label: const Text('+ Add Model'),
                     labelStyle: TextStyle(
-                      fontSize: context.isTablet ? 13 : 11,
+                      fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                       fontWeight: FontWeight.bold,
                       color: const Color(0xFF4F46E5),
                     ),
@@ -3331,7 +3331,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         Padding(
           padding: EdgeInsets.symmetric(
             horizontal: context.isTablet ? 24 : 14,
-            vertical: context.isTablet ? 14 : 6,
+            vertical: context.isLandscapeTablet ? 4 : (context.isTablet ? 14 : 6),
           ),
           child: Column(
             children: [
@@ -3340,24 +3340,25 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 descendantsAreFocusable: false,
                 skipTraversal: true,
                 child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: context.isTablet ? 66 : 44),
+                  constraints: BoxConstraints(minHeight: context.isLandscapeTablet ? 38 : (context.isTablet ? 66 : 44)),
                   child: SizedBox(
                     width: double.infinity,
+                    height: context.isLandscapeTablet ? 38 : null,
                     child: ElevatedButton.icon(
                       focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFD97706),
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(context.isTablet ? 16 : 10),
+                          borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 8 : (context.isTablet ? 16 : 10)),
                         ),
                         elevation: 0,
                         padding: EdgeInsets.symmetric(
                           horizontal: context.isTablet ? 24 : 12,
-                          vertical: context.isTablet ? 16 : 8,
+                          vertical: context.isLandscapeTablet ? 4 : (context.isTablet ? 16 : 8),
                         ),
                       ),
-                      icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 28 : 20),
+                      icon: Icon(Icons.qr_code_scanner, size: context.isLandscapeTablet ? 18 : (context.isTablet ? 28 : 20)),
                       label: Flexible(
                         child: Text(
                           _selectedProduct?.hasDualSerial == true
@@ -3365,11 +3366,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
                               : 'Continuous Scan (${_selectedProduct?.model ?? "Model"})',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            fontSize: context.isTablet ? 17 : 13,
-                            height: 1.25,
+                            fontSize: context.isLandscapeTablet ? 13 : (context.isTablet ? 17 : 13),
+                            height: 1.2,
                           ),
                           textAlign: TextAlign.center,
-                          softWrap: true,
+                          maxLines: context.isLandscapeTablet ? 1 : 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       onPressed: _openContinuousScanner,
@@ -3385,8 +3387,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
         if (_lastScanFeedback != null)
           Container(
             width: double.infinity,
-            margin: EdgeInsets.symmetric(horizontal: context.isTablet ? 24 : 14, vertical: 3),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            margin: EdgeInsets.symmetric(horizontal: context.isTablet ? 24 : 14, vertical: context.isLandscapeTablet ? 1 : 3),
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: context.isLandscapeTablet ? 3 : 6),
             decoration: BoxDecoration(
               color: const Color(0xFFECFDF5),
               borderRadius: BorderRadius.circular(8),
@@ -3498,262 +3500,42 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     ],
                   ),
                 )
-              : ListView.builder(
-                  controller: _scanListScrollController,
-                  cacheExtent: 250.0,
-                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                  padding: EdgeInsets.symmetric(
-                    horizontal: context.isTablet ? 24 : 14,
-                    vertical: context.isTablet ? 8 : 4,
-                  ),
-                  itemCount: filteredItems.length,
-                  addAutomaticKeepAlives: false,
-                  addRepaintBoundaries: true,
-                  itemBuilder: (ctx, idx) {
-                    final item = filteredItems[idx];
-                    final itemProd = item.product ?? _selectedProduct;
-
-                    return Container(
-                      key: ValueKey(item.serialNumber),
-                      margin: EdgeInsets.only(bottom: context.isTablet ? 10 : 6),
+              : context.isLandscapeTablet
+                  ? GridView.builder(
+                      controller: _scanListScrollController,
+                      cacheExtent: 250.0,
+                      physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        childAspectRatio: 4.8,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 5,
+                      ),
+                      itemCount: filteredItems.length,
+                      addAutomaticKeepAlives: false,
+                      addRepaintBoundaries: true,
+                      itemBuilder: (ctx, idx) => _buildOutwardItemCard(filteredItems[idx]),
+                    )
+                  : ListView.builder(
+                      controller: _scanListScrollController,
+                      cacheExtent: 250.0,
+                      physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
                       padding: EdgeInsets.symmetric(
-                        horizontal: context.isTablet ? 18 : 12,
-                        vertical: context.isTablet ? 14 : 8,
+                        horizontal: context.isTablet ? 24 : 14,
+                        vertical: context.isTablet ? 8 : 4,
                       ),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(context.isTablet ? 14 : 10),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                        boxShadow: context.isTablet
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.02),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 2),
-                                )
-                              ]
-                            : null,
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Row 1: Index Number + Prominent Serial Number + Status Pill + Delete button
-                          Row(
-                            children: [
-                              Container(
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: context.isTablet ? 8 : 5,
-                                  vertical: context.isTablet ? 3 : 1.5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFF1F5F9),
-                                  borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                                ),
-                                child: Text(
-                                  item.sequenceNumber > 0
-                                      ? '#${item.sequenceNumber}'
-                                      : '#${filteredItems.length - idx}',
-                                  style: TextStyle(
-                                    fontSize: context.isTablet ? 12 : 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: const Color(0xFF64748B),
-                                  ),
-                                ),
-                              ),
-                              SizedBox(width: context.isTablet ? 10 : 8),
-                              Expanded(
-                                child: Text(
-                                  item.serialNumber,
-                                  style: TextStyle(
-                                    fontFamily: 'monospace',
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: context.isTablet ? 19 : 16,
-                                    color: const Color(0xFF0F172A),
-                                    letterSpacing: 0.6,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              SizedBox(width: context.isTablet ? 10 : 6),
-                              Container(
-                                padding: EdgeInsets.symmetric(
-                                  horizontal: context.isTablet ? 10 : 6,
-                                  vertical: context.isTablet ? 4 : 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: item.isFlaggedForReview
-                                      ? const Color(0xFFFFFBEB)
-                                      : item.isMatched
-                                          ? const Color(0xFFECFDF5)
-                                          : const Color(0xFFF1F5F9),
-                                  borderRadius: BorderRadius.circular(context.isTablet ? 7 : 5),
-                                  border: Border.all(
-                                    color: item.isFlaggedForReview
-                                        ? const Color(0xFFFDE68A)
-                                        : item.isMatched
-                                            ? const Color(0xFFA7F3D0)
-                                            : const Color(0xFFE2E8F0),
-                                  ),
-                                ),
-                                child: Text(
-                                  item.isFlaggedForReview
-                                      ? 'Flagged'
-                                      : item.isMatched
-                                          ? 'Matched'
-                                          : 'Recorded only',
-                                  style: TextStyle(
-                                    fontSize: context.isTablet ? 12 : 9.5,
-                                    fontWeight: FontWeight.bold,
-                                    color: item.isFlaggedForReview
-                                        ? const Color(0xFFB45309)
-                                        : item.isMatched
-                                            ? const Color(0xFF065F46)
-                                            : const Color(0xFF475569),
-                                  ),
-                                ),
-                              ),
-                              SizedBox(width: context.isTablet ? 6 : 4),
-                              InkWell(
-                                borderRadius: BorderRadius.circular(16),
-                                onTap: () {
-                                  setState(() {
-                                    _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
-                                    _scannedSerialSet.remove(item.serialNumber);
-                                  });
-                                },
-                                child: Padding(
-                                  padding: const EdgeInsets.all(4),
-                                  child: Icon(Icons.close, size: context.isTablet ? 22 : 16, color: const Color(0xFF94A3B8)),
-                                ),
-                              ),
-                            ],
-                          ),
-
-                          // Row 2: Product Model Pill & Unit Type Badge
-                          if (itemProd != null || item.unitType != null) ...[
-                            SizedBox(height: context.isTablet ? 8 : 5),
-                            Row(
-                              children: [
-                                if (itemProd != null)
-                                  Container(
-                                    padding: EdgeInsets.symmetric(
-                                      horizontal: context.isTablet ? 10 : 6,
-                                      vertical: context.isTablet ? 4 : 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFEEF2FF),
-                                      borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                                      border: Border.all(color: const Color(0xFFC7D2FE)),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.devices, size: context.isTablet ? 14 : 11, color: const Color(0xFF4F46E5)),
-                                        SizedBox(width: context.isTablet ? 6 : 4),
-                                        ConstrainedBox(
-                                          constraints: BoxConstraints(maxWidth: context.isTablet ? 320 : 160),
-                                          child: Text(
-                                            '${itemProd.brand} • ${itemProd.model}',
-                                            style: TextStyle(
-                                              fontSize: context.isTablet ? 12.5 : 10,
-                                              fontWeight: FontWeight.w600,
-                                              color: const Color(0xFF4F46E5),
-                                            ),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                if (item.unitType != null) ...[
-                                  SizedBox(width: context.isTablet ? 8 : 5),
-                                  InkWell(
-                                    borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                                    onTap: () {
-                                      setState(() {
-                                        item.unitType = (item.unitType == 'indoor') ? 'outdoor' : 'indoor';
-                                      });
-                                      ScaffoldMessenger.of(context).removeCurrentSnackBar();
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                            '${item.serialNumber} toggled to ${item.unitType!.toUpperCase()}',
-                                            style: const TextStyle(fontWeight: FontWeight.w600),
-                                          ),
-                                          duration: const Duration(seconds: 1),
-                                          behavior: SnackBarBehavior.floating,
-                                        ),
-                                      );
-                                    },
-                                    child: Container(
-                                      padding: EdgeInsets.symmetric(
-                                        horizontal: context.isTablet ? 10 : 6,
-                                        vertical: context.isTablet ? 4 : 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: item.unitType == 'indoor'
-                                            ? const Color(0xFFEEF2FF)
-                                            : const Color(0xFFF0FDFA),
-                                        borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                                        border: Border.all(
-                                          color: item.unitType == 'indoor'
-                                              ? const Color(0xFFC7D2FE)
-                                              : const Color(0xFF99F6E4),
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
-                                            style: TextStyle(
-                                              fontSize: context.isTablet ? 12 : 9.5,
-                                              fontWeight: FontWeight.bold,
-                                              color: item.unitType == 'indoor'
-                                                  ? const Color(0xFF3C3489)
-                                                  : const Color(0xFF0D9488),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Icon(
-                                            Icons.swap_vert,
-                                            size: context.isTablet ? 14 : 11,
-                                            color: item.unitType == 'indoor'
-                                                ? const Color(0xFF3C3489)
-                                                : const Color(0xFF0D9488),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ],
-
-                          // Row 3: Only show if flagged with warning
-                          if (item.isFlaggedForReview && item.warningMessage != null && item.warningMessage!.isNotEmpty) ...[
-                            SizedBox(height: context.isTablet ? 6 : 3),
-                            Text(
-                              item.warningMessage!,
-                              style: TextStyle(
-                                fontSize: context.isTablet ? 12 : 10,
-                                fontWeight: FontWeight.w500,
-                                color: const Color(0xFFD97706),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                      itemCount: filteredItems.length,
+                      addAutomaticKeepAlives: false,
+                      addRepaintBoundaries: true,
+                      itemBuilder: (ctx, idx) => _buildOutwardItemCard(filteredItems[idx]),
+                    ),
         ),
 
         // Bottom submit
         if (_scannedItems.isNotEmpty)
           Container(
-            padding: EdgeInsets.all(context.isTablet ? 24 : 16),
+            padding: EdgeInsets.all(context.isLandscapeTablet ? 8 : (context.isTablet ? 24 : 16)),
             decoration: const BoxDecoration(
               color: Colors.white,
               border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
@@ -3761,14 +3543,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
             child: SafeArea(
               child: SizedBox(
                 width: double.infinity,
-                height: context.isTablet ? 64 : 50,
+                height: context.isLandscapeTablet ? 42 : (context.isTablet ? 64 : 50),
                 child: ElevatedButton(
                   focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1E1B4B),
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(context.isTablet ? 16 : 14),
+                      borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 10 : (context.isTablet ? 16 : 14)),
                     ),
                     elevation: 0,
                   ),
@@ -3781,7 +3563,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                               : 'Submit Dispatch (${_scannedItems.length} Serials)',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
-                            fontSize: context.isTablet ? 17 : 14,
+                            fontSize: context.isLandscapeTablet ? 14 : (context.isTablet ? 17 : 14),
                           ),
                         ),
                 ),
@@ -3792,4 +3574,230 @@ class _OutwardScreenState extends State<OutwardScreen> {
     ),
   );
 }
+
+  Widget _buildOutwardItemCard(OutwardScanResult item) {
+    final itemProd = item.product ?? _selectedProduct;
+
+    return Container(
+      key: ValueKey(item.serialNumber),
+      margin: EdgeInsets.only(bottom: context.isLandscapeTablet ? 2 : (context.isTablet ? 10 : 6)),
+      padding: EdgeInsets.symmetric(
+        horizontal: context.isLandscapeTablet ? 10 : (context.isTablet ? 18 : 12),
+        vertical: context.isLandscapeTablet ? 6 : (context.isTablet ? 14 : 8),
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 8 : (context.isTablet ? 14 : 10)),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: context.isTablet && !context.isLandscapeTablet
+            ? [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                )
+              ]
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // Row 1: Index Number + Prominent Serial Number + Status Pill + Delete button
+          Row(
+            children: [
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: context.isTablet ? 8 : 5,
+                  vertical: context.isTablet ? 3 : 1.5,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                ),
+                child: Text(
+                  '#${item.sequenceNumber}',
+                  style: TextStyle(
+                    fontSize: context.isLandscapeTablet ? 10 : (context.isTablet ? 12 : 9.5),
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF64748B),
+                  ),
+                ),
+              ),
+              SizedBox(width: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 8)),
+              Expanded(
+                child: Text(
+                  item.serialNumber,
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.bold,
+                    fontSize: context.isLandscapeTablet ? 13.5 : (context.isTablet ? 16 : 14),
+                    color: const Color(0xFF0F172A),
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              // Matched or Recorded Status Pill
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
+                  vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
+                ),
+                decoration: BoxDecoration(
+                  color: item.isMatched ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
+                  borderRadius: BorderRadius.circular(context.isTablet ? 8 : 4),
+                  border: Border.all(
+                    color: item.isMatched ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
+                  ),
+                ),
+                child: Text(
+                  item.isMatched ? 'Matched' : 'New Serial',
+                  style: TextStyle(
+                    fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 11.5 : 9.5),
+                    fontWeight: FontWeight.bold,
+                    color: item.isMatched ? const Color(0xFF065F46) : const Color(0xFFB45309),
+                  ),
+                ),
+              ),
+              SizedBox(width: context.isLandscapeTablet ? 4 : (context.isTablet ? 8 : 4)),
+              // Delete Button
+              InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () {
+                  setState(() {
+                    _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
+                    _scannedSerialSet.remove(item.serialNumber);
+                  });
+                },
+                child: Padding(
+                  padding: EdgeInsets.all(context.isLandscapeTablet ? 2 : (context.isTablet ? 6 : 4)),
+                  child: Icon(
+                    Icons.close,
+                    size: context.isLandscapeTablet ? 17 : (context.isTablet ? 20 : 16),
+                    color: const Color(0xFF94A3B8),
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // Row 2: Product Model Tag + Unit Type (Indoor/Outdoor) toggle button
+          if (itemProd != null || item.unitType != null) ...[
+            SizedBox(height: context.isLandscapeTablet ? 2 : (context.isTablet ? 8 : 4)),
+            Row(
+              children: [
+                if (itemProd != null)
+                  Container(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
+                      vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF8FAFC),
+                      borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.devices, size: context.isLandscapeTablet ? 11 : (context.isTablet ? 14 : 11), color: const Color(0xFF4F46E5)),
+                        SizedBox(width: context.isTablet ? 6 : 4),
+                        ConstrainedBox(
+                          constraints: BoxConstraints(maxWidth: context.isTablet ? 320 : 160),
+                          child: Text(
+                            '${itemProd.brand} • ${itemProd.model}',
+                            style: TextStyle(
+                              fontSize: context.isLandscapeTablet ? 10 : (context.isTablet ? 12.5 : 10),
+                              fontWeight: FontWeight.w600,
+                              color: const Color(0xFF4F46E5),
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (item.unitType != null) ...[
+                  SizedBox(width: context.isTablet ? 8 : 5),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                    onTap: () {
+                      setState(() {
+                        item.unitType = (item.unitType == 'indoor') ? 'outdoor' : 'indoor';
+                      });
+                      ScaffoldMessenger.of(context).removeCurrentSnackBar();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            '${item.serialNumber} toggled to ${item.unitType!.toUpperCase()}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          duration: const Duration(seconds: 1),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    },
+                    child: Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
+                        vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
+                      ),
+                      decoration: BoxDecoration(
+                        color: item.unitType == 'indoor'
+                            ? const Color(0xFFEEF2FF)
+                            : const Color(0xFFF0FDFA),
+                        borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                        border: Border.all(
+                          color: item.unitType == 'indoor'
+                              ? const Color(0xFFC7D2FE)
+                              : const Color(0xFF99F6E4),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                            style: TextStyle(
+                              fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 12 : 9.5),
+                              fontWeight: FontWeight.bold,
+                              color: item.unitType == 'indoor'
+                                  ? const Color(0xFF3C3489)
+                                  : const Color(0xFF0D9488),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Icon(
+                            Icons.swap_vert,
+                            size: context.isLandscapeTablet ? 11 : (context.isTablet ? 14 : 11),
+                            color: item.unitType == 'indoor'
+                                ? const Color(0xFF3C3489)
+                                : const Color(0xFF0D9488),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+
+          // Row 3: Only show if flagged with warning
+          if (item.isFlaggedForReview && item.warningMessage != null && item.warningMessage!.isNotEmpty) ...[
+            SizedBox(height: context.isTablet ? 6 : 3),
+            Text(
+              item.warningMessage!,
+              style: TextStyle(
+                fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 12 : 10),
+                fontWeight: FontWeight.w500,
+                color: const Color(0xFFD97706),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

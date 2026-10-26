@@ -567,6 +567,16 @@ async def update_serial_status(
 
     await db.commit()
 
+    # Real-time WebSocket broadcast so connected tablets/clients update immediately
+    await ws_manager.broadcast("serial_updated", {
+        "serial": sn.serial_number,
+        "product_id": str(sn.product_id),
+        "status": req.new_status.value,
+        "is_damaged": (req.new_status == SerialStatus.damaged),
+        "is_dispatched": (req.new_status == SerialStatus.dispatched),
+    })
+    await ws_manager.broadcast("stock_updated", {"product_id": str(sn.product_id)})
+
     # Re-fetch for response
     return await lookup_serial(serial_number=sn.serial_number, current_user=current_user, db=db)
 

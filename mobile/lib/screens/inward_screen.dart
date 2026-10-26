@@ -6,7 +6,6 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
-import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
@@ -502,7 +501,7 @@ class _InwardScreenState extends State<InwardScreen> {
 
     try {
       // =========================================================================
-      // CASE 1: STOCK IN (Direct from Company) - 0ms INSTANT LOCAL FAST-PATH
+      // CASE 1: STOCK IN (Direct from Company)
       // =========================================================================
       if (_inwardType == 'stock_in') {
         if (_selectedProduct == null) {
@@ -510,15 +509,35 @@ class _InwardScreenState extends State<InwardScreen> {
           return;
         }
 
-        // Fast in-memory check against local godown inventory snapshot in 0ms:
-        final localEntry = OfflineManager().serials[cleanSerial];
-        if (localEntry != null && localEntry['st'] == 'available') {
+        final Map<String, dynamic> result;
+        try {
+          result = await _api.validateInwardSerial(
+            _selectedProduct!.id,
+            cleanSerial,
+            inwardType: 'stock_in',
+          );
+        } catch (e) {
+          final errStr = e.toString().replaceAll('Exception:', '').trim();
           HapticFeedback.heavyImpact();
           SoundService().playErrorSound();
-          _showWarningDialog(
-            'Already in Stock',
-            'Serial "$cleanSerial" is already registered in godown inventory as available (${localEntry['m'] ?? ""}).',
-          );
+          _showWarningDialog('Validation Error', errStr);
+          return;
+        }
+
+        final bool isValid = result['is_valid'] ?? true;
+        final String? message = result['message'];
+
+        if (!isValid) {
+          HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
+          if (mounted) {
+            TopToast.show(
+              context,
+              message: message ?? 'Cannot register serial "$cleanSerial"',
+              backgroundColor: const Color(0xFFDC2626),
+            );
+          }
+          _showWarningDialog('Already in Stock', message ?? 'Serial "$cleanSerial" cannot be registered as available.');
           return;
         }
 
@@ -526,7 +545,7 @@ class _InwardScreenState extends State<InwardScreen> {
         final String? unitType = targetProduct.hasDualSerial ? _inwardUnitType : null;
         final seq = _sequenceCounter++;
 
-        // Add to batch INSTANTLY (0ms latency, zero UI freeze, stable sequence number)
+        // Add to batch
         setState(() {
           _scannedSerialSet.add(cleanSerial);
           _scannedItems.insert(
@@ -541,36 +560,27 @@ class _InwardScreenState extends State<InwardScreen> {
           );
           _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${targetProduct.brand} ${targetProduct.model}';
         });
-
-        // In stock_in mode, local 0ms memory check above already guaranteed uniqueness and stock availability.
-        // The final atomic batch submission validates all serials together on the server.
         return;
       }
 
       // =========================================================================
       // CASE 2: RETURN & DAMAGED INWARD
       // =========================================================================
-      // Fast check local snapshot first (0ms)
-      Map<String, dynamic>? rawResult;
-      if (OfflineManager().serials.containsKey(cleanSerial)) {
-        rawResult = OfflineManager().validateInwardSerialOffline(null, cleanSerial, inwardType: _inwardType);
+      // Network is #1 priority! Query server validate-serial first with offline fallback
+      final Map<String, dynamic> result;
+      try {
+        result = await _api.validateInwardSerial(
+          null,
+          cleanSerial,
+          inwardType: _inwardType,
+        );
+      } catch (e) {
+        final errStr = e.toString().replaceAll('Exception:', '').trim();
+        HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
+        _showWarningDialog('Validation Error', errStr);
+        return;
       }
-
-      // If not in local snapshot, query backend sequentially (guaranteed 1 socket at a time)
-      if (rawResult == null || rawResult['registered_model_id'] == null) {
-        try {
-          rawResult = await _api.validateInwardSerial(
-            null,
-            cleanSerial,
-            inwardType: _inwardType,
-          );
-        } catch (_) {
-          // Handled by fallback below
-        }
-      }
-
-      final Map<String, dynamic> result = rawResult ??
-          OfflineManager().validateInwardSerialOffline(null, cleanSerial, inwardType: _inwardType);
 
       final bool isValid = result['is_valid'] ?? true;
       final String? message = result['message'];
@@ -2230,9 +2240,9 @@ class _InwardScreenState extends State<InwardScreen> {
         Padding(
           padding: EdgeInsets.fromLTRB(
             context.isTablet ? 28 : 16,
-            context.isTablet ? 22 : 16,
+            context.isLandscapeTablet ? 4 : (context.isTablet ? 22 : 16),
             context.isTablet ? 28 : 16,
-            context.isTablet ? 12 : 8,
+            context.isLandscapeTablet ? 4 : (context.isTablet ? 12 : 8),
           ),
           child: Column(
             children: [
@@ -2242,25 +2252,26 @@ class _InwardScreenState extends State<InwardScreen> {
                 skipTraversal: true,
                 child: SizedBox(
                   width: double.infinity,
-                  height: context.isTablet ? 64 : 52,
+                  height: context.isLandscapeTablet ? 40 : (context.isTablet ? 64 : 52),
                   child: ElevatedButton.icon(
                     focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1E1B4B),
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(context.isTablet ? 18 : 14),
+                        borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 10 : (context.isTablet ? 18 : 14)),
                       ),
                       elevation: 1,
+                      padding: context.isLandscapeTablet ? const EdgeInsets.symmetric(horizontal: 16) : null,
                     ),
-                    icon: Icon(Icons.qr_code_scanner, size: context.isTablet ? 26 : 22),
+                    icon: Icon(Icons.qr_code_scanner, size: context.isLandscapeTablet ? 18 : (context.isTablet ? 26 : 22)),
                     label: Text(
                       _inwardType == 'stock_in'
                           ? 'Scan Barcode (${_selectedProduct?.model ?? ''})'
                           : 'Open Barcode Scanner (${_getInwardTypeShort(_inwardType)})',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: context.isTablet ? 16 : 14,
+                        fontSize: context.isLandscapeTablet ? 13.5 : (context.isTablet ? 16 : 14),
                       ),
                     ),
                     onPressed: _openScanner,
@@ -2275,8 +2286,8 @@ class _InwardScreenState extends State<InwardScreen> {
         if (_lastScanFeedback != null)
           Container(
             width: double.infinity,
-            margin: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16, vertical: 2),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            margin: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16, vertical: context.isLandscapeTablet ? 1 : 2),
+            padding: EdgeInsets.symmetric(horizontal: 12, vertical: context.isLandscapeTablet ? 3 : 6),
             decoration: BoxDecoration(
               color: const Color(0xFFECFDF5),
               borderRadius: BorderRadius.circular(8),
@@ -2365,7 +2376,7 @@ class _InwardScreenState extends State<InwardScreen> {
             ),
           ),
 
-        // Scanned Items List
+        // Scanned Items List (2-column Grid on Landscape Tablets to display much more items!)
         Expanded(
           child: _scannedItems.isEmpty
               ? Center(
@@ -2389,114 +2400,41 @@ class _InwardScreenState extends State<InwardScreen> {
                     ],
                   ),
                 )
-              : ListView.builder(
-                  key: const PageStorageKey('inward_scanned_list'),
-                  controller: _scrollController,
-                  cacheExtent: 250.0,
-                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-                  padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16),
-                  itemCount: _scannedItems.length,
-                  addAutomaticKeepAlives: false,
-                  addRepaintBoundaries: true,
-                  itemBuilder: (ctx, idx) {
-                    final item = _scannedItems[idx];
-                    return RepaintBoundary(
-                      key: ValueKey(item.serialNumber),
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 6),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: const Color(0xFFE2E8F0)),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFF1F5F9),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                '#${item.sequenceNumber}',
-                                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    item.serialNumber,
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15,
-                                      color: Color(0xFF0F172A),
-                                      letterSpacing: 0.5,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    '${item.product.brand} • ${item.product.model}',
-                                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            if (item.unitType != null) ...[
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: item.unitType == 'indoor' ? const Color(0xFFEEF2FF) : const Color(0xFFF0FDFA),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                    color: item.unitType == 'indoor' ? const Color(0xFFC7D2FE) : const Color(0xFF99F6E4),
-                                  ),
-                                ),
-                                child: Text(
-                                  item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: item.unitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF0D9488),
-                                  ),
-                                ),
-                              ),
-                            ],
-                            const SizedBox(width: 4),
-                            InkWell(
-                              onTap: () {
-                                setState(() {
-                                  _scannedSerialSet.remove(item.serialNumber);
-                                  _scannedItems.removeAt(idx);
-                                });
-                              },
-                              borderRadius: BorderRadius.circular(16),
-                              child: const Padding(
-                                padding: EdgeInsets.all(6),
-                                child: Icon(Icons.close, size: 18, color: Color(0xFF94A3B8)),
-                              ),
-                            ),
-                          ],
-                        ),
+              : context.isLandscapeTablet
+                  ? GridView.builder(
+                      key: const PageStorageKey('inward_scanned_grid'),
+                      controller: _scrollController,
+                      cacheExtent: 250.0,
+                      physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 4),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2,
+                        childAspectRatio: 5.2,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 5,
                       ),
-                    );
-                  },
-                ),
+                      itemCount: _scannedItems.length,
+                      addAutomaticKeepAlives: false,
+                      addRepaintBoundaries: true,
+                      itemBuilder: (ctx, idx) => _buildInwardItemCard(_scannedItems[idx], idx),
+                    )
+                  : ListView.builder(
+                      key: const PageStorageKey('inward_scanned_list'),
+                      controller: _scrollController,
+                      cacheExtent: 250.0,
+                      physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                      padding: EdgeInsets.symmetric(horizontal: context.isTablet ? 28 : 16),
+                      itemCount: _scannedItems.length,
+                      addAutomaticKeepAlives: false,
+                      addRepaintBoundaries: true,
+                      itemBuilder: (ctx, idx) => _buildInwardItemCard(_scannedItems[idx], idx),
+                    ),
         ),
 
         // Bottom submit section
         if (_scannedItems.isNotEmpty)
           Container(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(context.isLandscapeTablet ? 8 : 16),
             decoration: const BoxDecoration(
               color: Colors.white,
               border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
@@ -2504,12 +2442,12 @@ class _InwardScreenState extends State<InwardScreen> {
             child: SafeArea(
               child: SizedBox(
                 width: double.infinity,
-                height: 50,
+                height: context.isLandscapeTablet ? 42 : 50,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: _getInwardTypeColor(_inwardType),
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 10 : 14)),
                     elevation: 0,
                   ),
                   onPressed: _submitting ? null : _onPressSaveInward,
@@ -2532,6 +2470,98 @@ class _InwardScreenState extends State<InwardScreen> {
     );
   }
 
+  Widget _buildInwardItemCard(InwardScannedItem item, int idx) {
+    return RepaintBoundary(
+      key: ValueKey(item.serialNumber),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                '#${item.sequenceNumber}',
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    item.serialNumber,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13.5,
+                      color: Color(0xFF0F172A),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${item.product.brand} • ${item.product.model}',
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            if (item.unitType != null) ...[
+              const SizedBox(width: 5),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: item.unitType == 'indoor' ? const Color(0xFFEEF2FF) : const Color(0xFFF0FDFA),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: item.unitType == 'indoor' ? const Color(0xFFC7D2FE) : const Color(0xFF99F6E4),
+                  ),
+                ),
+                child: Text(
+                  item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.bold,
+                    color: item.unitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF0D9488),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(width: 4),
+            InkWell(
+              onTap: () {
+                setState(() {
+                  _scannedSerialSet.remove(item.serialNumber);
+                  _scannedItems.removeAt(idx);
+                });
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: const Padding(
+                padding: EdgeInsets.all(4),
+                child: Icon(Icons.close, size: 17, color: Color(0xFF94A3B8)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildScanningHeader() {
     if (_inwardType == 'stock_in' && _selectedProduct != null) {
       final p = _selectedProduct!;
@@ -2539,7 +2569,7 @@ class _InwardScreenState extends State<InwardScreen> {
       return Container(
         width: double.infinity,
         color: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        padding: EdgeInsets.symmetric(horizontal: 20, vertical: context.isLandscapeTablet ? 6 : 14),
         child: Row(
           children: [
             Expanded(
@@ -2600,7 +2630,7 @@ class _InwardScreenState extends State<InwardScreen> {
       return Container(
         width: double.infinity,
         color: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        padding: EdgeInsets.symmetric(horizontal: 20, vertical: context.isLandscapeTablet ? 6 : 14),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -2623,13 +2653,15 @@ class _InwardScreenState extends State<InwardScreen> {
                         _getInwardTypeTitle(_inwardType),
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF0F172A)),
                       ),
-                      const SizedBox(height: 1),
-                      Text(
-                        _inwardType == 'return'
-                            ? 'Customer & Shop Return Verification'
-                            : 'Damaged & Defective Stock Quarantine',
-                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                      ),
+                      if (!context.isLandscapeTablet) ...[
+                        const SizedBox(height: 1),
+                        Text(
+                          _inwardType == 'return'
+                              ? 'Customer & Shop Return Verification'
+                              : 'Damaged & Defective Stock Quarantine',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                        ),
+                      ],
                     ],
                   ),
                 ),

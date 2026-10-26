@@ -22,6 +22,7 @@ class HardwareScannerService {
   DateTime? _lastKeystrokeTime;
   bool _initialized = false;
   bool isEnabled = true;
+  bool _scannerUsesTerminator = false;
 
   /// Number of active screen listeners registered
   int get activeListenersCount => _listeners.length;
@@ -63,10 +64,15 @@ class HardwareScannerService {
       return true;
     }
 
-    // 1. Scanner Terminator Keys (Enter, NumpadEnter, Tab)
-    if (key == LogicalKeyboardKey.enter ||
+    // 1. Scanner Terminator Keys (Enter, NumpadEnter, Tab, \r, \n)
+    final bool isTerminator = key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.tab) {
+        key == LogicalKeyboardKey.tab ||
+        event.character == '\n' ||
+        event.character == '\r';
+
+    if (isTerminator) {
+      _scannerUsesTerminator = true;
       _debounceTimer?.cancel();
       _debounceTimer = null;
 
@@ -93,9 +99,10 @@ class HardwareScannerService {
       return true; // 100% swallowed: never pop screen or go to home screen!
     }
 
-    // 3. Clear buffer if gap between characters is too long (> 800ms)
+    // 3. Clear buffer if gap between characters is too long (> 2000ms stale threshold)
+    // Avoid clearing during 500-800ms CPU spikes on low-RAM tablets
     if (_lastKeystrokeTime != null &&
-        now.difference(_lastKeystrokeTime!).inMilliseconds > 800) {
+        now.difference(_lastKeystrokeTime!).inMilliseconds > 2000) {
       _buffer.clear();
     }
     _lastKeystrokeTime = now;
@@ -105,19 +112,24 @@ class HardwareScannerService {
     if (char != null && char.isNotEmpty) {
       _buffer.write(char);
 
-      // Auto-dispatch fallback: If scanner does not send Enter,
-      // automatically dispatch 500ms after the last character in the burst.
+      // Auto-dispatch fallback: ONLY for scanners that do not send an Enter key.
+      // Once a terminator key has been observed, we disable timeout-based dispatch
+      // so CPU stalls on low-RAM devices never prematurely split a serial number!
       _debounceTimer?.cancel();
-      _debounceTimer = Timer(const Duration(milliseconds: 500), () {
-        if (_buffer.isNotEmpty) {
-          final barcode = _buffer.toString().trim();
-          _buffer.clear();
-          _lastKeystrokeTime = null;
-          if (barcode.length >= 2) {
-            _dispatchBarcode(barcode);
+      if (!_scannerUsesTerminator) {
+        _debounceTimer = Timer(const Duration(milliseconds: 1200), () {
+          if (_buffer.isNotEmpty) {
+            final barcode = _buffer.toString().trim();
+            // Require at least 6 characters for timer-based auto-dispatch to prevent
+            // chopping partial barcodes in half during heavy device load
+            if (barcode.length >= 6) {
+              _buffer.clear();
+              _lastKeystrokeTime = null;
+              _dispatchBarcode(barcode);
+            }
           }
-        }
-      });
+        });
+      }
     }
 
     // 100% SWALLOWED: All external hardware keyboard events are consumed here!
@@ -143,25 +155,29 @@ class HardwareScannerService {
 
     debugPrint('[HardwareScannerService] Scanned barcode: $barcode');
 
-    // Dismiss focus only if an active element actually holds focus, avoiding Android ViewRootImpl surface relayout
-    final currentFocus = FocusManager.instance.primaryFocus;
-    if (currentFocus != null && currentFocus.hasFocus && currentFocus.context != null) {
-      currentFocus.unfocus();
-    }
+    // Asynchronously dispatch on microtask queue so _handleKeyEvent returns
+    // true immediately to Android, unblocking Android's hardware input pipeline
+    scheduleMicrotask(() {
+      // Dismiss focus only if an active element actually holds focus, avoiding Android ViewRootImpl surface relayout
+      final currentFocus = FocusManager.instance.primaryFocus;
+      if (currentFocus != null && currentFocus.hasFocus && currentFocus.context != null) {
+        currentFocus.unfocus();
+      }
 
-    // Immediate zero-latency audio and haptic feedback
-    try {
-      SoundService().playScannerBeep();
-      HapticFeedback.lightImpact();
-    } catch (_) {}
+      // Immediate zero-latency audio and haptic feedback
+      try {
+        SoundService().playScannerBeep();
+        HapticFeedback.lightImpact();
+      } catch (_) {}
 
-    _scanStreamController.add(barcode);
+      _scanStreamController.add(barcode);
 
-    // Notify the topmost registered screen listener
-    if (_listeners.isNotEmpty) {
-      final activeListener = _listeners.last;
-      activeListener(barcode);
-    }
+      // Notify the topmost registered screen listener
+      if (_listeners.isNotEmpty) {
+        final activeListener = _listeners.last;
+        activeListener(barcode);
+      }
+    });
   }
 
   String? _extractCharacter(KeyDownEvent event) {
@@ -174,8 +190,17 @@ class HardwareScannerService {
       }
     }
 
-    // Fallbacks for common barcode characters if event.character is null
     final key = event.logicalKey;
+    // Fallback using keyLabel for alphanumeric characters if character is null
+    final label = key.keyLabel;
+    if (label.length == 1) {
+      final cu = label.codeUnitAt(0);
+      if (cu >= 32 && cu <= 126) {
+        return label;
+      }
+    }
+
+    // Fallbacks for common barcode characters if event.character is null
     if (key == LogicalKeyboardKey.minus || key == LogicalKeyboardKey.numpadSubtract) return '-';
     if (key == LogicalKeyboardKey.slash || key == LogicalKeyboardKey.numpadDivide) return '/';
     if (key == LogicalKeyboardKey.space) return ' ';
