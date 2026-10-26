@@ -24,7 +24,7 @@ class InwardScannedItem {
   final Product product;
   String? unitType; // 'indoor' or 'outdoor'
   final bool isAutoDetected;
-  final int sequenceNumber;
+  int sequenceNumber;
 
   InwardScannedItem({
     required this.serialNumber,
@@ -1567,6 +1567,8 @@ class _InwardScreenState extends State<InwardScreen> {
         if (removeAndRetry == true) {
           setState(() {
             _scannedItems.removeWhere((it) => it.serialNumber == conflictedSerial);
+            _scannedSerialSet.remove(conflictedSerial);
+            _reindexScannedItems();
           });
           _submitInwardBatch();
           return;
@@ -2470,93 +2472,120 @@ class _InwardScreenState extends State<InwardScreen> {
     );
   }
 
+  void _reindexScannedItems() {
+    final total = _scannedItems.length;
+    for (int i = 0; i < total; i++) {
+      _scannedItems[i].sequenceNumber = total - i;
+    }
+    _sequenceCounter = total + 1;
+  }
+
   Widget _buildInwardItemCard(InwardScannedItem item, int idx) {
-    return RepaintBoundary(
-      key: ValueKey(item.serialNumber),
-      child: Container(
+    return Dismissible(
+      key: ValueKey('inward_${item.serialNumber}'),
+      direction: DismissDirection.endToStart,
+      background: const SizedBox.shrink(),
+      secondaryBackground: Container(
         margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: const Color(0xFFEF4444),
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
         ),
-        child: Row(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF1F5F9),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                '#${item.sequenceNumber}',
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
-              ),
+            Text(
+              'Delete',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    item.serialNumber,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13.5,
-                      color: Color(0xFF0F172A),
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    '${item.product.brand} • ${item.product.model}',
-                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-            if (item.unitType != null) ...[
-              const SizedBox(width: 5),
+            SizedBox(width: 6),
+            Icon(Icons.delete_outline_rounded, color: Colors.white, size: 20),
+          ],
+        ),
+      ),
+      onDismissed: (_) {
+        HapticFeedback.mediumImpact();
+        setState(() {
+          _scannedSerialSet.remove(item.serialNumber);
+          _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
+          _reindexScannedItems();
+        });
+      },
+      child: RepaintBoundary(
+        key: ValueKey(item.serialNumber),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: Row(
+            children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: item.unitType == 'indoor' ? const Color(0xFFEEF2FF) : const Color(0xFFF0FDFA),
+                  color: const Color(0xFFF1F5F9),
                   borderRadius: BorderRadius.circular(4),
-                  border: Border.all(
-                    color: item.unitType == 'indoor' ? const Color(0xFFC7D2FE) : const Color(0xFF99F6E4),
-                  ),
                 ),
                 child: Text(
-                  item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
-                  style: TextStyle(
-                    fontSize: 9.5,
-                    fontWeight: FontWeight.bold,
-                    color: item.unitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF0D9488),
-                  ),
+                  '#${item.sequenceNumber}',
+                  style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
                 ),
               ),
-            ],
-            const SizedBox(width: 4),
-            InkWell(
-              onTap: () {
-                setState(() {
-                  _scannedSerialSet.remove(item.serialNumber);
-                  _scannedItems.removeAt(idx);
-                });
-              },
-              borderRadius: BorderRadius.circular(16),
-              child: const Padding(
-                padding: EdgeInsets.all(4),
-                child: Icon(Icons.close, size: 17, color: Color(0xFF94A3B8)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      item.serialNumber,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13.5,
+                        color: Color(0xFF0F172A),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${item.product.brand} • ${item.product.model}',
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              if (item.unitType != null) ...[
+                const SizedBox(width: 5),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: item.unitType == 'indoor' ? const Color(0xFFEEF2FF) : const Color(0xFFF0FDFA),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: item.unitType == 'indoor' ? const Color(0xFFC7D2FE) : const Color(0xFF99F6E4),
+                    ),
+                  ),
+                  child: Text(
+                    item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.bold,
+                      color: item.unitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF0D9488),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

@@ -22,7 +22,7 @@ class HardwareScannerService {
   DateTime? _lastKeystrokeTime;
   bool _initialized = false;
   bool isEnabled = true;
-  bool _scannerUsesTerminator = false;
+  bool _scannerUsesTerminator = true;
 
   /// Number of active screen listeners registered
   int get activeListenersCount => _listeners.length;
@@ -34,14 +34,24 @@ class HardwareScannerService {
     debugPrint('[HardwareScannerService] Initialized - listening for Bluetooth/USB barcode scanners');
   }
 
+  /// Clears any pending or partial keystroke buffer
+  void clearBuffer() {
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    _buffer.clear();
+    _lastKeystrokeTime = null;
+  }
+
   /// Register a listener on the stack. The top-most active screen or widget
   /// receives the scanned barcode.
   /// Returns a function to unregister this listener when the screen is disposed.
   VoidCallback registerListener(BarcodeScanCallback callback) {
     init(); // Ensure handler is active
+    clearBuffer(); // Clean slate whenever a screen registers to prevent first-scan corruption
     _listeners.add(callback);
     return () {
       _listeners.remove(callback);
+      clearBuffer();
     };
   }
 

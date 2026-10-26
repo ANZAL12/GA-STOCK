@@ -2262,6 +2262,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
         if (removeAndRetry == true) {
           setState(() {
             _scannedItems.removeWhere((i) => i.serialNumber == conflictedSerial);
+            _scannedSerialSet.remove(conflictedSerial);
+            _reindexScannedItems();
           });
           _submitOutwardBatch();
           return;
@@ -3575,112 +3577,133 @@ class _OutwardScreenState extends State<OutwardScreen> {
   );
 }
 
+  void _reindexScannedItems() {
+    final total = _scannedItems.length;
+    for (int i = 0; i < total; i++) {
+      _scannedItems[i].sequenceNumber = total - i;
+    }
+    _sequenceCounter = total + 1;
+  }
+
   Widget _buildOutwardItemCard(OutwardScanResult item) {
     final itemProd = item.product ?? _selectedProduct;
 
-    return Container(
-      key: ValueKey(item.serialNumber),
-      margin: EdgeInsets.only(bottom: context.isLandscapeTablet ? 2 : (context.isTablet ? 10 : 6)),
-      padding: EdgeInsets.symmetric(
-        horizontal: context.isLandscapeTablet ? 10 : (context.isTablet ? 18 : 12),
-        vertical: context.isLandscapeTablet ? 6 : (context.isTablet ? 14 : 8),
+    return Dismissible(
+      key: ValueKey('outward_${item.serialNumber}'),
+      direction: DismissDirection.endToStart,
+      background: const SizedBox.shrink(),
+      secondaryBackground: Container(
+        margin: EdgeInsets.only(bottom: context.isLandscapeTablet ? 2 : (context.isTablet ? 10 : 6)),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEF4444),
+          borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 8 : (context.isTablet ? 14 : 10)),
+        ),
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Delete',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+            ),
+            SizedBox(width: 6),
+            Icon(Icons.delete_outline_rounded, color: Colors.white, size: 20),
+          ],
+        ),
       ),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 8 : (context.isTablet ? 14 : 10)),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-        boxShadow: context.isTablet && !context.isLandscapeTablet
-            ? [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.02),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                )
-              ]
-            : null,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Row 1: Index Number + Prominent Serial Number + Status Pill + Delete button
-          Row(
-            children: [
-              Container(
-                padding: EdgeInsets.symmetric(
-                  horizontal: context.isTablet ? 8 : 5,
-                  vertical: context.isTablet ? 3 : 1.5,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                ),
-                child: Text(
-                  '#${item.sequenceNumber}',
-                  style: TextStyle(
-                    fontSize: context.isLandscapeTablet ? 10 : (context.isTablet ? 12 : 9.5),
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF64748B),
+      onDismissed: (_) {
+        HapticFeedback.mediumImpact();
+        setState(() {
+          _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
+          _scannedSerialSet.remove(item.serialNumber);
+          _reindexScannedItems();
+        });
+      },
+      child: Container(
+        key: ValueKey(item.serialNumber),
+        margin: EdgeInsets.only(bottom: context.isLandscapeTablet ? 2 : (context.isTablet ? 10 : 6)),
+        padding: EdgeInsets.symmetric(
+          horizontal: context.isLandscapeTablet ? 10 : (context.isTablet ? 18 : 12),
+          vertical: context.isLandscapeTablet ? 6 : (context.isTablet ? 14 : 8),
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(context.isLandscapeTablet ? 8 : (context.isTablet ? 14 : 10)),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+          boxShadow: context.isTablet && !context.isLandscapeTablet
+              ? [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.02),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  )
+                ]
+              : null,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            // Row 1: Index Number + Prominent Serial Number + Status Pill
+            Row(
+              children: [
+                Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: context.isTablet ? 8 : 5,
+                    vertical: context.isTablet ? 3 : 1.5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF1F5F9),
+                    borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                  ),
+                  child: Text(
+                    '#${item.sequenceNumber}',
+                    style: TextStyle(
+                      fontSize: context.isLandscapeTablet ? 10 : (context.isTablet ? 12 : 9.5),
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF64748B),
+                    ),
                   ),
                 ),
-              ),
-              SizedBox(width: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 8)),
-              Expanded(
-                child: Text(
-                  item.serialNumber,
-                  style: TextStyle(
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.bold,
-                    fontSize: context.isLandscapeTablet ? 13.5 : (context.isTablet ? 16 : 14),
-                    color: const Color(0xFF0F172A),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              // Matched or Recorded Status Pill
-              Container(
-                padding: EdgeInsets.symmetric(
-                  horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
-                  vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
-                ),
-                decoration: BoxDecoration(
-                  color: item.isMatched ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
-                  borderRadius: BorderRadius.circular(context.isTablet ? 8 : 4),
-                  border: Border.all(
-                    color: item.isMatched ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
+                SizedBox(width: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 8)),
+                Expanded(
+                  child: Text(
+                    item.serialNumber,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontWeight: FontWeight.bold,
+                      fontSize: context.isLandscapeTablet ? 13.5 : (context.isTablet ? 16 : 14),
+                      color: const Color(0xFF0F172A),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                child: Text(
-                  item.isMatched ? 'Matched' : 'New Serial',
-                  style: TextStyle(
-                    fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 11.5 : 9.5),
-                    fontWeight: FontWeight.bold,
-                    color: item.isMatched ? const Color(0xFF065F46) : const Color(0xFFB45309),
+                // Matched or Recorded Status Pill
+                Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
+                    vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
+                  ),
+                  decoration: BoxDecoration(
+                    color: item.isMatched ? const Color(0xFFECFDF5) : const Color(0xFFFFFBEB),
+                    borderRadius: BorderRadius.circular(context.isTablet ? 8 : 4),
+                    border: Border.all(
+                      color: item.isMatched ? const Color(0xFFA7F3D0) : const Color(0xFFFDE68A),
+                    ),
+                  ),
+                  child: Text(
+                    item.isMatched ? 'Matched' : 'New Serial',
+                    style: TextStyle(
+                      fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 11.5 : 9.5),
+                      fontWeight: FontWeight.bold,
+                      color: item.isMatched ? const Color(0xFF065F46) : const Color(0xFFB45309),
+                    ),
                   ),
                 ),
-              ),
-              SizedBox(width: context.isLandscapeTablet ? 4 : (context.isTablet ? 8 : 4)),
-              // Delete Button
-              InkWell(
-                borderRadius: BorderRadius.circular(20),
-                onTap: () {
-                  setState(() {
-                    _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
-                    _scannedSerialSet.remove(item.serialNumber);
-                  });
-                },
-                child: Padding(
-                  padding: EdgeInsets.all(context.isLandscapeTablet ? 2 : (context.isTablet ? 6 : 4)),
-                  child: Icon(
-                    Icons.close,
-                    size: context.isLandscapeTablet ? 17 : (context.isTablet ? 20 : 16),
-                    color: const Color(0xFF94A3B8),
-                  ),
-                ),
-              ),
-            ],
-          ),
+              ],
+            ),
 
           // Row 2: Product Model Tag + Unit Type (Indoor/Outdoor) toggle button
           if (itemProd != null || item.unitType != null) ...[
@@ -3798,6 +3821,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           ],
         ],
       ),
+    ),
     );
   }
 }
