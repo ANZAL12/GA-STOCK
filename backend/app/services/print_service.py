@@ -14,12 +14,13 @@ logger = logging.getLogger(__name__)
 win32print = None
 win32ui = None
 win32con = None
+win32gui = None
 pymupdf = None
 Image = None
 ImageWin = None
 
 def _ensure_win32():
-    global win32print, win32ui, win32con, pymupdf, Image, ImageWin
+    global win32print, win32ui, win32con, win32gui, pymupdf, Image, ImageWin
     if sys.platform != "win32":
         return
     for p in list(sys.path):
@@ -46,6 +47,16 @@ def _ensure_win32():
             import win32ui
     except Exception as e:
         logger.debug(f"win32ui load error: {e}")
+    try:
+        if win32con is None:
+            import win32con
+    except Exception as e:
+        logger.debug(f"win32con load error: {e}")
+    try:
+        if win32gui is None:
+            import win32gui
+    except Exception as e:
+        logger.debug(f"win32gui load error: {e}")
     try:
         if pymupdf is None:
             import pymupdf
@@ -153,6 +164,7 @@ class PrintService:
     def _print_pdf_gdi(cls, pdf_bytes: bytes, printer_name: str, job_name: str) -> int:
         """
         Renders PDF pages and spools them directly to the Windows printer DC using GDI.
+        Configures DEVMODE explicitly for A4 (PaperSize 9) to ensure 100% true-to-scale fit.
         Returns the number of pages printed.
         """
         _ensure_win32()
@@ -164,38 +176,98 @@ class PrintService:
         if page_count == 0:
             raise ValueError("The provided PDF has no pages to print.")
 
-        hDC = win32ui.CreateDC()
-        hDC.CreatePrinterDC(printer_name)
+        hprinter = None
+        hdc_handle = None
+        hDC = None
+
+        # 1. Enforce A4 PaperSize and Portrait orientation on the printer DC
+        if win32print is not None and win32gui is not None and win32con is not None:
+            try:
+                hprinter = win32print.OpenPrinter(printer_name)
+                devmode = win32print.GetPrinter(hprinter, 2).get("pDevMode")
+                if devmode is not None:
+                    devmode.PaperSize = win32con.DMPAPER_A4
+                    devmode.Orientation = win32con.DMORIENT_PORTRAIT
+                    devmode.Fields |= win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION
+                hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, devmode)
+                hDC = win32ui.CreateDCFromHandle(hdc_handle)
+            except Exception as e:
+                logger.warning(f"Could not set A4 DEVMODE DC for '{printer_name}': {e}. Using default DC.")
+                if hdc_handle:
+                    try:
+                        win32gui.DeleteDC(hdc_handle)
+                    except Exception:
+                        pass
+                hdc_handle = None
+                hDC = None
+            finally:
+                if hprinter:
+                    try:
+                        win32print.ClosePrinter(hprinter)
+                    except Exception:
+                        pass
+
+        if hDC is None:
+            hDC = win32ui.CreateDC()
+            hDC.CreatePrinterDC(printer_name)
 
         try:
-            # Printable resolution
+            # Device capabilities
             HORZRES = 8
             VERTRES = 10
-            printable_width = hDC.GetDeviceCaps(HORZRES)
-            printable_height = hDC.GetDeviceCaps(VERTRES)
+            PHYSICALWIDTH = 110
+            PHYSICALHEIGHT = 111
+            PHYSICALOFFSETX = 112
+            PHYSICALOFFSETY = 113
+
+            printable_w = hDC.GetDeviceCaps(HORZRES)
+            printable_h = hDC.GetDeviceCaps(VERTRES)
+            phys_w = hDC.GetDeviceCaps(PHYSICALWIDTH)
+            phys_h = hDC.GetDeviceCaps(PHYSICALHEIGHT)
+            offset_x = hDC.GetDeviceCaps(PHYSICALOFFSETX)
+            offset_y = hDC.GetDeviceCaps(PHYSICALOFFSETY)
+
+            # Map coordinates to the physical A4 sheet boundaries
+            if phys_w > 0 and phys_h > 0:
+                base_x = -offset_x
+                base_y = -offset_y
+                base_w = phys_w
+                base_h = phys_h
+            else:
+                base_x = 0
+                base_y = 0
+                base_w = printable_w
+                base_h = printable_h
+
+            sheet_aspect = base_w / max(base_h, 1)
 
             hDC.StartDoc(job_name[:31])
 
             for page_idx in range(page_count):
                 page = doc[page_idx]
-                # Render at 300 DPI for high laser print clarity
+                page_rect = page.rect
+                page_aspect = page_rect.width / max(page_rect.height, 1)
+
+                # If aspect ratio matches physical A4 within 2.5%, fill true A4 sheet
+                if abs(page_aspect - sheet_aspect) / sheet_aspect < 0.025:
+                    dest_x = base_x
+                    dest_y = base_y
+                    dest_w = base_w
+                    dest_h = base_h
+                elif page_aspect > sheet_aspect:
+                    dest_w = base_w
+                    dest_h = int(base_w / page_aspect)
+                    dest_x = base_x
+                    dest_y = base_y + (base_h - dest_h) // 2
+                else:
+                    dest_h = base_h
+                    dest_w = int(base_h * page_aspect)
+                    dest_x = base_x + (base_w - dest_w) // 2
+                    dest_y = base_y
+
+                # Render at 300 DPI for sharp, crisp laser clarity
                 pix = page.get_pixmap(dpi=300)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-                # Maintain aspect ratio within printable boundary
-                img_aspect = img.width / max(img.height, 1)
-                target_aspect = printable_width / max(printable_height, 1)
-
-                if img_aspect > target_aspect:
-                    dest_w = printable_width
-                    dest_h = int(printable_width / img_aspect)
-                    dest_x = 0
-                    dest_y = (printable_height - dest_h) // 2
-                else:
-                    dest_h = printable_height
-                    dest_w = int(printable_height * img_aspect)
-                    dest_x = (printable_width - dest_w) // 2
-                    dest_y = 0
 
                 hDC.StartPage()
                 dib = ImageWin.Dib(img)

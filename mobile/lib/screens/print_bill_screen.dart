@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show rootBundle, Clipboard, ClipboardData;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -424,6 +424,10 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   // 30-second cooldown timer
   int _printCooldownSeconds = 0;
   Timer? _cooldownTimer;
+
+  // Brand grouping & serial filter state
+  String _serialSearchQuery = '';
+  final Set<String> _collapsedBrands = {};
 
   @override
   void initState() {
@@ -1451,7 +1455,11 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
           SizedBox(height: context.isTablet ? 22 : 16),
           // ── Serial register
-          _sectionHeader('Scanned Serial Numbers', Icons.qr_code_scanner),
+          _sectionHeader(
+            'Scanned Serial Numbers',
+            Icons.qr_code_scanner,
+            trailing: _buildSerialsHeaderTrailing(bill),
+          ),
           SizedBox(height: context.isTablet ? 12 : 8),
           _serialsTable(bill),
 
@@ -1563,7 +1571,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  Widget _sectionHeader(String title, IconData icon) {
+  Widget _sectionHeader(String title, IconData icon, {Widget? trailing}) {
     return Row(
       children: [
         Icon(icon, size: context.isTablet ? 20 : 16, color: const Color(0xFF3C3489)),
@@ -1576,6 +1584,10 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             color: const Color(0xFF0F172A),
           ),
         ),
+        if (trailing != null) ...[
+          const Spacer(),
+          trailing,
+        ],
       ],
     );
   }
@@ -1654,15 +1666,52 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  Widget _serialsTable(BillDetail bill) {
-    final allLines = <({String brand, String model, BillLine line})>[];
-    for (final b in bill.batches) {
-      for (final l in b.lines) {
-        allLines.add((brand: b.brand, model: b.model, line: l));
-      }
-    }
+  Widget _buildSerialsHeaderTrailing(BillDetail bill) {
+    final allBrands = bill.batches
+        .map((b) => b.brand.trim().isNotEmpty
+            ? b.brand.trim().toUpperCase()
+            : (b.model.split(' ').firstOrNull?.toUpperCase() ?? 'OTHER'))
+        .toSet();
+    final allCollapsed = allBrands.isNotEmpty && _collapsedBrands.containsAll(allBrands);
 
-    if (allLines.isEmpty) {
+    return InkWell(
+      onTap: () {
+        setState(() {
+          if (allCollapsed) {
+            _collapsedBrands.clear();
+          } else {
+            _collapsedBrands.addAll(allBrands);
+          }
+        });
+      },
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              allCollapsed ? Icons.unfold_more_rounded : Icons.unfold_less_rounded,
+              size: context.isTablet ? 16 : 14,
+              color: const Color(0xFF4F46E5),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              allCollapsed ? 'Expand All' : 'Collapse All',
+              style: TextStyle(
+                fontSize: context.isTablet ? 13 : 11,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF4F46E5),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _serialsTable(BillDetail bill) {
+    if (bill.batches.isEmpty) {
       return Container(
         padding: const EdgeInsets.all(20),
         alignment: Alignment.center,
@@ -1671,145 +1720,456 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: const Color(0xFFE2E8F0)),
         ),
-        child: const Text('No serial lines available', style: TextStyle(color: Color(0xFF94A3B8))),
+        child: const Text('No models or serial lines available', style: TextStyle(color: Color(0xFF94A3B8))),
       );
     }
 
+    // 1. Group batches by Brand
+    final Map<String, List<BillBatch>> brandGroups = {};
+    for (final b in bill.batches) {
+      final brand = b.brand.trim().isNotEmpty
+          ? b.brand.trim().toUpperCase()
+          : (b.model.split(' ').firstOrNull?.toUpperCase() ?? 'OTHER');
+      brandGroups.putIfAbsent(brand, () => []).add(b);
+    }
+
+    final query = _serialSearchQuery.trim().toUpperCase();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Quick Serial Filter / Search
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(context.isTablet ? 12 : 10),
+            border: Border.all(color: const Color(0xFFE2E8F0)),
+          ),
+          child: TextField(
+            onChanged: (val) => setState(() => _serialSearchQuery = val),
+            style: TextStyle(fontSize: context.isTablet ? 14 : 12),
+            decoration: InputDecoration(
+              hintText: 'Search serial number across brands...',
+              hintStyle: TextStyle(
+                color: const Color(0xFF94A3B8),
+                fontSize: context.isTablet ? 14 : 12,
+              ),
+              prefixIcon: Icon(
+                Icons.search_rounded,
+                size: context.isTablet ? 20 : 18,
+                color: const Color(0xFF64748B),
+              ),
+              suffixIcon: _serialSearchQuery.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      onPressed: () => setState(() => _serialSearchQuery = ''),
+                    )
+                  : null,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              border: InputBorder.none,
+              isDense: true,
+            ),
+          ),
+        ),
+
+        // Brand sections
+        ...brandGroups.entries.map((brandEntry) {
+          final brandName = brandEntry.key;
+          final batches = brandEntry.value;
+          return _buildBrandGroupCard(brandName, batches, query);
+        }),
+      ],
+    );
+  }
+
+  Widget _buildBrandGroupCard(String brandName, List<BillBatch> batches, String query) {
+    final totalBrandSerials = batches.fold<int>(0, (sum, b) => sum + b.lines.length);
+    final totalBrandQty = batches.fold<int>(0, (sum, b) => sum + b.quantity);
+
+    // Filter lines if query is not empty
+    final filteredBatches = batches.map((b) {
+      if (query.isEmpty) return b;
+      final matchedLines = b.lines.where((l) => l.serialText.toUpperCase().contains(query)).toList();
+      return BillBatch(
+        batchId: b.batchId,
+        productId: b.productId,
+        productName: b.productName,
+        brand: b.brand,
+        model: b.model,
+        quantity: b.quantity,
+        matchedCount: b.matchedCount,
+        unmatchedCount: b.unmatchedCount,
+        flaggedCount: b.flaggedCount,
+        lines: matchedLines,
+      );
+    }).toList();
+
+    final visibleSerialsCount = filteredBatches.fold<int>(0, (sum, b) => sum + b.lines.length);
+    if (query.isNotEmpty && visibleSerialsCount == 0) {
+      return const SizedBox.shrink();
+    }
+
+    final isCollapsed = _collapsedBrands.contains(brandName);
+
     return Container(
+      margin: EdgeInsets.only(bottom: context.isTablet ? 16 : 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(context.isTablet ? 16 : 12),
         border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: context.isTablet
+            ? [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+              ]
+            : null,
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // header row
-          Container(
-            padding: EdgeInsets.symmetric(
-              horizontal: context.isTablet ? 16 : 12,
-              vertical: context.isTablet ? 12 : 8,
+          // ── Brand Header
+          InkWell(
+            onTap: () {
+              setState(() {
+                if (isCollapsed) {
+                  _collapsedBrands.remove(brandName);
+                } else {
+                  _collapsedBrands.add(brandName);
+                }
+              });
+            },
+            borderRadius: BorderRadius.vertical(
+              top: Radius.circular(context.isTablet ? 15 : 11),
+              bottom: isCollapsed ? Radius.circular(context.isTablet ? 15 : 11) : Radius.zero,
             ),
-            decoration: BoxDecoration(
-              color: const Color(0xFF4F46E5),
-              borderRadius: BorderRadius.vertical(top: Radius.circular(context.isTablet ? 15 : 12)),
+            child: Container(
+              padding: EdgeInsets.symmetric(
+                horizontal: context.isTablet ? 16 : 12,
+                vertical: context.isTablet ? 14 : 10,
+              ),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(context.isTablet ? 15 : 11),
+                  bottom: isCollapsed ? Radius.circular(context.isTablet ? 15 : 11) : Radius.zero,
+                ),
+                border: isCollapsed
+                    ? null
+                    : const Border(bottom: BorderSide(color: Color(0xFFE2E8F0))),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF3C3489),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.verified_rounded, size: 14, color: Colors.white),
+                        const SizedBox(width: 5),
+                        Text(
+                          brandName,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: context.isTablet ? 13 : 11.5,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '${batches.length} ${batches.length == 1 ? "Model" : "Models"}',
+                    style: TextStyle(
+                      fontSize: context.isTablet ? 13 : 11,
+                      color: const Color(0xFF64748B),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const Spacer(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFECFDF5),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFA7F3D0)),
+                    ),
+                    child: Text(
+                      '$totalBrandSerials / $totalBrandQty Serials',
+                      style: TextStyle(
+                        color: const Color(0xFF059669),
+                        fontWeight: FontWeight.bold,
+                        fontSize: context.isTablet ? 12 : 10.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(
+                    isCollapsed ? Icons.keyboard_arrow_down_rounded : Icons.keyboard_arrow_up_rounded,
+                    color: const Color(0xFF94A3B8),
+                    size: context.isTablet ? 22 : 18,
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // ── Models & Serials inside Brand
+          if (!isCollapsed)
+            Padding(
+              padding: EdgeInsets.all(context.isTablet ? 14 : 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: filteredBatches.asMap().entries.map((batchEntry) {
+                  final bIdx = batchEntry.key;
+                  final batch = batchEntry.value;
+                  return _buildModelSerialSection(bIdx + 1, batch);
+                }).toList(),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModelSerialSection(int modelNumber, BillBatch batch) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFAFA),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Model Subheader
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: const BoxDecoration(
+              color: Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(9)),
+              border: Border(bottom: BorderSide(color: Color(0xFFE2E8F0))),
             ),
             child: Row(
               children: [
-                SizedBox(
-                  width: context.isTablet ? 36 : 30,
+                Container(
+                  width: 22,
+                  height: 22,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEF2FF),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
                   child: Text(
-                    '#',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: context.isTablet ? 13 : 11,
+                    '$modelNumber',
+                    style: const TextStyle(
+                      fontSize: 11,
                       fontWeight: FontWeight.bold,
+                      color: Color(0xFF4F46E5),
                     ),
                   ),
                 ),
+                const SizedBox(width: 8),
                 Expanded(
-                  flex: 3,
-                  child: Text(
-                    'Serial Number',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: context.isTablet ? 13 : 11,
-                      fontWeight: FontWeight.bold,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        batch.model,
+                        style: TextStyle(
+                          fontSize: context.isTablet ? 14 : 12,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF0F172A),
+                        ),
+                      ),
+                      if (batch.productName.isNotEmpty && batch.productName != batch.model)
+                        Text(
+                          batch.productName,
+                          style: TextStyle(
+                            fontSize: context.isTablet ? 12 : 10.5,
+                            color: const Color(0xFF64748B),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    'Model',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: context.isTablet ? 13 : 11,
-                      fontWeight: FontWeight.bold,
-                    ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: const Color(0xFFCBD5E1)),
                   ),
-                ),
-                SizedBox(
-                  width: context.isTablet ? 60 : 50,
                   child: Text(
-                    'Type',
-                    textAlign: TextAlign.center,
+                    '${batch.lines.length} / ${batch.quantity} Units',
                     style: TextStyle(
-                      color: Colors.white,
-                      fontSize: context.isTablet ? 13 : 11,
-                      fontWeight: FontWeight.bold,
+                      fontSize: context.isTablet ? 11.5 : 10,
+                      fontWeight: FontWeight.w600,
+                      color: const Color(0xFF334155),
                     ),
                   ),
                 ),
               ],
             ),
           ),
-          ...allLines.asMap().entries.map((e) {
-            final even = e.key.isEven;
-            final item = e.value;
-            return Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: context.isTablet ? 16 : 12,
-                vertical: context.isTablet ? 10 : 7,
+
+          // Serials List
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: batch.lines.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Center(
+                      child: Text(
+                        'No scanned serial numbers recorded for this model',
+                        style: TextStyle(
+                          fontStyle: FontStyle.italic,
+                          fontSize: 11,
+                          color: Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ),
+                  )
+                : _buildSerialsGrid(batch.lines),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSerialsGrid(List<BillLine> lines) {
+    final widgets = lines.asMap().entries.map((e) {
+      final idx = e.key + 1;
+      final line = e.value;
+      return _buildSerialRow(idx, line);
+    }).toList();
+
+    if (context.isTablet && lines.length > 1) {
+      final rows = <Widget>[];
+      for (int i = 0; i < widgets.length; i += 2) {
+        final left = widgets[i];
+        final right = (i + 1 < widgets.length) ? widgets[i + 1] : null;
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              children: [
+                Expanded(child: left),
+                const SizedBox(width: 8),
+                Expanded(child: right ?? const SizedBox()),
+              ],
+            ),
+          ),
+        );
+      }
+      return Column(children: rows);
+    } else {
+      return Column(
+        children: widgets
+            .map((w) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: w,
+                ))
+            .toList(),
+      );
+    }
+  }
+
+  Widget _buildSerialRow(int idx, BillLine line) {
+    return Container(
+      padding: EdgeInsets.symmetric(
+        horizontal: context.isTablet ? 10 : 8,
+        vertical: context.isTablet ? 8 : 6,
+      ),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: context.isTablet ? 26 : 22,
+            height: context.isTablet ? 22 : 18,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF1F5F9),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              '$idx',
+              style: TextStyle(
+                fontSize: context.isTablet ? 11 : 9.5,
+                fontWeight: FontWeight.bold,
+                color: const Color(0xFF64748B),
               ),
+            ),
+          ),
+          SizedBox(width: context.isTablet ? 8 : 6),
+          Expanded(
+            child: SelectableText(
+              line.serialText,
+              style: TextStyle(
+                fontFamily: 'monospace',
+                fontSize: context.isTablet ? 13 : 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.3,
+                color: const Color(0xFF0F172A),
+              ),
+            ),
+          ),
+          if (line.unitType != null && line.unitType!.trim().isNotEmpty) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
               decoration: BoxDecoration(
-                color: even ? Colors.white : const Color(0xFFF8FAFC),
-                borderRadius: e.key == allLines.length - 1
-                    ? BorderRadius.vertical(bottom: Radius.circular(context.isTablet ? 15 : 12))
-                    : BorderRadius.zero,
+                color: line.unitType!.toLowerCase() == 'indoor'
+                    ? const Color(0xFFE0F2FE)
+                    : line.unitType!.toLowerCase() == 'outdoor'
+                        ? const Color(0xFFD1FAE5)
+                        : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(4),
               ),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: context.isTablet ? 36 : 30,
-                    child: Text(
-                      '${e.key + 1}',
-                      style: TextStyle(
-                        fontSize: context.isTablet ? 13 : 11,
-                        color: const Color(0xFF94A3B8),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: Text(
-                      item.line.serialText,
-                      style: TextStyle(
-                        fontSize: context.isTablet ? 14 : 11,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFF0F172A),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: Text(
-                      item.model,
-                      style: TextStyle(
-                        fontSize: context.isTablet ? 13 : 11,
-                        color: const Color(0xFF64748B),
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: context.isTablet ? 60 : 50,
-                    child: Text(
-                      item.line.unitType?.toUpperCase() ?? '-',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: item.line.unitType == 'indoor'
-                            ? const Color(0xFF0369A1)
-                            : item.line.unitType == 'outdoor'
-                                ? const Color(0xFF059669)
-                                : const Color(0xFF94A3B8),
-                      ),
-                    ),
-                  ),
-                ],
+              child: Text(
+                line.unitType!.toUpperCase(),
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                  color: line.unitType!.toLowerCase() == 'indoor'
+                      ? const Color(0xFF0284C7)
+                      : line.unitType!.toLowerCase() == 'outdoor'
+                          ? const Color(0xFF059669)
+                          : const Color(0xFF64748B),
+                ),
               ),
-            );
-          }),
+            ),
+          ],
+          const SizedBox(width: 4),
+          InkWell(
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: line.serialText));
+              TopToast.show(
+                context,
+                message: 'Copied ${line.serialText}',
+                icon: Icons.check_circle_outline,
+              );
+            },
+            borderRadius: BorderRadius.circular(4),
+            child: const Padding(
+              padding: EdgeInsets.all(4),
+              child: Icon(Icons.copy_rounded, size: 14, color: Color(0xFF94A3B8)),
+            ),
+          ),
         ],
       ),
     );

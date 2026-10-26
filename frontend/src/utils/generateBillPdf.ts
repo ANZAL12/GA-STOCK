@@ -323,7 +323,7 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
   const finalTableY = (doc as any).lastAutoTable.finalY || serialsHeaderY + 40;
   let signY = finalTableY + 6;
 
-  if (signY > 245) {
+  if (signY > 255) {
     doc.addPage();
     signY = 16;
   }
