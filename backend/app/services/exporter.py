@@ -79,7 +79,7 @@ def export_to_pdf(title: str, subtitle: str, headers: list[str], rows: list[list
     # Use landscape for wide tabular reports
     doc = SimpleDocTemplate(
         buf,
-        pagesize=landscape(letter),
+        pagesize=landscape(A4),
         leftMargin=36,
         rightMargin=36,
         topMargin=36,
@@ -168,11 +168,11 @@ class InwardRegisterNumberedCanvas(canvas.Canvas):
 
     def draw_page_number(self, page_count):
         self.saveState()
-        self.setFont("Helvetica", 7.5)
+        self.setFont("Helvetica", 7)
         self.setFillColor(colors.HexColor("#64748B"))
-        page_w, page_h = landscape(A4)
-        text = f"Global Agencies Godown Management  •  Today Inward Serial Register  •  Page {self._pageNumber} of {page_count}"
-        self.drawCentredString(page_w / 2.0, 18, text)
+        page_w, page_h = A4
+        text = f"Global Agencies Godown Management  •  Inward Serial Register  •  Page {self._pageNumber} of {page_count}"
+        self.drawCentredString(page_w / 2.0, 14, text)
         self.restoreState()
 
 
@@ -184,16 +184,17 @@ def export_inward_register_to_pdf(
     totals: dict[str, int],
 ) -> bytes:
     """
-    Renders official Today Inward Serial Register grouped cleanly by model for A4 landscape print.
+    Renders official Today Inward Serial Register grouped cleanly by model for A4 portrait print.
+    Designed with compact margins and proportions so everyday inward operations fit on a single A4 sheet.
     """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
-        pagesize=landscape(A4),
-        leftMargin=36,
-        rightMargin=36,
-        topMargin=32,
-        bottomMargin=32,
+        pagesize=A4,
+        leftMargin=28,
+        rightMargin=28,
+        topMargin=26,
+        bottomMargin=26,
     )
     styles = getSampleStyleSheet()
 
@@ -201,32 +202,32 @@ def export_inward_register_to_pdf(
         "RegTitle",
         parent=styles["Heading1"],
         fontName="Helvetica-Bold",
-        fontSize=15,
-        leading=18,
+        fontSize=13,
+        leading=15,
         textColor=colors.HexColor("#1E1B4B"),
     )
     sub_style = ParagraphStyle(
         "RegSub",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=8.5,
-        leading=11,
+        fontSize=8,
+        leading=10,
         textColor=colors.HexColor("#64748B"),
     )
     model_bar_left = ParagraphStyle(
         "ModelBarLeft",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=9.5,
-        leading=12,
+        fontSize=8.5,
+        leading=11,
         textColor=colors.white,
     )
     model_bar_right = ParagraphStyle(
         "ModelBarRight",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=12,
+        fontSize=8,
+        leading=11,
         textColor=colors.HexColor("#FEF08A"),
         alignment=2,
     )
@@ -234,8 +235,8 @@ def export_inward_register_to_pdf(
         "RegTh",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=8,
-        leading=10,
+        fontSize=7.5,
+        leading=9,
         textColor=colors.HexColor("#334155"),
         alignment=0,
     )
@@ -243,40 +244,40 @@ def export_inward_register_to_pdf(
         "RegTd",
         parent=styles["Normal"],
         fontName="Helvetica",
-        fontSize=7.5,
-        leading=9.5,
+        fontSize=7,
+        leading=8.5,
         textColor=colors.HexColor("#0F172A"),
     )
     serial_cell = ParagraphStyle(
         "RegSn",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=8,
-        leading=10,
+        fontSize=7.5,
+        leading=9,
         textColor=colors.HexColor("#1E1B4B"),
     )
     badge_stock_in = ParagraphStyle(
         "BadgeIn",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=7.5,
-        leading=9.5,
+        fontSize=7,
+        leading=8.5,
         textColor=colors.HexColor("#047857"),
     )
     badge_return = ParagraphStyle(
         "BadgeRet",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=7.5,
-        leading=9.5,
+        fontSize=7,
+        leading=8.5,
         textColor=colors.HexColor("#4338CA"),
     )
     badge_damaged = ParagraphStyle(
         "BadgeDam",
         parent=styles["Normal"],
         fontName="Helvetica-Bold",
-        fontSize=7.5,
-        leading=9.5,
+        fontSize=7,
+        leading=8.5,
         textColor=colors.HexColor("#B91C1C"),
     )
 
@@ -284,13 +285,13 @@ def export_inward_register_to_pdf(
 
     # 1. Header Banner
     story.append(Paragraph(title, title_style))
-    story.append(Spacer(1, 3))
+    story.append(Spacer(1, 2))
     gen_time = datetime.now().strftime("%d %b %Y, %I:%M %p")
     meta_line = f"{subtitle}  •  Generated: {gen_time}"
     story.append(Paragraph(meta_line, sub_style))
-    story.append(Spacer(1, 8))
+    story.append(Spacer(1, 5))
 
-    # 2. Stats summary bar
+    # 2. Stats summary bar (total width = 538 pt)
     total_models = totals.get("total_models", 0)
     total_serials = totals.get("total_serials", 0)
     stock_in = totals.get("stock_in", 0)
@@ -300,37 +301,37 @@ def export_inward_register_to_pdf(
     summary_data = [
         [
             Paragraph(f"<b>Filter:</b> {filter_desc}", cell_style),
-            Paragraph(f"<b>Models Inwarded:</b> {total_models}", cell_style),
-            Paragraph(f"<b>Total Serials:</b> <font color='#3C3489'><b>{total_serials}</b></font>", cell_style),
+            Paragraph(f"<b>Models:</b> {total_models}", cell_style),
+            Paragraph(f"<b>Total:</b> <font color='#3C3489'><b>{total_serials}</b></font>", cell_style),
             Paragraph(f"<b>Stock In:</b> <font color='#059669'><b>{stock_in}</b></font>", cell_style),
             Paragraph(f"<b>Returns:</b> <font color='#4338CA'><b>{returns}</b></font>", cell_style),
             Paragraph(f"<b>Damaged:</b> <font color='#DC2626'><b>{damaged}</b></font>", cell_style),
         ]
     ]
-    summary_table = Table(summary_data, colWidths=[209, 110, 110, 110, 110, 120])
+    summary_table = Table(summary_data, colWidths=[148, 78, 78, 78, 78, 78])
     summary_table.setStyle(
         TableStyle([
             ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F1F5F9")),
             ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ])
     )
     story.append(summary_table)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 6))
 
     if not model_groups:
-        no_rec = ParagraphStyle("NoRec", parent=styles["Normal"], fontName="Helvetica", fontSize=10, textColor=colors.HexColor("#64748B"), alignment=1)
-        story.append(Spacer(1, 40))
+        no_rec = ParagraphStyle("NoRec", parent=styles["Normal"], fontName="Helvetica", fontSize=9, textColor=colors.HexColor("#64748B"), alignment=1)
+        story.append(Spacer(1, 30))
         story.append(Paragraph("No inward serial numbers found matching criteria for today.", no_rec))
         doc.build(story, canvasmaker=InwardRegisterNumberedCanvas)
         return buf.getvalue()
 
-    # Column widths total = 769 pt
-    col_widths = [32, 175, 75, 85, 128, 84, 190]
+    # Column widths total = 538 pt (matches A4 printable width)
+    col_widths = [24, 145, 52, 67, 95, 55, 100]
 
     for grp in model_groups:
         brand = grp.get("brand") or "Unknown"
@@ -340,21 +341,21 @@ def export_inward_register_to_pdf(
         serials = grp.get("serials") or []
         count = len(serials)
 
-        # Model Header Bar
-        left_txt = f"{brand.upper()} &nbsp;•&nbsp; <b>{model}</b> &nbsp; <font color='#E0E7FF' size=8.5>({pname}) &nbsp;[{cat}]</font>"
+        # Model Header Bar (538 pt)
+        left_txt = f"{brand.upper()} &nbsp;•&nbsp; <b>{model}</b> &nbsp; <font color='#E0E7FF' size=7.5>({pname}) &nbsp;[{cat}]</font>"
         right_txt = f"TOTAL: {count} UNIT{'S' if count != 1 else ''}"
         model_bar = Table(
             [[Paragraph(left_txt, model_bar_left), Paragraph(right_txt, model_bar_right)]],
-            colWidths=[619, 150],
+            colWidths=[418, 120],
         )
         model_bar.setStyle(
             TableStyle([
                 ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#3C3489")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
             ])
         )
 
@@ -363,7 +364,7 @@ def export_inward_register_to_pdf(
             [
                 Paragraph("#", head_style),
                 Paragraph("Serial Number", head_style),
-                Paragraph("Unit Type", head_style),
+                Paragraph("Unit", head_style),
                 Paragraph("Inward Type", head_style),
                 Paragraph("Invoice / DC Ref", head_style),
                 Paragraph("Time", head_style),
@@ -395,10 +396,10 @@ def export_inward_register_to_pdf(
             TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
             ])
@@ -406,24 +407,24 @@ def export_inward_register_to_pdf(
 
         story.append(model_bar)
         story.append(serials_table)
-        story.append(Spacer(1, 10))
+        story.append(Spacer(1, 6))
 
-    # Verification / Sign-off Footer
+    # Verification / Sign-off Footer (538 pt)
     sign_data = [
         [
             Paragraph(f"<b>Report Summary:</b> {total_serials} Total Serial(s) across {total_models} Model(s).", cell_style),
             Paragraph("Godown Inward Verifier Signature: ___________________________", cell_style),
         ]
     ]
-    sign_table = Table(sign_data, colWidths=[400, 369])
+    sign_table = Table(sign_data, colWidths=[288, 250])
     sign_table.setStyle(
         TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 8),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
         ])
     )
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 4))
     story.append(sign_table)
 
     doc.build(story, canvasmaker=InwardRegisterNumberedCanvas)

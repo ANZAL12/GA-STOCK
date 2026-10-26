@@ -563,11 +563,13 @@ async def get_today_inward_serials_report(
     target_date_from = date_from or today
     target_date_to = date_to or today
 
-    report_title = (
-        "Today Inward Serial Register"
-        if target_date_from == today and target_date_to == today
-        else f"Inward Serial Register ({target_date_from} to {target_date_to})"
-    )
+    if target_date_from == target_date_to:
+        date_label = target_date_from.strftime("%d %b %Y").upper()
+        report_title = f"INWARD SERIAL REGISTER - {date_label}"
+    else:
+        d_from_str = target_date_from.strftime("%d %b %Y").upper()
+        d_to_str = target_date_to.strftime("%d %b %Y").upper()
+        report_title = f"INWARD SERIAL REGISTER - {d_from_str} TO {d_to_str}"
 
     query = (
         select(

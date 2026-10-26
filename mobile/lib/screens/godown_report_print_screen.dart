@@ -418,8 +418,8 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
     final reports = [
       {
         'id': 'today_inward_serials',
-        'title': 'Today Inward Serial Register',
-        'subtitle': 'Serials inwarded today grouped by model with inward type and timestamps',
+        'title': 'Inward Serial Register',
+        'subtitle': 'Serials inwarded based on date, grouped by model with timestamps & inward type',
         'icon': Icons.assignment_turned_in_rounded,
         'color': const Color(0xFF4F46E5),
       },
@@ -723,7 +723,7 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'All Models Selected (Register will include all serials inwarded today grouped by model)',
+                    'All Models Selected (Register will include all serials inwarded for selected date grouped by model)',
                     style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
                   ),
                 ),

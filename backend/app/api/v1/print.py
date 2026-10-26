@@ -100,11 +100,13 @@ async def print_godown_report(
         target_date_from = payload.date_from or today
         target_date_to = payload.date_to or today
 
-        report_title = (
-            "Today Inward Serial Register"
-            if target_date_from == today and target_date_to == today
-            else f"Inward Serial Register ({target_date_from} to {target_date_to})"
-        )
+        if target_date_from == target_date_to:
+            date_label = target_date_from.strftime("%d %b %Y").upper()
+            report_title = f"INWARD SERIAL REGISTER - {date_label}"
+        else:
+            d_from_str = target_date_from.strftime("%d %b %Y").upper()
+            d_to_str = target_date_to.strftime("%d %b %Y").upper()
+            report_title = f"INWARD SERIAL REGISTER - {d_from_str} TO {d_to_str}"
 
         query = (
             select(
@@ -391,7 +393,7 @@ async def print_godown_report(
         records_count = len(rows)
 
     # Dispatch to office PC printer
-    job_name = f"{report_title} - {date.today()}"
+    job_name = report_title if "INWARD SERIAL REGISTER" in report_title else f"{report_title} - {date.today()}"
     try:
         print_res = await PrintService.print_pdf(
             pdf_bytes=pdf_bytes,

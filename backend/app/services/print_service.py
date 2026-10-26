@@ -180,14 +180,16 @@ class PrintService:
         hdc_handle = None
         hDC = None
 
-        # 1. Enforce A4 PaperSize and Portrait orientation on the printer DC
+        # 1. Enforce A4 PaperSize and match PDF page orientation on the printer DC
         if win32print is not None and win32gui is not None and win32con is not None:
             try:
+                first_page = doc[0]
+                is_landscape = first_page.rect.width > first_page.rect.height
                 hprinter = win32print.OpenPrinter(printer_name)
                 devmode = win32print.GetPrinter(hprinter, 2).get("pDevMode")
                 if devmode is not None:
                     devmode.PaperSize = win32con.DMPAPER_A4
-                    devmode.Orientation = win32con.DMORIENT_PORTRAIT
+                    devmode.Orientation = win32con.DMORIENT_LANDSCAPE if is_landscape else win32con.DMORIENT_PORTRAIT
                     devmode.Fields |= win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION
                 hdc_handle = win32gui.CreateDC("WINSPOOL", printer_name, devmode)
                 hDC = win32ui.CreateDCFromHandle(hdc_handle)
