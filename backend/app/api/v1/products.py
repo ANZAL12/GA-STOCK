@@ -93,6 +93,32 @@ async def list_products(
     return responses
 
 
+@router.get("/brands", response_model=list[str])
+async def list_brands(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[str]:
+    """
+    Get distinct brand names from previously added products.
+    """
+    result = await db.execute(
+        select(func.trim(Product.brand))
+        .where(Product.brand.isnot(None), func.trim(Product.brand) != "")
+        .distinct()
+        .order_by(func.trim(Product.brand).asc())
+    )
+    raw_brands = [b for b, in result.all() if b]
+    seen = set()
+    unique_brands = []
+    for b in raw_brands:
+        clean = b.strip()
+        key = clean.upper()
+        if key not in seen:
+            seen.add(key)
+            unique_brands.append(clean)
+    return sorted(unique_brands, key=lambda s: s.upper())
+
+
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(
     product_id: uuid.UUID,

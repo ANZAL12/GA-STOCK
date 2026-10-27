@@ -602,6 +602,30 @@ class ApiService {
     return [];
   }
 
+  Future<List<String>> getBrands() async {
+    try {
+      final res = await _authenticatedGet(Uri.parse('$_baseUrl/products/brands'));
+      if (res.statusCode == 200) {
+        final list = jsonDecode(res.body) as List;
+        final brands = list.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+        if (brands.isNotEmpty) return brands;
+      }
+    } catch (_) {}
+
+    // Fallback: extract distinct brands from active products list
+    try {
+      final products = await getProducts();
+      final brandSet = <String>{};
+      for (final p in products) {
+        final b = p.brand.trim();
+        if (b.isNotEmpty) brandSet.add(b);
+      }
+      final sorted = brandSet.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      return sorted;
+    } catch (_) {}
+    return [];
+  }
+
   Future<Category> createCategory({
     required String name,
     bool hasDualSerial = false,
