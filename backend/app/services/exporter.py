@@ -3,6 +3,8 @@ import io
 from datetime import datetime
 from typing import Any, Optional
 
+from app.core.timezone import format_ist_datetime, now_ist
+
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -157,7 +159,7 @@ def export_to_pdf(
 
     story = [
         Paragraph(title, title_style),
-        Paragraph(f"{subtitle}  •  Generated: {datetime.now().strftime('%d %b %Y, %I:%M %p')}", sub_style),
+        Paragraph(f"{subtitle}  •  Generated: {format_ist_datetime(now_ist())}", sub_style),
         Spacer(1, 8),
     ]
 
@@ -338,7 +340,7 @@ def export_inward_register_to_pdf(
     # 1. Header Banner
     story.append(Paragraph(title, title_style))
     story.append(Spacer(1, 2))
-    gen_time = datetime.now().strftime("%d %b %Y, %I:%M %p")
+    gen_time = format_ist_datetime(now_ist())
     meta_line = f"{subtitle}  •  Generated: {gen_time}"
     story.append(Paragraph(meta_line, sub_style))
     story.append(Spacer(1, 5))

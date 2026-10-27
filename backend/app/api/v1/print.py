@@ -9,6 +9,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.timezone import format_ist_datetime, format_ist_time, now_ist, today_ist
 from app.database import get_db
 from app.models.category import Category
 from app.models.enums import HistoryAction, SerialStatus
@@ -72,7 +73,7 @@ async def get_office_printers(
     return {
         "printers": printers,
         "default_printer": default_printer,
-        "server_time": datetime.now().isoformat(),
+        "server_time": now_ist().isoformat(),
         "tailscale_ready": True,
     }
 
@@ -96,7 +97,7 @@ async def print_godown_report(
 
     # 0. TODAY INWARD SERIAL REGISTER (GROUPED BY MODEL)
     if rtype in ("today_inward_serials", "today_inward_by_model", "inward_serials"):
-        today = date.today()
+        today = today_ist()
         target_date_from = payload.date_from or today
         target_date_to = payload.date_to or today
 
@@ -125,7 +126,7 @@ async def print_godown_report(
             .where(
                 or_(
                     InwardBatch.transaction_date.between(target_date_from, target_date_to),
-                    func.date(InwardBatch.created_at).between(target_date_from, target_date_to),
+                    func.date(func.timezone("Asia/Kolkata", InwardBatch.created_at)).between(target_date_from, target_date_to),
                 )
             )
             .order_by(
@@ -173,7 +174,7 @@ async def print_godown_report(
                 stock_in_cnt += 1
                 inw_label = "Stock In"
 
-            time_str = b.created_at.strftime("%I:%M %p") if b.created_at else "-"
+            time_str = format_ist_time(b.created_at)
 
             groups_map[prod.id]["serials"].append({
                 "serial_number": sn.serial_number,
@@ -313,12 +314,13 @@ async def print_godown_report(
         result = await db.execute(query)
         db_rows = result.all()
 
-        headers = ["Date", "Serial Number", "Product Model", "Destination Shop", "Delivery Ref", "Status", "Dispatcher"]
+        headers = ["Date & Time", "Serial Number", "Product Model", "Destination Shop", "Delivery Ref", "Status", "Dispatcher"]
         for l, p_name, p_brand, p_model, s_name, s_city, del_ref, u_name in db_rows:
             label = "Flagged" if l.is_flagged_for_review else ("Matched" if l.is_matched else "Recorded only")
             s_text = f"{l.serial_text} ({l.unit_type.capitalize()})" if l.unit_type else l.serial_text
+            dt_str = format_ist_datetime(l.created_at, "%d %b %Y, %I:%M %p") if l.created_at else str(l.transaction_date)
             rows.append([
-                str(l.transaction_date), s_text, p_name, f"{s_name} ({s_city})", del_ref or "-", label, u_name
+                dt_str, s_text, p_name, f"{s_name} ({s_city})", del_ref or "-", label, u_name
             ])
 
     # 3. DAMAGED & UNDER REPAIR
@@ -346,37 +348,48 @@ async def print_godown_report(
         headers = ["Serial Number", "Product", "Brand", "Model", "Condition", "Location/Shop", "Date Marked"]
         for sn, p_name, p_brand, p_model, s_name in db_rows:
             sn_text = f"{sn.serial_number} ({sn.unit_type.capitalize()})" if sn.unit_type else sn.serial_number
+            date_marked = format_ist_datetime(sn.updated_at, "%d %b %Y") if sn.updated_at else "-"
             rows.append([
                 sn_text, p_name, p_brand, p_model, sn.status.value.replace("_", " ").title(),
-                s_name or "Godown", str(sn.updated_at.date() if sn.updated_at else "-")
+                s_name or "Godown", date_marked
             ])
 
     # 4. TODAY'S GODOWN SUMMARY
     elif rtype == "today_summary":
         report_title = "Today's Godown Operations Summary"
-        today = date.today()
+        today = today_ist()
         # Inward batches today
         res_in = await db.execute(
             select(InwardBatch, Product.name.label("p_name"), User.full_name.label("u_name"))
             .join(Product, InwardBatch.product_id == Product.id)
             .join(User, InwardBatch.received_by_user_id == User.id)
-            .where(InwardBatch.transaction_date == today)
+            .where(
+                or_(
+                    InwardBatch.transaction_date == today,
+                    func.date(func.timezone("Asia/Kolkata", InwardBatch.created_at)) == today,
+                )
+            )
         )
         # Outward batches today
         res_out = await db.execute(
             select(OutwardBatch, Shop.name.label("s_name"), User.full_name.label("u_name"))
             .join(Shop, OutwardBatch.shop_id == Shop.id)
             .join(User, OutwardBatch.dispatched_by_user_id == User.id)
-            .where(OutwardBatch.transaction_date == today)
+            .where(
+                or_(
+                    OutwardBatch.transaction_date == today,
+                    func.date(func.timezone("Asia/Kolkata", OutwardBatch.created_at)) == today,
+                )
+            )
         )
 
         headers = ["Type", "Reference", "Item / Destination", "Quantity", "User / Time"]
         for b, p_name, u_name in res_in.all():
-            t_in = b.created_at.strftime("%I:%M %p") if b.created_at else "-"
+            t_in = format_ist_time(b.created_at)
             ref = b.invoice_reference or f"Inward #{str(b.id)[:8]}"
             rows.append(["INWARD", ref, p_name, str(b.quantity), f"{u_name} ({t_in})"])
         for b, s_name, u_name in res_out.all():
-            t_out = b.created_at.strftime("%I:%M %p") if b.created_at else "-"
+            t_out = format_ist_time(b.created_at)
             ref = b.bill_number or f"Dispatch #{str(b.id)[:8]}"
             rows.append(["DISPATCH", ref, s_name, str(b.quantity), f"{u_name} ({t_out})"])
     else:
@@ -456,7 +469,7 @@ async def print_test_slip(
     """
     Print a test slip on the Office PC to verify Tailscale connectivity and printer readiness.
     """
-    now_str = datetime.now().strftime("%d-%b-%Y %I:%M:%S %p")
+    now_str = format_ist_datetime(now_ist(), "%d-%b-%Y %I:%M:%S %p")
     target_printer = payload.printer_name or PrintService.get_default_printer_name() or "Default Printer"
     headers = ["Parameter", "Office PC Print Server Status"]
     rows = [

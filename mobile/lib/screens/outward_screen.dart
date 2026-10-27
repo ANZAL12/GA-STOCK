@@ -2003,8 +2003,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
         }
       }
 
+      final firstProd = items.first.product;
       batchItems.add({
         'product_id': prodId,
+        'product_name': firstProd?.name,
+        'product_model': firstProd?.model,
+        'product_brand': firstProd?.brand,
         'serials': serialList.map((s) => {
           'serial_number': s,
           'confirmed_warning': true,

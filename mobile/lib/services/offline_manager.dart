@@ -828,6 +828,27 @@ class OfflineManager {
       }
     }
 
+    // Enqueue into OfflineQueueService so it is fully inspectable in OfflineQueueScreen
+    final shopId = dispatchPayload['shop_id']?.toString() ?? '';
+    final shop = getShopById(shopId);
+    final shopName = dispatchPayload['shop_name'] ?? shop?.name ?? 'Shop';
+    final items = dispatchPayload['items'] as List? ?? [];
+    int totalUnits = 0;
+    for (var it in items) {
+      if (it is Map) {
+        final sList = it['serials'] ?? it['serial_numbers'];
+        if (sList is List) totalUnits += sList.length;
+      }
+    }
+    final batch = QueuedBatch(
+      id: dispatchPayload['client_request_id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+      type: QueueType.outward,
+      createdAt: DateTime.now(),
+      payload: Map<String, dynamic>.from(dispatchPayload),
+      description: 'Outward: $shopName ($totalUnits units)',
+    );
+    await OfflineQueueService().enqueue(batch);
+
     // Immediately try to auto-sync if connection is available or probe health
     if (isOnlineNotifier.value) {
       unawaited(syncPendingDispatches());
@@ -844,13 +865,15 @@ class OfflineManager {
 
     _isSyncingDispatches = true;
     try {
-      // 1. Drain any items from OfflineQueueService (inward or legacy outward items)
+      // 1. Drain all items from OfflineQueueService
       try {
         await OfflineQueueService().syncAll();
       } catch (_) {}
 
-      // 2. Drain _queuedDispatches
-      if (_queuedDispatches.isEmpty) return;
+      // 2. Clear _queuedDispatches to prevent duplicate submission
+      _queuedDispatches.clear();
+      pendingDispatchCountNotifier.value = 0;
+      await _saveToDisk();
 
       final api = ApiService();
       final List<Map<String, dynamic>> remaining = [];

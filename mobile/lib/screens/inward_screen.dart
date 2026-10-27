@@ -1451,10 +1451,15 @@ class _InwardScreenState extends State<InwardScreen> {
           unitTypes[e.serialNumber] = e.unitType!;
         }
       }
+      final firstProd = list.first.product;
       return {
         'product_id': prodId,
+        'product_name': firstProd.name,
+        'product_model': firstProd.model,
+        'product_brand': firstProd.brand,
         'inward_type': _inwardType,
         'serials': serials,
+        'serial_numbers': serials,
         'unit_types': unitTypes.isNotEmpty ? unitTypes : null,
       };
     }).toList();

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
+from app.core.timezone import format_ist_datetime
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.device import Device
@@ -85,7 +86,7 @@ async def list_audit_logs(
         if export:
             export_rows.append(
                 [
-                    log.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    format_ist_datetime(log.created_at, "%Y-%m-%d %H:%M:%S"),
                     u_name or "System",
                     log.action,
                     log.entity_type,

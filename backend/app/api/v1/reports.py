@@ -7,6 +7,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.core.timezone import format_ist_time, today_ist
 from app.database import get_db
 from app.models.category import Category
 from app.models.device import Device
@@ -560,7 +561,7 @@ async def get_today_inward_serials_report(
     Today Inward Serial Register (Grouped by Model):
     Lists every serial number inwarded today, grouped by product model with inward type and timestamps.
     """
-    today = date.today()
+    today = today_ist()
     target_date_from = date_from or today
     target_date_to = date_to or today
 
@@ -589,7 +590,7 @@ async def get_today_inward_serials_report(
         .where(
             or_(
                 InwardBatch.transaction_date.between(target_date_from, target_date_to),
-                func.date(InwardBatch.created_at).between(target_date_from, target_date_to),
+                func.date(func.timezone("Asia/Kolkata", InwardBatch.created_at)).between(target_date_from, target_date_to),
             )
         )
         .order_by(
@@ -636,7 +637,7 @@ async def get_today_inward_serials_report(
             stock_in_cnt += 1
             inw_label = "Stock In"
 
-        time_str = b.created_at.strftime("%I:%M %p") if b.created_at else "-"
+        time_str = format_ist_time(b.created_at)
 
         item_data = {
             "serial_number": sn.serial_number,
