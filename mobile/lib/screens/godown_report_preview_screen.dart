@@ -148,6 +148,45 @@ class _GodownReportPreviewScreenState extends State<GodownReportPreviewScreen> {
           ),
         ),
       ),
+      bottomNavigationBar: Container(
+        padding: EdgeInsets.fromLTRB(
+          isTablet ? 24 : 16,
+          10,
+          isTablet ? 24 : 16,
+          MediaQuery.of(context).padding.bottom + 10,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 8,
+              offset: const Offset(0, -2),
+            ),
+          ],
+        ),
+        child: ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: const Color(0xFF3C3489),
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            elevation: 1,
+          ),
+          onPressed: _isPrinting ? null : _handlePrintToOfficePc,
+          icon: _isPrinting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                )
+              : const Icon(Icons.print_rounded, size: 20),
+          label: Text(
+            _isPrinting ? 'Sending to Office PC Printer...' : 'Print on Office PC Printer',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+        ),
+      ),
     );
   }
 }

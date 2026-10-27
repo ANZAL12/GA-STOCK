@@ -233,16 +233,27 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
         ),
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
-          IconButton(
-            tooltip: 'A4 Print Preview',
-            icon: _isPreviewing
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(color: Color(0xFF3C3489), strokeWidth: 2),
-                  )
-                : const Icon(Icons.picture_as_pdf_outlined, color: Color(0xFF3C3489)),
-            onPressed: (_isPreviewing || _isPrinting) ? null : _handlePreviewA4Report,
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFEEF2FF),
+                foregroundColor: const Color(0xFF3C3489),
+                elevation: 0,
+                side: const BorderSide(color: Color(0xFFC7D2FE)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+              ),
+              onPressed: (_isPreviewing || _isPrinting) ? null : _handlePreviewA4Report,
+              icon: _isPreviewing
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(color: Color(0xFF3C3489), strokeWidth: 2),
+                    )
+                  : const Icon(Icons.picture_as_pdf_rounded, size: 16),
+              label: const Text('Preview A4', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+            ),
           ),
           IconButton(
             tooltip: 'Refresh Printers',
@@ -252,8 +263,82 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
           const SizedBox(width: 8),
         ],
       ),
+      bottomNavigationBar: Container(
+        padding: EdgeInsets.fromLTRB(
+          isTablet ? 24 : 16,
+          10,
+          isTablet ? 24 : 16,
+          MediaQuery.of(context).padding.bottom + 10,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 10,
+              offset: const Offset(0, -3),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Pinned Preview Button
+            OutlinedButton.icon(
+              onPressed: (_isPreviewing || _isPrinting) ? null : _handlePreviewA4Report,
+              icon: _isPreviewing
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(color: Color(0xFF3C3489), strokeWidth: 2),
+                    )
+                  : const Icon(Icons.picture_as_pdf_rounded, size: 19),
+              label: Text(
+                _isPreviewing ? 'Generating Exact A4 Document...' : 'Preview',
+                style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF3C3489),
+                side: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
+                backgroundColor: const Color(0xFFEEF2FF),
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 15 : 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            // Pinned Print Button
+            ElevatedButton.icon(
+              onPressed: (_isPrinting || _isPreviewing) ? null : _handlePrintReport,
+              icon: _isPrinting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                    )
+                  : const Icon(Icons.print_rounded, size: 19),
+              label: Text(
+                _isPrinting ? 'Sending to Office PC...' : 'Print on Office PC Printer',
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF3C3489),
+                foregroundColor: Colors.white,
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 15 : 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 1,
+              ),
+            ),
+          ],
+        ),
+      ),
       body: SingleChildScrollView(
-        padding: EdgeInsets.all(isTablet ? 24 : 16),
+        padding: EdgeInsets.fromLTRB(
+          isTablet ? 24 : 16,
+          isTablet ? 20 : 14,
+          isTablet ? 24 : 16,
+          32,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -268,14 +353,10 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
             const SizedBox(height: 18),
 
             // ── OPTIONAL FILTERS ───────────────────────────────────────────
-            if (_selectedReportType == 'today_inward_serials' ||
-                _selectedReportType == 'stock_by_model' ||
-                _selectedReportType == 'stock_out') ...[
-              _buildSectionHeader('Report Filters (Optional)', Icons.filter_list_rounded),
-              const SizedBox(height: 10),
-              _buildFilterSection(isTablet),
-              const SizedBox(height: 20),
-            ],
+            _buildSectionHeader('Report Filters (Optional)', Icons.filter_list_rounded),
+            const SizedBox(height: 10),
+            _buildFilterSection(isTablet),
+            const SizedBox(height: 20),
 
             // ── LAST PRINT FEEDBACK ────────────────────────────────────────
             if (_lastPrintSuccessMessage != null) ...[
@@ -305,51 +386,6 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
               ),
               const SizedBox(height: 18),
             ],
-
-            // ── ACTION BUTTONS ─────────────────────────────────────────────
-            OutlinedButton.icon(
-              onPressed: (_isPreviewing || _isPrinting) ? null : _handlePreviewA4Report,
-              icon: _isPreviewing
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(color: Color(0xFF3C3489), strokeWidth: 2),
-                    )
-                  : const Icon(Icons.picture_as_pdf_rounded, size: 20),
-              label: Text(
-                _isPreviewing ? 'Generating Exact A4 Document...' : 'Preview',
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-              ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF3C3489),
-                side: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
-                backgroundColor: const Color(0xFFEEF2FF),
-                padding: EdgeInsets.symmetric(vertical: isTablet ? 17 : 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-            ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: (_isPrinting || _isPreviewing) ? null : _handlePrintReport,
-              icon: _isPrinting
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                    )
-                  : const Icon(Icons.print_rounded, size: 20),
-              label: Text(
-                _isPrinting ? 'Sending to Office PC...' : 'Print on Office PC Printer',
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3C3489),
-                foregroundColor: Colors.white,
-                padding: EdgeInsets.symmetric(vertical: isTablet ? 18 : 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                elevation: 1,
-              ),
-            ),
           ],
         ),
       ),
