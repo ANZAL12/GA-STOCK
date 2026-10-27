@@ -873,56 +873,10 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
               ],
               onChanged: (val) => setState(() => _selectedInwardType = val),
             ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFE2E8F0)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.calendar_today_rounded, size: 16, color: Color(0xFF4F46E5)),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Register Date: ${_formatDate(_dateFrom ?? DateTime.now())}',
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _dateFrom ?? DateTime.now(),
-                        firstDate: DateTime(2025),
-                        lastDate: DateTime.now().add(const Duration(days: 1)),
-                      );
-                      if (picked != null) {
-                        setState(() {
-                          _dateFrom = picked;
-                          _dateTo = picked;
-                        });
-                      }
-                    },
-                    child: const Text('Change Date', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5))),
-                  ),
-                  if (_dateFrom != null && !_isSameDay(_dateFrom!, DateTime.now()))
-                    IconButton(
-                      tooltip: 'Reset to Today',
-                      icon: const Icon(Icons.refresh_rounded, size: 18, color: Color(0xFF64748B)),
-                      onPressed: () => setState(() {
-                        _dateFrom = DateTime.now();
-                        _dateTo = DateTime.now();
-                      }),
-                    ),
-                ],
-              ),
-            ),
           ],
 
           if (_selectedReportType == 'stock_out') ...[
+            const SizedBox(height: 12),
             DropdownButtonFormField<Shop?>(
               initialValue: _selectedShop,
               decoration: const InputDecoration(
@@ -944,7 +898,316 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
               onChanged: (s) => setState(() => _selectedShop = s),
             ),
           ],
+
+          // ── DATE RANGE PICKER (FROM .... TO) ──────────────────────────────────
+          if (_selectedReportType != 'stock_by_model') ...[
+            const SizedBox(height: 12),
+            _buildDateRangePicker(isTablet),
+          ],
         ],
+      ),
+    );
+  }
+
+  // ── DATE RANGE PICKER WIDGET ──────────────────────────────────────────────
+  Widget _buildDateRangePicker(bool isTablet) {
+    final now = DateTime.now();
+    final from = _dateFrom ?? now;
+    final to = _dateTo ?? now;
+    final isSingleDay = _isSameDay(from, to);
+    final daysCount = to.difference(from).inDays + 1;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Header & Range Calendar Button
+          Row(
+            children: [
+              const Icon(Icons.date_range_rounded, size: 16, color: Color(0xFF3C3489)),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text(
+                  'REPORT DATE RANGE',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF475569),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+              InkWell(
+                onTap: () async {
+                  final pickedRange = await showDateRangePicker(
+                    context: context,
+                    initialDateRange: DateTimeRange(start: from, end: to),
+                    firstDate: DateTime(2025),
+                    lastDate: DateTime.now().add(const Duration(days: 1)),
+                    builder: (context, child) {
+                      return Theme(
+                        data: Theme.of(context).copyWith(
+                          colorScheme: const ColorScheme.light(
+                            primary: Color(0xFF3C3489),
+                            onPrimary: Colors.white,
+                            onSurface: Color(0xFF0F172A),
+                          ),
+                        ),
+                        child: child!,
+                      );
+                    },
+                  );
+                  if (pickedRange != null) {
+                    setState(() {
+                      _dateFrom = pickedRange.start;
+                      _dateTo = pickedRange.end;
+                    });
+                  }
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEEF2FF),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFC7D2FE)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.calendar_month_rounded, size: 13, color: Color(0xFF3C3489)),
+                      SizedBox(width: 4),
+                      Text(
+                        'Range Calendar',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF3C3489)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // Two Interactive Cards: FROM (Start) and TO (End)
+          Row(
+            children: [
+              // FROM DATE CARD
+              Expanded(
+                child: InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: from,
+                      firstDate: DateTime(2025),
+                      lastDate: DateTime.now().add(const Duration(days: 1)),
+                    );
+                    if (picked != null) {
+                      setState(() {
+                        _dateFrom = picked;
+                        if (_dateTo != null && _dateTo!.isBefore(picked)) {
+                          _dateTo = picked;
+                        }
+                      });
+                    }
+                  },
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'FROM (START DATE)',
+                          style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                        ),
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            const Icon(Icons.event_rounded, size: 14, color: Color(0xFF4F46E5)),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                _formatDate(from),
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF0F172A)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 6),
+                child: Icon(Icons.arrow_forward_rounded, size: 16, color: Color(0xFF94A3B8)),
+              ),
+
+              // TO DATE CARD
+              Expanded(
+                child: InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: to.isBefore(from) ? from : to,
+                      firstDate: from,
+                      lastDate: DateTime.now().add(const Duration(days: 1)),
+                    );
+                    if (picked != null) {
+                      setState(() {
+                        _dateTo = picked;
+                      });
+                    }
+                  },
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFCBD5E1)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'TO (END DATE)',
+                          style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                        ),
+                        const SizedBox(height: 3),
+                        Row(
+                          children: [
+                            const Icon(Icons.event_available_rounded, size: 14, color: Color(0xFF4F46E5)),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                _formatDate(to),
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF0F172A)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // Quick Preset Filter Chips
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildQuickPresetChip('Today', () {
+                  final t = DateTime.now();
+                  setState(() {
+                    _dateFrom = t;
+                    _dateTo = t;
+                  });
+                }, isSingleDay && _isSameDay(from, now)),
+                const SizedBox(width: 6),
+                _buildQuickPresetChip('Yesterday', () {
+                  final y = DateTime.now().subtract(const Duration(days: 1));
+                  setState(() {
+                    _dateFrom = y;
+                    _dateTo = y;
+                  });
+                }, isSingleDay && _isSameDay(from, now.subtract(const Duration(days: 1)))),
+                const SizedBox(width: 6),
+                _buildQuickPresetChip('Last 7 Days', () {
+                  final t = DateTime.now();
+                  setState(() {
+                    _dateFrom = t.subtract(const Duration(days: 6));
+                    _dateTo = t;
+                  });
+                }, !isSingleDay && daysCount == 7),
+                const SizedBox(width: 6),
+                _buildQuickPresetChip('This Month', () {
+                  final t = DateTime.now();
+                  setState(() {
+                    _dateFrom = DateTime(t.year, t.month, 1);
+                    _dateTo = t;
+                  });
+                }, !isSingleDay && from.day == 1 && from.month == now.month && _isSameDay(to, now)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+
+          // Status subtitle badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: isSingleDay ? const Color(0xFFF1F5F9) : const Color(0xFFEEF2FF),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isSingleDay ? Icons.info_outline : Icons.check_circle_outline,
+                  size: 13,
+                  color: isSingleDay ? const Color(0xFF64748B) : const Color(0xFF4F46E5),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    isSingleDay
+                        ? 'Printing records for single day: ${_formatDate(from)}'
+                        : 'Printing records from ${_formatDate(from)} to ${_formatDate(to)} ($daysCount days)',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                      color: isSingleDay ? const Color(0xFF475569) : const Color(0xFF3C3489),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickPresetChip(String label, VoidCallback onTap, bool isSelected) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF3C3489) : Colors.white,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF3C3489) : const Color(0xFFCBD5E1),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 10.5,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+            color: isSelected ? Colors.white : const Color(0xFF475569),
+          ),
+        ),
       ),
     );
   }

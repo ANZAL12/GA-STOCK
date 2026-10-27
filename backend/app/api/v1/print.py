@@ -344,6 +344,10 @@ async def build_godown_report_pdf(
         )
         if payload.product_id:
             query = query.where(SerialNumber.product_id == payload.product_id)
+        if payload.date_from:
+            query = query.where(func.date(func.timezone("Asia/Kolkata", SerialNumber.updated_at)) >= payload.date_from)
+        if payload.date_to:
+            query = query.where(func.date(func.timezone("Asia/Kolkata", SerialNumber.updated_at)) <= payload.date_to)
 
         result = await db.execute(query)
         db_rows = result.all()
@@ -358,33 +362,45 @@ async def build_godown_report_pdf(
                 s_name or "Godown", date_marked
             ])
 
-    # 4. TODAY'S GODOWN SUMMARY
-    elif rtype == "today_summary":
-        report_title = "Today's Godown Operations Summary"
+    # 4. TODAY'S / RANGE OPERATIONS SUMMARY
+    elif rtype in ("today_summary", "operations_summary"):
         today = today_ist()
-        # Inward batches today
+        target_date_from = payload.date_from or today
+        target_date_to = payload.date_to or today
+
+        if target_date_from == target_date_to:
+            date_label = target_date_from.strftime("%d %b %Y").upper()
+            report_title = f"Godown Operations Summary - {date_label}"
+        else:
+            d_from_str = target_date_from.strftime("%d %b %Y").upper()
+            d_to_str = target_date_to.strftime("%d %b %Y").upper()
+            report_title = f"Operations Summary - {d_from_str} TO {d_to_str}"
+
+        # Inward batches
         res_in = await db.execute(
             select(InwardBatch, Product.name.label("p_name"), User.full_name.label("u_name"))
             .join(Product, InwardBatch.product_id == Product.id)
             .join(User, InwardBatch.received_by_user_id == User.id)
             .where(
                 or_(
-                    InwardBatch.transaction_date == today,
-                    func.date(func.timezone("Asia/Kolkata", InwardBatch.created_at)) == today,
+                    InwardBatch.transaction_date.between(target_date_from, target_date_to),
+                    func.date(func.timezone("Asia/Kolkata", InwardBatch.created_at)).between(target_date_from, target_date_to),
                 )
             )
+            .order_by(InwardBatch.created_at.asc())
         )
-        # Outward batches today
+        # Outward batches
         res_out = await db.execute(
             select(OutwardBatch, Shop.name.label("s_name"), User.full_name.label("u_name"))
             .join(Shop, OutwardBatch.shop_id == Shop.id)
             .join(User, OutwardBatch.dispatched_by_user_id == User.id)
             .where(
                 or_(
-                    OutwardBatch.transaction_date == today,
-                    func.date(func.timezone("Asia/Kolkata", OutwardBatch.created_at)) == today,
+                    OutwardBatch.transaction_date.between(target_date_from, target_date_to),
+                    func.date(func.timezone("Asia/Kolkata", OutwardBatch.created_at)).between(target_date_from, target_date_to),
                 )
             )
+            .order_by(OutwardBatch.created_at.asc())
         )
 
         headers = ["Type", "Reference", "Item / Destination", "Quantity", "User / Time"]
