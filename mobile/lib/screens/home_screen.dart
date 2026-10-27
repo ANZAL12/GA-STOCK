@@ -6,6 +6,7 @@ import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/add_shop_dialog.dart';
+import '../widgets/add_product_dialog.dart';
 import '../widgets/offline_banner.dart';
 import 'login_screen.dart';
 import 'inward_screen.dart';
@@ -211,6 +212,27 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     );
 
+    final cardAddModel = _buildActionCard(
+      isTablet: isTablet,
+      title: 'Add Product Model',
+      icon: Icons.add_shopping_cart_rounded,
+      iconColor: const Color(0xFF4F46E5),
+      iconBg: const Color(0xFFEEF2FF),
+      badgeText: 'New Model',
+      onTap: () async {
+        final newProd = await showAddProductDialog(context);
+        if (newProd != null && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Model "${newProd.brand} ${newProd.model}" created successfully!'),
+              backgroundColor: const Color(0xFF059669),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      },
+    );
+
     Widget? cardQueue;
     if (_pendingQueueCount > 0) {
       cardQueue = _buildActionCard(
@@ -400,10 +422,23 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Expanded(child: cardAddShop),
                         const SizedBox(width: 20),
-                        Expanded(child: cardQueue ?? const SizedBox()),
+                        Expanded(child: cardAddModel),
                       ],
                     ),
                   ),
+                  if (cardQueue != null) ...[
+                    const SizedBox(height: 20),
+                    IntrinsicHeight(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(child: cardQueue),
+                          const SizedBox(width: 20),
+                          const Expanded(child: SizedBox()),
+                        ],
+                      ),
+                    ),
+                  ],
                 ] else ...[
                   cardInward,
                   const SizedBox(height: 14),
@@ -418,6 +453,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   cardReportPrint,
                   const SizedBox(height: 14),
                   cardAddShop,
+                  const SizedBox(height: 14),
+                  cardAddModel,
                   if (cardQueue != null) ...[
                     const SizedBox(height: 14),
                     cardQueue,

@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 from typing import Annotated, Any, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,20 +78,21 @@ async def get_office_printers(
     }
 
 
-@router.post("/godown-report")
-async def print_godown_report(
+async def build_godown_report_pdf(
     payload: PrintReportRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-):
+    current_user: User,
+    db: AsyncSession,
+) -> tuple[str, bytes, int]:
     """
-    Generate Godown Report and immediately print it to the office PC printer over Tailscale.
+    Builds the exact A4 PDF report matching ReportLab templates.
+    Returns (report_title, pdf_bytes, records_count).
     """
     rtype = payload.report_type.lower().strip()
     report_title = "Godown Stock Report"
     subtitle = f"Global Agencies Godown Management  •  Printed by {current_user.full_name}"
     headers: list[str] = []
     rows: list[list[Any]] = []
+    col_widths: Optional[list[float]] = None
     pdf_bytes: Optional[bytes] = None
     records_count: int = 0
 
@@ -268,6 +269,7 @@ async def print_godown_report(
             "Available", "Dispatched", "Damaged", "Total Inward",
             "Unmatched Outward", "Status",
         ]
+        col_widths = [90.0, 60.0, 45.0, 55.0, 40.0, 40.0, 40.0, 38.0, 40.0, 50.0, 40.0]
         for p, cat_name, avail, disp, dam, tot_rec, unm_cnt in db_rows:
             label = "Out of Stock" if p.current_stock_qty <= 0 else "In Stock"
             rows.append([
@@ -315,6 +317,7 @@ async def print_godown_report(
         db_rows = result.all()
 
         headers = ["Date & Time", "Serial Number", "Product Model", "Destination Shop", "Delivery Ref", "Status", "Dispatcher"]
+        col_widths = [75.0, 85.0, 110.0, 95.0, 60.0, 48.0, 65.0]
         for l, p_name, p_brand, p_model, s_name, s_city, del_ref, u_name in db_rows:
             label = "Flagged" if l.is_flagged_for_review else ("Matched" if l.is_matched else "Recorded only")
             s_text = f"{l.serial_text} ({l.unit_type.capitalize()})" if l.unit_type else l.serial_text
@@ -346,6 +349,7 @@ async def print_godown_report(
         db_rows = result.all()
 
         headers = ["Serial Number", "Product", "Brand", "Model", "Condition", "Location/Shop", "Date Marked"]
+        col_widths = [85.0, 105.0, 55.0, 65.0, 65.0, 95.0, 68.0]
         for sn, p_name, p_brand, p_model, s_name in db_rows:
             sn_text = f"{sn.serial_number} ({sn.unit_type.capitalize()})" if sn.unit_type else sn.serial_number
             date_marked = format_ist_datetime(sn.updated_at, "%d %b %Y") if sn.updated_at else "-"
@@ -384,6 +388,7 @@ async def print_godown_report(
         )
 
         headers = ["Type", "Reference", "Item / Destination", "Quantity", "User / Time"]
+        col_widths = [60.0, 95.0, 195.0, 50.0, 138.0]
         for b, p_name, u_name in res_in.all():
             t_in = format_ist_time(b.created_at)
             ref = b.invoice_reference or f"Inward #{str(b.id)[:8]}"
@@ -400,12 +405,45 @@ async def print_godown_report(
 
     # Generate PDF bytes if not already generated
     if pdf_bytes is None:
-        if not rows:
-            rows.append(["No records found matching criteria", "-", "-", "-", "-", "-", "-"])
-        pdf_bytes = export_to_pdf(report_title, subtitle, headers, rows)
+        pdf_bytes = export_to_pdf(report_title, subtitle, headers, rows, col_widths=col_widths)
         records_count = len(rows)
 
-    # Dispatch to office PC printer
+    return report_title, pdf_bytes, records_count
+
+
+@router.post("/godown-report/preview")
+async def preview_godown_report(
+    payload: PrintReportRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Generate Godown Report and immediately return the exact A4 PDF bytes for in-app mobile preview.
+    Staff can inspect the exact A4 layout before printing.
+    """
+    report_title, pdf_bytes, records_count = await build_godown_report_pdf(payload, current_user, db)
+    filename = f"{report_title.replace(' ', '_')}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "X-Records-Count": str(records_count),
+            "X-Report-Title": report_title,
+        },
+    )
+
+
+@router.post("/godown-report")
+async def print_godown_report(
+    payload: PrintReportRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Generate Godown Report and immediately print it to the office PC printer over Tailscale.
+    """
+    report_title, pdf_bytes, records_count = await build_godown_report_pdf(payload, current_user, db)
     job_name = report_title if "INWARD SERIAL REGISTER" in report_title else f"{report_title} - {date.today()}"
     try:
         print_res = await PrintService.print_pdf(

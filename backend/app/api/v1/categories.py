@@ -60,11 +60,11 @@ async def list_categories(
 @router.post("", response_model=CategoryResponse, status_code=status.HTTP_201_CREATED)
 async def create_category(
     req: CategoryCreate,
-    admin: Annotated[User, Depends(require_admin)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CategoryResponse:
     """
-    Admin only: add a new product category.
+    Add a new product category (accessible by staff and admin).
     """
     clean_name = req.name.strip()
     existing = await db.execute(select(Category).where(func.lower(Category.name) == clean_name.lower()))
@@ -83,7 +83,7 @@ async def create_category(
     await db.flush()
 
     audit = AuditLog(
-        user_id=admin.id,
+        user_id=current_user.id,
         action="CATEGORY_CREATED",
         entity_type="category",
         entity_id=str(category.id),

@@ -3,6 +3,7 @@ import '../services/api_service.dart';
 import '../models/models.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/top_toast.dart';
+import 'godown_report_preview_screen.dart';
 
 class GodownReportPrintScreen extends StatefulWidget {
   const GodownReportPrintScreen({super.key});
@@ -36,8 +37,9 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
   List<Product> _products = [];
   List<Shop> _shops = [];
 
-  // Printing State
+  // Printing & Preview State
   bool _isPrinting = false;
+  bool _isPreviewing = false;
   String? _lastPrintSuccessMessage;
 
   @override
@@ -105,6 +107,62 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
         });
       }
     } catch (_) {}
+  }
+
+  Future<void> _handlePreviewA4Report() async {
+    setState(() {
+      _isPreviewing = true;
+    });
+
+    try {
+      final pdfBytes = await _api.previewGodownReport(
+        reportType: _selectedReportType,
+        productId: _selectedProduct?.id,
+        shopId: _selectedShop?.id,
+        dateFrom: _dateFrom?.toIso8601String().split('T').first,
+        dateTo: _dateTo?.toIso8601String().split('T').first,
+        inwardType: _selectedInwardType,
+      );
+
+      if (!mounted) return;
+      setState(() => _isPreviewing = false);
+
+      String reportTitle = 'Godown Stock Report';
+      if (_selectedReportType == 'today_inward_serials') {
+        reportTitle = 'Inward Serial Register';
+      } else if (_selectedReportType == 'stock_by_model') {
+        reportTitle = 'Stock by Model Report';
+      } else if (_selectedReportType == 'stock_out') {
+        reportTitle = 'Stock Out Dispatch Report';
+      } else if (_selectedReportType == 'unmatched_outward') {
+        reportTitle = 'Unmatched Outward Report';
+      } else if (_selectedReportType == 'damaged') {
+        reportTitle = 'Damaged Stock Report';
+      } else if (_selectedReportType == 'today_summary') {
+        reportTitle = 'Today Operations Summary';
+      }
+
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => GodownReportPreviewScreen(
+            pdfBytes: pdfBytes,
+            reportTitle: reportTitle,
+            selectedPrinter: _selectedPrinter,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isPreviewing = false);
+        TopToast.show(
+          context,
+          message: 'Preview Failed: ${e.toString().replaceAll('Exception: ', '')}',
+          backgroundColor: const Color(0xFFEF4444),
+          icon: Icons.error_outline_rounded,
+        );
+      }
+    }
   }
 
   Future<void> _handlePrintReport() async {
@@ -176,6 +234,17 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
           IconButton(
+            tooltip: 'A4 Print Preview',
+            icon: _isPreviewing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(color: Color(0xFF3C3489), strokeWidth: 2),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined, color: Color(0xFF3C3489)),
+            onPressed: (_isPreviewing || _isPrinting) ? null : _handlePreviewA4Report,
+          ),
+          IconButton(
             tooltip: 'Refresh Printers',
             icon: const Icon(Icons.refresh_rounded, color: Color(0xFF3C3489)),
             onPressed: _loadingPrinters ? null : _fetchPrinters,
@@ -238,8 +307,30 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
             ],
 
             // ── ACTION BUTTONS ─────────────────────────────────────────────
+            OutlinedButton.icon(
+              onPressed: (_isPreviewing || _isPrinting) ? null : _handlePreviewA4Report,
+              icon: _isPreviewing
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(color: Color(0xFF3C3489), strokeWidth: 2),
+                    )
+                  : const Icon(Icons.picture_as_pdf_rounded, size: 20),
+              label: Text(
+                _isPreviewing ? 'Generating Exact A4 Document...' : 'Preview',
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF3C3489),
+                side: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
+                backgroundColor: const Color(0xFFEEF2FF),
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 17 : 14),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+            const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: _isPrinting ? null : _handlePrintReport,
+              onPressed: (_isPrinting || _isPreviewing) ? null : _handlePrintReport,
               icon: _isPrinting
                   ? const SizedBox(
                       width: 20,

@@ -165,39 +165,56 @@ def export_to_pdf(
 
     # Proportional column width distribution to guarantee true A4 width fit (538 pt)
     content_width = 538.0
+    has_real_records = any(
+        r and any(str(cell).strip() not in ("", "-", "None", "No records found matching criteria") for cell in r)
+        for r in rows
+    )
+
     if not col_widths and headers:
         col_weights = []
         for c_idx in range(len(headers)):
             h_text = headers[c_idx]
             max_len = max(len(h_text), 6)
-            for r in rows[:100]:
-                if c_idx < len(r):
-                    max_len = max(max_len, len(str(r[c_idx] or "")))
+            if has_real_records:
+                for r in rows[:100]:
+                    if c_idx < len(r):
+                        max_len = max(max_len, len(str(r[c_idx] or "")))
             col_weights.append(min(max_len, 32))
         tot_weight = sum(col_weights) or 1.0
         col_widths = [(w / tot_weight) * content_width for w in col_weights]
 
-    # Convert headers & rows to Paragraphs
+    # Convert headers to Paragraphs
     table_data = [[Paragraph(h, head_style) for h in headers]]
-    for r in rows:
-        table_data.append([Paragraph(str(v) if v is not None else "", cell_style) for v in r])
+    table_styles = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3C3489")),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+    ]
 
-    t = Table(table_data, colWidths=col_widths, repeatRows=1)
-    t.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3C3489")),
-                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 2.5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-                ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
-            ]
-        )
-    )
+    if not has_real_records:
+        empty_msg = Paragraph('<font color="#64748B"><i>No records found matching criteria for this period</i></font>', cell_style)
+        dummy_row = [empty_msg]
+        for _ in range(len(headers) - 1):
+            dummy_row.append(Paragraph("", cell_style))
+        table_data.append(dummy_row)
+        table_styles.append(("SPAN", (0, 1), (-1, 1)))
+        table_styles.append(("ALIGN", (0, 1), (-1, 1), "CENTER"))
+    else:
+        for r in rows:
+            row_items = []
+            for c_idx in range(len(headers)):
+                val = r[c_idx] if c_idx < len(r) and r[c_idx] is not None else ""
+                row_items.append(Paragraph(str(val), cell_style))
+            table_data.append(row_items)
+
+    t = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+    t.setStyle(TableStyle(table_styles))
     story.append(t)
     doc.build(story, canvasmaker=GeneralReportNumberedCanvas)
     return buf.getvalue()

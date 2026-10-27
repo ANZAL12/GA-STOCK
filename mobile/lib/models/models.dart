@@ -156,6 +156,40 @@ class Shop {
   };
 }
 
+class Category {
+  final String id;
+  final String name;
+  final bool hasDualSerial;
+  final bool isActive;
+  final int productCount;
+
+  Category({
+    required this.id,
+    required this.name,
+    this.hasDualSerial = false,
+    this.isActive = true,
+    this.productCount = 0,
+  });
+
+  factory Category.fromJson(Map<String, dynamic> json) {
+    return Category(
+      id: json['id'] ?? '',
+      name: json['name'] ?? '',
+      hasDualSerial: json['has_dual_serial'] ?? false,
+      isActive: json['is_active'] ?? true,
+      productCount: json['product_count'] ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'has_dual_serial': hasDualSerial,
+    'is_active': isActive,
+    'product_count': productCount,
+  };
+}
+
 enum OutwardCase {
   matched, // Case 1: tracked & available
   recordedOnly, // Case 2: pre-go-live stock, not inwarded

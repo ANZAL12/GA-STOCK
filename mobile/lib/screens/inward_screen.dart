@@ -11,6 +11,7 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
+import '../widgets/add_product_dialog.dart';
 import '../services/sound_service.dart';
 
 enum InwardStage {
@@ -353,6 +354,24 @@ class _InwardScreenState extends State<InwardScreen> {
       _inwardUnitType = 'indoor';
       _stage = InwardStage.scanning;
     });
+  }
+
+  Future<void> _handleAddNewModel() async {
+    final newProduct = await showAddProductDialog(
+      context,
+      initialModel: _productSearch.isNotEmpty ? _productSearch : null,
+    );
+    if (newProduct != null && mounted) {
+      setState(() {
+        _products.removeWhere((p) => p.id == newProduct.id);
+        _products.insert(0, newProduct);
+      });
+      _onModelSelectedForStockIn(newProduct);
+      TopToast.show(
+        context,
+        message: 'Product model "${newProduct.brand} ${newProduct.model}" added and selected for inward.',
+      );
+    }
   }
 
   Future<bool> _handleWillPop() async {
@@ -890,17 +909,41 @@ class _InwardScreenState extends State<InwardScreen> {
                                         children: [
                                           const Text('No models match your search locally.', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
                                           const SizedBox(height: 8),
-                                          ElevatedButton.icon(
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: const Color(0xFF4F46E5),
-                                              foregroundColor: Colors.white,
-                                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                            ),
-                                            icon: isSyncing
-                                                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                                : const Icon(Icons.cloud_sync_outlined, size: 16),
-                                            label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
-                                            onPressed: isSyncing ? null : () => syncFreshModels(query: filter),
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            children: [
+                                              ElevatedButton.icon(
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: const Color(0xFF4F46E5),
+                                                  foregroundColor: Colors.white,
+                                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                ),
+                                                icon: isSyncing
+                                                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                                    : const Icon(Icons.cloud_sync_outlined, size: 16),
+                                                label: Text(isSyncing ? 'Syncing...' : 'Sync Models'),
+                                                onPressed: isSyncing ? null : () => syncFreshModels(query: filter),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              ElevatedButton.icon(
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: const Color(0xFF059669),
+                                                  foregroundColor: Colors.white,
+                                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                ),
+                                                icon: const Icon(Icons.add_shopping_cart_rounded, size: 16),
+                                                label: const Text('Add Model'),
+                                                onPressed: () async {
+                                                  final newProd = await showAddProductDialog(
+                                                    context,
+                                                    initialModel: filter.isNotEmpty ? filter : null,
+                                                  );
+                                                  if (newProd != null && ctx.mounted) {
+                                                    Navigator.pop(ctx, newProd);
+                                                  }
+                                                },
+                                              ),
+                                            ],
                                           ),
                                         ],
                                       ),
@@ -2016,114 +2059,174 @@ class _InwardScreenState extends State<InwardScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            decoration: InputDecoration(
-              hintText: 'Search brand, model, or SKU...',
-              prefixIcon: const Icon(Icons.search, size: 20),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                 Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search brand, model, or SKU...',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    filled: true,
+                    fillColor: Colors.white,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                    ),
+                  ),
+                  onChanged: (val) => setState(() => _productSearch = val),
+                ),
               ),
-            ),
-            onChanged: (val) => setState(() => _productSearch = val),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4F46E5),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 0,
+                ),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Add Model', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                onPressed: _handleAddNewModel,
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Expanded(
-            child: ListView.separated(
-              itemCount: filtered.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (ctx, idx) {
-                final p = filtered[idx];
-                return Material(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  child: InkWell(
-                    onTap: () => _onModelSelectedForStockIn(p),
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
+            child: filtered.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF1F5F9),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: const Icon(Icons.inventory_2, color: Color(0xFF475569), size: 20),
+                          Icon(Icons.inventory_2_outlined, size: 48, color: Colors.grey.shade400),
+                          const SizedBox(height: 12),
+                          Text(
+                            _productSearch.isEmpty
+                                ? 'No product models found'
+                                : 'No models matching "$_productSearch"',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Color(0xFF1E293B)),
+                            textAlign: TextAlign.center,
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  p.name,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${p.brand} • ${p.model}',
-                                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
-                                ),
-                                if (p.hasDualSerial) ...[
-                                  const SizedBox(height: 4),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFF3E8FF),
-                                      borderRadius: BorderRadius.circular(4),
-                                      border: Border.all(color: const Color(0xFFDDD6FE)),
-                                    ),
-                                    child: const Text(
-                                      'Dual Serial (Indoor + Outdoor)',
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                        color: Color(0xFF7C3AED),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Receive a new model delivered to godown that is not registered yet?',
+                            style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                            textAlign: TextAlign.center,
                           ),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                '${p.currentStockQty} ${p.unit}s',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                  color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF0F172A),
-                                ),
-                              ),
-                              Text(
-                                p.currentStockQty < 0 ? 'negative stock' : 'on shelves',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF94A3B8),
-                                  fontWeight: p.currentStockQty < 0 ? FontWeight.bold : FontWeight.normal,
-                                ),
-                              ),
-                            ],
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF4F46E5),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                            ),
+                            icon: const Icon(Icons.add_shopping_cart_rounded, size: 18),
+                            label: Text(
+                              _productSearch.isNotEmpty ? 'Add "$_productSearch" as Model' : 'Add New Product Model',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            onPressed: _handleAddNewModel,
                           ),
                         ],
                       ),
                     ),
+                  )
+                : ListView.separated(
+                    itemCount: filtered.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
+                    itemBuilder: (ctx, idx) {
+                      final p = filtered[idx];
+                      return Material(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        child: InkWell(
+                          onTap: () => _onModelSelectedForStockIn(p),
+                          borderRadius: BorderRadius.circular(14),
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF1F5F9),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: const Icon(Icons.inventory_2, color: Color(0xFF475569), size: 20),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        p.name,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '${p.brand} • ${p.model}',
+                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
+                                      ),
+                                      if (p.hasDualSerial) ...[
+                                        const SizedBox(height: 4),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFF5F3FF),
+                                            borderRadius: BorderRadius.circular(4),
+                                            border: Border.all(color: const Color(0xFFDDD6FE)),
+                                          ),
+                                          child: const Text(
+                                            'Dual Serial (Indoor + Outdoor)',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Color(0xFF7C3AED),
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      '${p.currentStockQty} ${p.unit}s',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                        color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF0F172A),
+                                      ),
+                                    ),
+                                    Text(
+                                      p.currentStockQty < 0 ? 'negative stock' : 'on shelves',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF94A3B8),
+                                        fontWeight: p.currentStockQty < 0 ? FontWeight.bold : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -589,6 +590,99 @@ class ApiService {
     }
   }
 
+  // --- CATEGORIES & PRODUCTS CREATION ---
+  Future<List<Category>> getCategories({bool forceRefresh = false}) async {
+    try {
+      final res = await _authenticatedGet(Uri.parse('$_baseUrl/categories?active_only=true'));
+      if (res.statusCode == 200) {
+        final List list = jsonDecode(res.body);
+        return list.map((c) => Category.fromJson(c)).toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<Category> createCategory({
+    required String name,
+    bool hasDualSerial = false,
+  }) async {
+    final payload = {
+      'name': name.trim(),
+      'has_dual_serial': hasDualSerial,
+    };
+    final res = await _authenticatedPost(
+      Uri.parse('$_baseUrl/categories'),
+      body: jsonEncode(payload),
+    );
+    if (res.statusCode == 201) {
+      final data = jsonDecode(res.body);
+      return Category.fromJson(data);
+    }
+    try {
+      final body = jsonDecode(res.body);
+      throw Exception(body['detail'] ?? 'Failed to create category');
+    } catch (e) {
+      if (e is Exception && !e.toString().contains('FormatException')) {
+        rethrow;
+      }
+      throw Exception('Server error (${res.statusCode}): Failed to create category');
+    }
+  }
+
+  Future<Product> createProduct({
+    required String brand,
+    required String model,
+    required String categoryId,
+    String? name,
+    String? sku,
+    String? sizeCapacity,
+    String unit = 'piece',
+    bool serialNumberRequired = true,
+    String? description,
+    int openingStockQty = 0,
+  }) async {
+    final cleanBrand = brand.trim();
+    final cleanModel = model.trim();
+    final autoName = (name != null && name.trim().isNotEmpty)
+        ? name.trim()
+        : '$cleanBrand $cleanModel';
+
+    final payload = {
+      'name': autoName,
+      'brand': cleanBrand,
+      'model': cleanModel,
+      'category_id': categoryId,
+      if (sku != null && sku.trim().isNotEmpty) 'sku': sku.trim(),
+      if (sizeCapacity != null && sizeCapacity.trim().isNotEmpty) 'size_capacity': sizeCapacity.trim(),
+      'unit': unit,
+      'serial_number_required': serialNumberRequired,
+      if (description != null && description.trim().isNotEmpty) 'description': description.trim(),
+      'opening_stock_qty': openingStockQty,
+    };
+
+    final res = await _authenticatedPost(
+      Uri.parse('$_baseUrl/products'),
+      body: jsonEncode(payload),
+    );
+
+    if (res.statusCode == 201) {
+      final data = jsonDecode(res.body);
+      final newProd = Product.fromJson(data);
+      updateCachedProduct(newProd);
+      return newProd;
+    }
+
+    try {
+      final body = jsonDecode(res.body);
+      throw Exception(body['detail'] ?? 'Failed to create product model');
+    } catch (e) {
+      if (e is Exception && !e.toString().contains('FormatException')) {
+        rethrow;
+      }
+      throw Exception('Server error (${res.statusCode}): Failed to create product model');
+    }
+  }
+
   void clearSerialCheckCache() {
     _outwardSerialCheckCache.clear();
     _inwardSerialValidateCache.clear();
@@ -1034,6 +1128,40 @@ class ApiService {
       return jsonDecode(res.body) as Map<String, dynamic>;
     } else {
       String msg = 'Failed to print Godown Report on Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Uint8List> previewGodownReport({
+    required String reportType,
+    String? categoryId,
+    String? shopId,
+    String? productId,
+    String? dateFrom,
+    String? dateTo,
+    String? inwardType,
+    bool? isMatched,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/print/godown-report/preview');
+    final payload = <String, dynamic>{
+      'report_type': reportType,
+    };
+    if (categoryId != null) payload['category_id'] = categoryId;
+    if (shopId != null) payload['shop_id'] = shopId;
+    if (productId != null) payload['product_id'] = productId;
+    if (dateFrom != null) payload['date_from'] = dateFrom;
+    if (dateTo != null) payload['date_to'] = dateTo;
+    if (inwardType != null && inwardType.isNotEmpty) payload['inward_type'] = inwardType;
+    if (isMatched != null) payload['is_matched'] = isMatched;
+
+    final res = await _authenticatedPost(uri, body: jsonEncode(payload));
+    if (res.statusCode == 200) {
+      return res.bodyBytes;
+    } else {
+      String msg = 'Failed to generate A4 print preview';
       try {
         msg = jsonDecode(res.body)['detail'] ?? msg;
       } catch (_) {}

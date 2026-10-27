@@ -127,11 +127,11 @@ async def get_product(
 @router.post("", response_model=ProductResponse, status_code=status.HTTP_201_CREATED)
 async def create_product(
     req: ProductCreate,
-    admin: Annotated[User, Depends(require_admin)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProductResponse:
     """
-    Admin only: add a new product model.
+    Add a new product model (accessible by staff and admin).
     Initial current_stock_qty starts equal to opening_stock_qty.
     """
     # Verify category exists
@@ -168,7 +168,7 @@ async def create_product(
     await db.flush()
 
     audit = AuditLog(
-        user_id=admin.id,
+        user_id=current_user.id,
         action="PRODUCT_CREATED",
         entity_type="product",
         entity_id=str(product.id),
