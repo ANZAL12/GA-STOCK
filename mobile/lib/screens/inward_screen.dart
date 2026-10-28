@@ -6,6 +6,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
+import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
@@ -367,9 +368,13 @@ class _InwardScreenState extends State<InwardScreen> {
         _products.insert(0, newProduct);
       });
       _onModelSelectedForStockIn(newProduct);
+      final isOffline = newProduct.id.startsWith('offline_');
       TopToast.show(
         context,
-        message: 'Product model "${newProduct.brand} ${newProduct.model}" added and selected for inward.',
+        message: isOffline
+            ? 'Model "${newProduct.brand} ${newProduct.model}" added offline. Ready to scan; will sync when back online.'
+            : 'Product model "${newProduct.brand} ${newProduct.model}" added and selected for inward.',
+        icon: isOffline ? Icons.cloud_off_rounded : Icons.check_circle_rounded,
       );
     }
   }
@@ -1507,6 +1512,51 @@ class _InwardScreenState extends State<InwardScreen> {
       };
     }).toList();
 
+    // Direct offline submission when device is not connected
+    if (!OfflineManager().isOnline) {
+      final batch = QueuedBatch(
+        id: const Uuid().v4(),
+        type: QueueType.inward,
+        createdAt: DateTime.now(),
+        payload: {
+          'items': multiBatchItems,
+          'remarks': _remarksController.text.trim(),
+        },
+        description: '${_getInwardTypeTitle(_inwardType)}: ${_scannedItems.length} units',
+      );
+      await _queue.enqueue(batch);
+
+      // Record scanned serials directly into local offline inventory cache
+      for (final item in _scannedItems) {
+        OfflineManager().recordScannedInwardSerial(
+          serialNumber: item.serialNumber,
+          productId: item.product.id,
+          modelName: '${item.product.brand} ${item.product.model}',
+          unitType: item.unitType,
+          inwardType: _inwardType,
+        );
+      }
+
+      setState(() => _submitting = false);
+      _inwardRequestId = null;
+      if (!mounted) return;
+      TopToast.show(
+        context,
+        message: '✓ Inward batch saved to Offline Queue! Will automatically sync when online.',
+        backgroundColor: const Color(0xFF2563EB),
+        icon: Icons.cloud_done_rounded,
+      );
+      setState(() {
+        _scannedItems.clear();
+        _scannedSerialSet.clear();
+        _sequenceCounter = 1;
+        _scanQueue.clear();
+        _isProcessingQueue = false;
+      });
+      Navigator.pop(context);
+      return;
+    }
+
     try {
       final remarks = _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim();
       final result = await _api.submitInwardMultiBatch(
@@ -1668,14 +1718,33 @@ class _InwardScreenState extends State<InwardScreen> {
           description: '${_getInwardTypeTitle(_inwardType)}: ${_scannedItems.length} units',
         );
         await _queue.enqueue(batch);
+
+        // Record scanned serials directly into local offline inventory cache
+        for (final item in _scannedItems) {
+          OfflineManager().recordScannedInwardSerial(
+            serialNumber: item.serialNumber,
+            productId: item.product.id,
+            modelName: '${item.product.brand} ${item.product.model}',
+            unitType: item.unitType,
+            inwardType: _inwardType,
+          );
+        }
+
         _inwardRequestId = null;
         if (!mounted) return;
         TopToast.show(
           context,
-          message: '✓ Inward batch saved to Offline Queue!',
+          message: '✓ Inward batch saved to Offline Queue! Will automatically sync when online.',
           backgroundColor: const Color(0xFF2563EB),
           icon: Icons.cloud_done_rounded,
         );
+        setState(() {
+          _scannedItems.clear();
+          _scannedSerialSet.clear();
+          _sequenceCounter = 1;
+          _scanQueue.clear();
+          _isProcessingQueue = false;
+        });
         Navigator.pop(context);
       }
     }

@@ -137,6 +137,22 @@ class Shop {
     required this.isActive,
   });
 
+  Shop copyWith({
+    String? id,
+    String? name,
+    String? city,
+    String? phone,
+    bool? isActive,
+  }) {
+    return Shop(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      city: city ?? this.city,
+      phone: phone ?? this.phone,
+      isActive: isActive ?? this.isActive,
+    );
+  }
+
   factory Shop.fromJson(Map<String, dynamic> json) {
     return Shop(
       id: json['id'] ?? '',

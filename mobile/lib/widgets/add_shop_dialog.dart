@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/offline_manager.dart';
 import 'responsive_utils.dart';
 
 /// Shows a dialog or modal sheet to add a new shop with only shop name.
@@ -148,6 +149,33 @@ class _AddShopDialogState extends State<AddShopDialog> {
                           ),
                         ],
                       ),
+
+                      if (!OfflineManager().isOnline) ...[
+                        SizedBox(height: isTablet ? 14 : 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEF3C7),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFFCD34D)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.wifi_off_rounded, size: 14, color: Color(0xFF92400E)),
+                              SizedBox(width: 6),
+                              Text(
+                                'Offline Ready (Will Sync to server on reconnect)',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF92400E),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
 
                       if (_errorMessage != null) ...[
                         SizedBox(height: isTablet ? 16 : 12),

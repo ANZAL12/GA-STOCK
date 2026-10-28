@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/offline_manager.dart';
 import 'responsive_utils.dart';
 
 /// Shows a dialog to add a new Product Model matching the Master Product Catalog.
@@ -339,6 +340,32 @@ class _AddProductDialogState extends State<AddProductDialog> {
                                     ),
                                   ),
                                 ),
+                                if (!OfflineManager().isOnline) ...[
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFEF3C7),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: const Color(0xFFFDE68A)),
+                                    ),
+                                    child: const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.cloud_off_rounded, size: 14, color: Color(0xFFB45309)),
+                                        SizedBox(width: 4),
+                                        Text(
+                                          'Offline Ready (Will Sync)',
+                                          style: TextStyle(
+                                            color: Color(0xFFB45309),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 16),

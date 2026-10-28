@@ -13,6 +13,8 @@ class OfflineQueueScreen extends StatefulWidget {
 class _OfflineQueueScreenState extends State<OfflineQueueScreen> {
   final OfflineQueueService _queue = OfflineQueueService();
   List<QueuedBatch> _batches = [];
+  List<QueuedProduct> _pendingProducts = [];
+  List<QueuedShop> _pendingShops = [];
   bool _loading = true;
   bool _syncing = false;
 
@@ -24,9 +26,13 @@ class _OfflineQueueScreenState extends State<OfflineQueueScreen> {
 
   Future<void> _loadQueue() async {
     final list = await _queue.getQueue();
+    final prods = await _queue.getPendingProducts();
+    final shops = await _queue.getPendingShops();
     if (mounted) {
       setState(() {
         _batches = list;
+        _pendingProducts = prods;
+        _pendingShops = shops;
         _loading = false;
       });
     }
@@ -170,7 +176,7 @@ class _OfflineQueueScreenState extends State<OfflineQueueScreen> {
         foregroundColor: const Color(0xFF0F172A),
         title: const Text('Offline Sync Queue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         actions: [
-          if (_batches.isNotEmpty)
+          if (_batches.isNotEmpty || _pendingProducts.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.refresh_rounded, size: 22),
               tooltip: 'Refresh Queue',
@@ -180,7 +186,7 @@ class _OfflineQueueScreenState extends State<OfflineQueueScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _batches.isEmpty
+          : (_batches.isEmpty && _pendingProducts.isEmpty && _pendingShops.isEmpty)
               ? Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -210,13 +216,121 @@ class _OfflineQueueScreenState extends State<OfflineQueueScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              '${_batches.length} batch(es) stored locally awaiting upload to server.',
+                              () {
+                                final parts = <String>[];
+                                if (_pendingProducts.isNotEmpty) parts.add('${_pendingProducts.length} new model(s)');
+                                if (_pendingShops.isNotEmpty) parts.add('${_pendingShops.length} new shop(s)');
+                                parts.add('${_batches.length} batch(es)');
+                                return '${parts.join(" & ")} stored locally awaiting upload to server.';
+                              }(),
                               style: const TextStyle(fontSize: 12, color: Color(0xFFD97706), fontWeight: FontWeight.w600),
                             ),
                           ),
                         ],
                       ),
                     ),
+                    if (_pendingProducts.isNotEmpty)
+                      Container(
+                        margin: EdgeInsets.symmetric(
+                          horizontal: isTablet ? 32 : 16,
+                          vertical: 6,
+                        ),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FDF4),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFBBF7D0)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.inventory_2_outlined, size: 16, color: Color(0xFF15803D)),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Offline-Created Models (${_pendingProducts.length})',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF15803D)),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            ..._pendingProducts.map((p) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.arrow_right, size: 16, color: Color(0xFF16A34A)),
+                                  Expanded(
+                                    child: Text(
+                                      '${p.brand} ${p.model} (${p.categoryName ?? "General"})',
+                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF166534)),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFDCFCE7),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text('Pending Sync', style: TextStyle(fontSize: 10, color: Color(0xFF15803D), fontWeight: FontWeight.bold)),
+                                  ),
+                                ],
+                              ),
+                            )),
+                          ],
+                        ),
+                      ),
+                    if (_pendingShops.isNotEmpty)
+                      Container(
+                        margin: EdgeInsets.symmetric(
+                          horizontal: isTablet ? 32 : 16,
+                          vertical: 6,
+                        ),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0F9FF),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFBAE6FD)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.storefront_outlined, size: 16, color: Color(0xFF0369A1)),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Offline-Created Shops (${_pendingShops.length})',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0369A1)),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            ..._pendingShops.map((s) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.arrow_right, size: 16, color: Color(0xFF0284C7)),
+                                  Expanded(
+                                    child: Text(
+                                      s.city.trim().isNotEmpty ? '${s.name} (${s.city.trim()})' : s.name,
+                                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF075985)),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFE0F2FE),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text('Pending Sync', style: TextStyle(fontSize: 10, color: Color(0xFF0369A1), fontWeight: FontWeight.bold)),
+                                  ),
+                                ],
+                              ),
+                            )),
+                          ],
+                        ),
+                      ),
                     Expanded(
                       child: ListView.separated(
                         padding: EdgeInsets.symmetric(
@@ -382,7 +496,7 @@ class _OfflineQueueScreenState extends State<OfflineQueueScreen> {
                                   )
                                 : const Icon(Icons.cloud_upload_outlined, size: 20),
                             label: Text(
-                              _syncing ? 'Uploading to Server...' : 'Sync All to Server (${_batches.length})',
+                              _syncing ? 'Uploading to Server...' : 'Sync All to Server (${_batches.length + _pendingProducts.length + _pendingShops.length})',
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                             ),
                             onPressed: _syncing ? null : _triggerSync,

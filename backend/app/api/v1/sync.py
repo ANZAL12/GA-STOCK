@@ -60,7 +60,21 @@ async def get_offline_snapshot(
         for p, cat_name, has_dual in prod_rows
     ]
 
-    # 2. Active Shops
+    # 2. Active Categories
+    cat_res = await db.execute(
+        select(Category).where(Category.is_active == True).order_by(Category.name)
+    )
+    categories_list = [
+        {
+            "id": str(c.id),
+            "name": c.name,
+            "has_dual_serial": c.has_dual_serial,
+            "is_active": c.is_active,
+        }
+        for c in cat_res.scalars().all()
+    ]
+
+    # 3. Active Shops
     shop_res = await db.execute(
         select(Shop).where(Shop.is_active == True).order_by(Shop.name)
     )
@@ -147,6 +161,7 @@ async def get_offline_snapshot(
     return {
         "server_time": datetime.now(timezone.utc).isoformat(),
         "products": products_list,
+        "categories": categories_list,
         "shops": shops_list,
         "serials": serials_map,
         "total_serials_cached": len(serials_map),

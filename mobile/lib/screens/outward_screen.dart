@@ -12,6 +12,7 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
+import '../widgets/add_shop_dialog.dart';
 import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
 
@@ -2024,6 +2025,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     final dispatchPayload = {
       'shop_id': _selectedShop!.id,
+      'shop_name': _selectedShop!.name,
       'items': batchItems,
       'bill_number': billNumber.isEmpty ? null : billNumber,
       'delivery_reference': deliveryRef.isEmpty ? null : deliveryRef,
@@ -2031,8 +2033,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
       'client_request_id': _dispatchRequestId,
     };
 
-    if (!OfflineManager().isOnline) {
+    final bool hasOfflineShop = _selectedShop!.id.startsWith('offline_');
+    final bool hasOfflineProduct = batchItems.any((item) => (item['product_id']?.toString() ?? '').startsWith('offline_'));
+
+    if (!OfflineManager().isOnline || hasOfflineShop || hasOfflineProduct) {
       await OfflineManager().queueDispatch(dispatchPayload);
+      await _queue.enqueue(QueuedBatch(
+        id: const Uuid().v4(),
+        type: QueueType.outward,
+        createdAt: DateTime.now(),
+        payload: dispatchPayload,
+        description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units)',
+      ));
       _dispatchRequestId = null;
       if (!mounted) return;
       setState(() {
@@ -2044,7 +2056,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _isProcessingQueue = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Dispatch saved offline • Will auto-sync when online!')),
+        SnackBar(
+          content: Text(
+            hasOfflineShop
+                ? 'Shop and dispatch saved offline • Will auto-sync when online!'
+                : 'Dispatch saved offline • Will auto-sync when online!',
+          ),
+        ),
       );
       Navigator.pop(context);
       return;
@@ -2284,6 +2302,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
       if (isNetError) {
         OfflineManager().markOffline();
         await OfflineManager().queueDispatch(dispatchPayload);
+        await _queue.enqueue(QueuedBatch(
+          id: const Uuid().v4(),
+          type: QueueType.outward,
+          createdAt: DateTime.now(),
+          payload: dispatchPayload,
+          description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units)',
+        ));
         _dispatchRequestId = null;
         if (!mounted) return;
         setState(() {
@@ -2512,6 +2537,41 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
+  Future<void> _handleAddNewShop() async {
+    final newShop = await showAddShopDialog(
+      context,
+      initialName: _shopSearch.trim().isNotEmpty ? _shopSearch.trim() : null,
+    );
+    if (newShop != null && mounted) {
+      setState(() {
+        final existingIdx = _shops.indexWhere((s) => s.id == newShop.id);
+        if (existingIdx != -1) {
+          _shops[existingIdx] = newShop;
+        } else {
+          _shops.insert(0, newShop);
+        }
+        _selectedShop = newShop;
+        _currentStep = 2;
+      });
+
+      if (newShop.id.startsWith('offline_')) {
+        TopToast.show(
+          context,
+          message: 'Shop "${newShop.name}" created offline. Will sync to server on reconnect.',
+          backgroundColor: const Color(0xFFD97706),
+          icon: Icons.wifi_off_rounded,
+        );
+      } else {
+        TopToast.show(
+          context,
+          message: 'Shop "${newShop.name}" added successfully',
+          backgroundColor: const Color(0xFF059669),
+          icon: Icons.check_circle_outline,
+        );
+      }
+    }
+  }
+
   // STEP 1: Select Shop
   Widget _buildShopSelector() {
     if (_loadingShops || _loadingProducts) return const Center(child: CircularProgressIndicator());
@@ -2553,87 +2613,154 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          TextField(
-            decoration: InputDecoration(
-              hintText: 'Search dealer shop or city...',
-              prefixIcon: const Icon(Icons.search, size: 20),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search dealer shop or city...',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    filled: true,
+                    fillColor: Colors.white,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                    ),
+                  ),
+                  onChanged: (val) => setState(() => _shopSearch = val),
+                ),
               ),
-            ),
-            onChanged: (val) => setState(() => _shopSearch = val),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _handleAddNewShop,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Add Shop', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF3C3489),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Expanded(
-            child: ListView.separated(
-              itemCount: filtered.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 8),
-              itemBuilder: (ctx, idx) {
-                final s = filtered[idx];
-                return Material(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  child: InkWell(
-                    onTap: () {
-                      setState(() {
-                        _selectedShop = s;
-                        _currentStep = 2;
-                      });
-                    },
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
+            child: filtered.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24.0),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Container(
-                            width: 42,
-                            height: 42,
-                            padding: const EdgeInsets.all(6),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF8FAFC),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                          Icon(Icons.storefront_outlined, size: 48, color: Colors.grey.shade400),
+                          const SizedBox(height: 12),
+                          Text(
+                            _shopSearch.trim().isNotEmpty
+                                ? 'No dealer shop matching "$_shopSearch"'
+                                : 'No shops available',
+                            style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            onPressed: _handleAddNewShop,
+                            icon: const Icon(Icons.add, size: 18),
+                            label: Text(
+                              _shopSearch.trim().isNotEmpty ? 'Add "$_shopSearch"' : 'Add New Shop',
                             ),
-                            child: Image.asset(
-                              'assets/images/shop_icon.png',
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, color: Color(0xFF3C3489), size: 20),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF3C3489),
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  s.name,
-                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                                ),
-                                if (s.city.trim().isNotEmpty) ...[
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    s.city.trim(),
-                                    style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          const Icon(Icons.chevron_right, color: Color(0xFF94A3B8)),
                         ],
                       ),
                     ),
+                  )
+                : ListView.separated(
+                    itemCount: filtered.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
+                    itemBuilder: (ctx, idx) {
+                      final s = filtered[idx];
+                      return Material(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _selectedShop = s;
+                              _currentStep = 2;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(14),
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                            ),
+                            child: Row(
+                              children: [
+                                Container(
+                                  width: 42,
+                                  height: 42,
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF8FAFC),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: const Color(0xFFE2E8F0)),
+                                  ),
+                                  child: Image.asset(
+                                    'assets/images/shop_icon.png',
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, color: Color(0xFF3C3489), size: 20),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              s.name,
+                                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                            ),
+                                          ),
+                                          if (s.id.startsWith('offline_'))
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFFEF3C7),
+                                                borderRadius: BorderRadius.circular(4),
+                                              ),
+                                              child: const Text('Offline Shop', style: TextStyle(fontSize: 10, color: Color(0xFF92400E), fontWeight: FontWeight.bold)),
+                                            ),
+                                        ],
+                                      ),
+                                      if (s.city.trim().isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          s.city.trim(),
+                                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.chevron_right, color: Color(0xFF94A3B8)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),

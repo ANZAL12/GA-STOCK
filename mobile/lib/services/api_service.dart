@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import 'offline_manager.dart';
+import 'offline_queue_service.dart';
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -32,9 +33,11 @@ class ApiService {
 
   // --- TWO-TIER CACHE (RAM + PERSISTENT DISK) ---
   List<Product>? _cachedProducts;
+  List<Category>? _cachedCategories;
   List<Shop>? _cachedShops;
   List<BillListItem>? _cachedBills;
   DateTime? _productsCacheTime;
+  DateTime? _categoriesCacheTime;
   DateTime? _shopsCacheTime;
   DateTime? _billsCacheTime;
 
@@ -54,8 +57,26 @@ class ApiService {
   bool get isAuthenticated => _accessToken != null && _currentUser != null;
 
   List<Product>? get cachedProducts => _cachedProducts;
+  List<Category>? get cachedCategories => _cachedCategories;
   List<Shop>? get cachedShops => _cachedShops;
   List<BillListItem>? get cachedBills => _cachedBills;
+
+  void updateCachedCategory(Category cat) {
+    _cachedCategories ??= [];
+    final idx = _cachedCategories!.indexWhere((c) => c.id == cat.id);
+    if (idx != -1) {
+      _cachedCategories![idx] = cat;
+    } else {
+      _cachedCategories!.add(cat);
+      _cachedCategories!.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    }
+    _categoriesCacheTime = DateTime.now();
+  }
+
+  void removeCachedCategory(String id) {
+    _cachedCategories?.removeWhere((c) => c.id == id);
+    _categoriesCacheTime = DateTime.now();
+  }
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
@@ -94,6 +115,15 @@ class ApiService {
         final List list = jsonDecode(productsJson);
         _cachedProducts = list.map((p) => Product.fromJson(p)).toList();
         _productsCacheTime = DateTime.now();
+      } catch (_) {}
+    }
+
+    final categoriesJson = prefs.getString('cache_categories_json');
+    if (categoriesJson != null) {
+      try {
+        final List list = jsonDecode(categoriesJson);
+        _cachedCategories = list.map((c) => Category.fromJson(c)).toList();
+        _categoriesCacheTime = DateTime.now();
       } catch (_) {}
     }
 
@@ -556,67 +586,170 @@ class ApiService {
     String? city,
     String? phone,
   }) async {
-    final payload = {
-      'name': name.trim(),
-      if (city != null && city.trim().isNotEmpty) 'city': city.trim(),
-      if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
-    };
-    final res = await _authenticatedPost(
-      Uri.parse('$_baseUrl/shops'),
-      body: jsonEncode(payload),
-    );
-    if (res.statusCode == 201) {
-      final data = jsonDecode(res.body);
-      final newShop = Shop.fromJson(data);
-      if (_cachedShops != null) {
-        _cachedShops!.removeWhere((s) => s.id == newShop.id);
-        _cachedShops!.add(newShop);
-        _cachedShops!.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-        try {
-          final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('cache_shops_json', jsonEncode(_cachedShops!.map((s) => s.toJson()).toList()));
-        } catch (_) {}
-      }
-      return newShop;
+    final cleanName = name.trim();
+    final cleanCity = city?.trim() ?? '';
+    final cleanPhone = phone?.trim();
+
+    if (!OfflineManager().isOnline) {
+      return _createShopOffline(name: cleanName, city: cleanCity, phone: cleanPhone);
     }
+
+    final payload = {
+      'name': cleanName,
+      if (cleanCity.isNotEmpty) 'city': cleanCity,
+      if (cleanPhone != null && cleanPhone.isNotEmpty) 'phone': cleanPhone,
+    };
     try {
-      final body = jsonDecode(res.body);
-      throw Exception(body['detail'] ?? 'Failed to create shop');
-    } catch (e) {
-      if (e is Exception && !e.toString().contains('FormatException')) {
-        rethrow;
+      final res = await _authenticatedPost(
+        Uri.parse('$_baseUrl/shops'),
+        body: jsonEncode(payload),
+      );
+      if (res.statusCode == 201) {
+        final data = jsonDecode(res.body);
+        final newShop = Shop.fromJson(data);
+        updateCachedShop(newShop);
+        OfflineManager().updateShop(newShop);
+        return newShop;
       }
-      throw Exception('Server error (${res.statusCode}): Failed to create shop');
+      try {
+        final body = jsonDecode(res.body);
+        throw Exception(body['detail'] ?? 'Failed to create shop');
+      } catch (e) {
+        if (e is Exception && !e.toString().contains('FormatException')) {
+          rethrow;
+        }
+        throw Exception('Server error (${res.statusCode}): Failed to create shop');
+      }
+    } catch (e) {
+      final errStr = e.toString();
+      if (errStr.contains('TimeoutException') ||
+          errStr.contains('SocketException') ||
+          errStr.contains('ClientException') ||
+          errStr.contains('HandshakeException') ||
+          errStr.contains('Connection refused') ||
+          errStr.contains('Connection reset') ||
+          errStr.contains('Network is unreachable') ||
+          errStr.contains('Failed host lookup')) {
+        OfflineManager().markOffline();
+        return _createShopOffline(name: cleanName, city: cleanCity, phone: cleanPhone);
+      }
+      rethrow;
     }
   }
 
+  Future<Shop> _createShopOffline({
+    required String name,
+    String city = '',
+    String? phone,
+  }) async {
+    final tempId = 'offline_shop_${const Uuid().v4()}';
+    final newShop = Shop(
+      id: tempId,
+      name: name,
+      city: city,
+      phone: phone,
+      isActive: true,
+    );
+
+    updateCachedShop(newShop);
+    OfflineManager().updateShop(newShop);
+
+    await OfflineQueueService().enqueueShop(QueuedShop(
+      tempId: tempId,
+      name: name,
+      city: city,
+      phone: phone,
+      createdAt: DateTime.now(),
+    ));
+
+    return newShop;
+  }
+
+  static final List<Category> _defaultApplianceCategories = [
+    Category(id: 'cat_ac', name: 'Air Conditioner', hasDualSerial: true),
+    Category(id: 'cat_ref', name: 'Refrigerator', hasDualSerial: false),
+    Category(id: 'cat_wm', name: 'Washing Machine', hasDualSerial: false),
+    Category(id: 'cat_tv', name: 'LED TV', hasDualSerial: false),
+    Category(id: 'cat_mw', name: 'Microwave Oven', hasDualSerial: false),
+    Category(id: 'cat_cooler', name: 'Air Cooler', hasDualSerial: false),
+  ];
+
   // --- CATEGORIES & PRODUCTS CREATION ---
   Future<List<Category>> getCategories({bool forceRefresh = false}) async {
+    // 1. Fast cache return if fresh
+    if (!forceRefresh && _cachedCategories != null && _cachedCategories!.isNotEmpty) {
+      if (_categoriesCacheTime != null &&
+          DateTime.now().difference(_categoriesCacheTime!) < const Duration(minutes: 5)) {
+        return _cachedCategories!;
+      }
+    }
+
+    // 2. If offline, return memory or disk cache
+    if (!OfflineManager().isOnline) {
+      if (_cachedCategories != null && _cachedCategories!.isNotEmpty) {
+        return _cachedCategories!;
+      }
+      if (OfflineManager().categories.isNotEmpty) {
+        _cachedCategories = List.from(OfflineManager().categories);
+        return _cachedCategories!;
+      }
+      return _defaultApplianceCategories;
+    }
+
+    // 3. Online fetch
     try {
       final res = await _authenticatedGet(Uri.parse('$_baseUrl/categories?active_only=true'));
       if (res.statusCode == 200) {
         final List list = jsonDecode(res.body);
-        return list.map((c) => Category.fromJson(c)).toList();
+        final cats = list.map((c) => Category.fromJson(c)).toList();
+        _cachedCategories = cats;
+        _categoriesCacheTime = DateTime.now();
+
+        for (final c in cats) {
+          OfflineManager().updateCategory(c);
+        }
+
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cache_categories_json', res.body);
+        } catch (_) {}
+
+        return cats;
       }
     } catch (_) {}
-    return [];
+
+    // Fallback on network failure
+    if (_cachedCategories != null && _cachedCategories!.isNotEmpty) {
+      return _cachedCategories!;
+    }
+    if (OfflineManager().categories.isNotEmpty) {
+      _cachedCategories = List.from(OfflineManager().categories);
+      return _cachedCategories!;
+    }
+    return _defaultApplianceCategories;
   }
 
   Future<List<String>> getBrands() async {
-    try {
-      final res = await _authenticatedGet(Uri.parse('$_baseUrl/products/brands'));
-      if (res.statusCode == 200) {
-        final list = jsonDecode(res.body) as List;
-        final brands = list.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
-        if (brands.isNotEmpty) return brands;
-      }
-    } catch (_) {}
+    if (OfflineManager().isOnline) {
+      try {
+        final res = await _authenticatedGet(Uri.parse('$_baseUrl/products/brands'));
+        if (res.statusCode == 200) {
+          final list = jsonDecode(res.body) as List;
+          final brands = list.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+          if (brands.isNotEmpty) return brands;
+        }
+      } catch (_) {}
+    }
 
-    // Fallback: extract distinct brands from active products list
+    // Fallback: extract distinct brands from active products list in memory/cache
     try {
       final products = await getProducts();
       final brandSet = <String>{};
       for (final p in products) {
+        final b = p.brand.trim();
+        if (b.isNotEmpty) brandSet.add(b);
+      }
+      for (final p in OfflineManager().products) {
         final b = p.brand.trim();
         if (b.isNotEmpty) brandSet.add(b);
       }
@@ -630,27 +763,63 @@ class ApiService {
     required String name,
     bool hasDualSerial = false,
   }) async {
-    final payload = {
-      'name': name.trim(),
-      'has_dual_serial': hasDualSerial,
-    };
-    final res = await _authenticatedPost(
-      Uri.parse('$_baseUrl/categories'),
-      body: jsonEncode(payload),
-    );
-    if (res.statusCode == 201) {
-      final data = jsonDecode(res.body);
-      return Category.fromJson(data);
+    final cleanName = name.trim();
+    if (!OfflineManager().isOnline) {
+      return _createCategoryOffline(cleanName, hasDualSerial);
     }
     try {
+      final payload = {
+        'name': cleanName,
+        'has_dual_serial': hasDualSerial,
+      };
+      final res = await _authenticatedPost(
+        Uri.parse('$_baseUrl/categories'),
+        body: jsonEncode(payload),
+      );
+      if (res.statusCode == 201) {
+        final data = jsonDecode(res.body);
+        final cat = Category.fromJson(data);
+        updateCachedCategory(cat);
+        OfflineManager().updateCategory(cat);
+        return cat;
+      }
       final body = jsonDecode(res.body);
       throw Exception(body['detail'] ?? 'Failed to create category');
     } catch (e) {
-      if (e is Exception && !e.toString().contains('FormatException')) {
-        rethrow;
+      final errStr = e.toString();
+      if (errStr.contains('TimeoutException') ||
+          errStr.contains('SocketException') ||
+          errStr.contains('ClientException') ||
+          errStr.contains('HandshakeException') ||
+          errStr.contains('Connection refused') ||
+          errStr.contains('Connection reset') ||
+          errStr.contains('Network is unreachable') ||
+          errStr.contains('Failed host lookup')) {
+        OfflineManager().markOffline();
+        return _createCategoryOffline(cleanName, hasDualSerial);
       }
-      throw Exception('Server error (${res.statusCode}): Failed to create category');
+      rethrow;
     }
+  }
+
+  Future<Category> _createCategoryOffline(String name, bool hasDualSerial) async {
+    final tempId = 'offline_cat_${const Uuid().v4()}';
+    final cat = Category(
+      id: tempId,
+      name: name,
+      hasDualSerial: hasDualSerial,
+      isActive: true,
+      productCount: 0,
+    );
+    updateCachedCategory(cat);
+    OfflineManager().updateCategory(cat);
+    await OfflineQueueService().enqueueCategory(QueuedCategory(
+      tempId: tempId,
+      name: name,
+      hasDualSerial: hasDualSerial,
+      createdAt: DateTime.now(),
+    ));
+    return cat;
   }
 
   Future<Product> createProduct({
@@ -684,27 +853,119 @@ class ApiService {
       'opening_stock_qty': openingStockQty,
     };
 
-    final res = await _authenticatedPost(
-      Uri.parse('$_baseUrl/products'),
-      body: jsonEncode(payload),
-    );
-
-    if (res.statusCode == 201) {
-      final data = jsonDecode(res.body);
-      final newProd = Product.fromJson(data);
-      updateCachedProduct(newProd);
-      return newProd;
+    // If device is offline or category is an offline-created category, create offline directly
+    if (!OfflineManager().isOnline || categoryId.startsWith('offline_')) {
+      return _createProductOffline(
+        brand: cleanBrand,
+        model: cleanModel,
+        categoryId: categoryId,
+        name: autoName,
+        sku: sku,
+        sizeCapacity: sizeCapacity,
+        unit: unit,
+        serialNumberRequired: serialNumberRequired,
+        description: description,
+        openingStockQty: openingStockQty,
+      );
     }
 
     try {
+      final res = await _authenticatedPost(
+        Uri.parse('$_baseUrl/products'),
+        body: jsonEncode(payload),
+      );
+
+      if (res.statusCode == 201) {
+        final data = jsonDecode(res.body);
+        final newProd = Product.fromJson(data);
+        updateCachedProduct(newProd);
+        OfflineManager().updateProduct(newProd);
+        return newProd;
+      }
+
       final body = jsonDecode(res.body);
       throw Exception(body['detail'] ?? 'Failed to create product model');
     } catch (e) {
-      if (e is Exception && !e.toString().contains('FormatException')) {
-        rethrow;
+      final errStr = e.toString();
+      // On network failure, create locally and queue for background sync
+      if (errStr.contains('TimeoutException') ||
+          errStr.contains('SocketException') ||
+          errStr.contains('ClientException') ||
+          errStr.contains('HandshakeException') ||
+          errStr.contains('Connection refused') ||
+          errStr.contains('Connection reset') ||
+          errStr.contains('Network is unreachable') ||
+          errStr.contains('Failed host lookup')) {
+        OfflineManager().markOffline();
+        return _createProductOffline(
+          brand: cleanBrand,
+          model: cleanModel,
+          categoryId: categoryId,
+          name: autoName,
+          sku: sku,
+          sizeCapacity: sizeCapacity,
+          unit: unit,
+          serialNumberRequired: serialNumberRequired,
+          description: description,
+          openingStockQty: openingStockQty,
+        );
       }
-      throw Exception('Server error (${res.statusCode}): Failed to create product model');
+      rethrow;
     }
+  }
+
+  Future<Product> _createProductOffline({
+    required String brand,
+    required String model,
+    required String categoryId,
+    required String name,
+    String? sku,
+    String? sizeCapacity,
+    String unit = 'piece',
+    bool serialNumberRequired = true,
+    String? description,
+    int openingStockQty = 0,
+  }) async {
+    final tempId = 'offline_prod_${const Uuid().v4()}';
+    final cat = OfflineManager().getCategoryById(categoryId) ??
+        _cachedCategories?.firstWhere((c) => c.id == categoryId, orElse: () => Category(id: categoryId, name: 'General'));
+
+    final newProd = Product(
+      id: tempId,
+      name: name,
+      sku: sku,
+      categoryId: categoryId,
+      categoryName: cat?.name ?? 'General',
+      hasDualSerial: cat?.hasDualSerial ?? false,
+      brand: brand,
+      model: model,
+      sizeCapacity: sizeCapacity,
+      unit: unit,
+      serialNumberRequired: serialNumberRequired,
+      currentStockQty: openingStockQty,
+      outOfStockReminder: false,
+    );
+
+    updateCachedProduct(newProd);
+    OfflineManager().updateProduct(newProd);
+
+    await OfflineQueueService().enqueueProduct(QueuedProduct(
+      tempId: tempId,
+      brand: brand,
+      model: model,
+      categoryId: categoryId,
+      categoryName: cat?.name,
+      name: name,
+      sku: sku,
+      sizeCapacity: sizeCapacity,
+      unit: unit,
+      serialNumberRequired: serialNumberRequired,
+      description: description,
+      openingStockQty: openingStockQty,
+      createdAt: DateTime.now(),
+    ));
+
+    return newProd;
   }
 
   void clearSerialCheckCache() {
@@ -719,6 +980,11 @@ class ApiService {
     String inwardType = 'stock_in',
   }) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
+
+    // If offline or product is offline-created, validate offline directly!
+    if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
+      return OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+    }
 
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
@@ -839,6 +1105,11 @@ class ApiService {
     String serialNumber,
   ) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
+
+    // If offline or product is offline-created, check offline directly!
+    if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
+      return OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+    }
 
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
