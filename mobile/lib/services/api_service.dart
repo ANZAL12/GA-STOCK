@@ -585,12 +585,13 @@ class ApiService {
     required String name,
     String? city,
     String? phone,
+    bool allowOfflineFallback = true,
   }) async {
     final cleanName = name.trim();
     final cleanCity = city?.trim() ?? '';
     final cleanPhone = phone?.trim();
 
-    if (!OfflineManager().isOnline) {
+    if (allowOfflineFallback && !OfflineManager().isOnline) {
       return _createShopOffline(name: cleanName, city: cleanCity, phone: cleanPhone);
     }
 
@@ -622,14 +623,14 @@ class ApiService {
       }
     } catch (e) {
       final errStr = e.toString();
-      if (errStr.contains('TimeoutException') ||
+      if (allowOfflineFallback && (errStr.contains('TimeoutException') ||
           errStr.contains('SocketException') ||
           errStr.contains('ClientException') ||
           errStr.contains('HandshakeException') ||
           errStr.contains('Connection refused') ||
           errStr.contains('Connection reset') ||
           errStr.contains('Network is unreachable') ||
-          errStr.contains('Failed host lookup')) {
+          errStr.contains('Failed host lookup'))) {
         OfflineManager().markOffline();
         return _createShopOffline(name: cleanName, city: cleanCity, phone: cleanPhone);
       }
@@ -762,9 +763,10 @@ class ApiService {
   Future<Category> createCategory({
     required String name,
     bool hasDualSerial = false,
+    bool allowOfflineFallback = true,
   }) async {
     final cleanName = name.trim();
-    if (!OfflineManager().isOnline) {
+    if (allowOfflineFallback && !OfflineManager().isOnline) {
       return _createCategoryOffline(cleanName, hasDualSerial);
     }
     try {
@@ -787,14 +789,14 @@ class ApiService {
       throw Exception(body['detail'] ?? 'Failed to create category');
     } catch (e) {
       final errStr = e.toString();
-      if (errStr.contains('TimeoutException') ||
+      if (allowOfflineFallback && (errStr.contains('TimeoutException') ||
           errStr.contains('SocketException') ||
           errStr.contains('ClientException') ||
           errStr.contains('HandshakeException') ||
           errStr.contains('Connection refused') ||
           errStr.contains('Connection reset') ||
           errStr.contains('Network is unreachable') ||
-          errStr.contains('Failed host lookup')) {
+          errStr.contains('Failed host lookup'))) {
         OfflineManager().markOffline();
         return _createCategoryOffline(cleanName, hasDualSerial);
       }
@@ -833,6 +835,7 @@ class ApiService {
     bool serialNumberRequired = true,
     String? description,
     int openingStockQty = 0,
+    bool allowOfflineFallback = true,
   }) async {
     final cleanBrand = brand.trim();
     final cleanModel = model.trim();
@@ -854,7 +857,7 @@ class ApiService {
     };
 
     // If device is offline or category is an offline-created category, create offline directly
-    if (!OfflineManager().isOnline || categoryId.startsWith('offline_')) {
+    if (allowOfflineFallback && (!OfflineManager().isOnline || categoryId.startsWith('offline_'))) {
       return _createProductOffline(
         brand: cleanBrand,
         model: cleanModel,
@@ -888,14 +891,14 @@ class ApiService {
     } catch (e) {
       final errStr = e.toString();
       // On network failure, create locally and queue for background sync
-      if (errStr.contains('TimeoutException') ||
+      if (allowOfflineFallback && (errStr.contains('TimeoutException') ||
           errStr.contains('SocketException') ||
           errStr.contains('ClientException') ||
           errStr.contains('HandshakeException') ||
           errStr.contains('Connection refused') ||
           errStr.contains('Connection reset') ||
           errStr.contains('Network is unreachable') ||
-          errStr.contains('Failed host lookup')) {
+          errStr.contains('Failed host lookup'))) {
         OfflineManager().markOffline();
         return _createProductOffline(
           brand: cleanBrand,

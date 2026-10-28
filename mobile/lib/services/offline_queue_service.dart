@@ -568,12 +568,19 @@ class OfflineQueueService {
     final Map<String, String> productMap = {};
     final api = ApiService();
 
-    // 1. Sync pending categories
+    // 1. Fetch live categories from server
+    List<Category> serverCats = [];
+    try {
+      serverCats = await api.getCategories(forceRefresh: true);
+    } catch (_) {
+      serverCats = OfflineManager().categories;
+    }
+
+    // 2. Sync pending categories
     final pendingCats = await getPendingCategories();
     for (final cat in pendingCats) {
       try {
-        final existing = await api.getCategories(forceRefresh: true);
-        final match = existing.firstWhere(
+        final match = serverCats.firstWhere(
           (c) => c.name.trim().toLowerCase() == cat.name.trim().toLowerCase(),
           orElse: () => Category(id: '', name: ''),
         );
@@ -581,8 +588,13 @@ class OfflineQueueService {
         if (match.id.isNotEmpty) {
           realCatId = match.id;
         } else {
-          final created = await api.createCategory(name: cat.name, hasDualSerial: cat.hasDualSerial);
+          final created = await api.createCategory(
+            name: cat.name,
+            hasDualSerial: cat.hasDualSerial,
+            allowOfflineFallback: false,
+          );
           realCatId = created.id;
+          serverCats.add(created);
         }
         categoryMap[cat.tempId] = realCatId;
         await removePendingCategory(cat.tempId);
@@ -591,69 +603,204 @@ class OfflineQueueService {
       }
     }
 
-    // 2. Sync pending products (models)
-    final pendingProds = await getPendingProducts();
-    if (pendingProds.isNotEmpty) {
-      List<Product> serverProds = [];
-      try {
-        serverProds = await api.getProducts(forceRefresh: true);
-      } catch (_) {}
+    // Helper to resolve ANY category string (like 'cat_ac', 'offline_cat_...', or name) to a valid server UUID
+    String resolveServerCategoryId(String inputCatId, String? catName) {
+      if (categoryMap.containsKey(inputCatId)) {
+        return categoryMap[inputCatId]!;
+      }
 
-      for (final p in pendingProds) {
-        try {
-          // Remap category if it was created offline
-          final effectiveCatId = categoryMap[p.categoryId] ?? p.categoryId;
+      final uuidRegex = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
 
-          // Check if server already has product with matching brand and model (case-insensitive)
-          final match = serverProds.firstWhere(
-            (sp) => sp.brand.trim().toLowerCase() == p.brand.trim().toLowerCase() &&
-                    sp.model.trim().toLowerCase() == p.model.trim().toLowerCase(),
-            orElse: () => Product(
-              id: '',
-              name: '',
-              categoryId: '',
-              brand: '',
-              model: '',
-              unit: '',
-              serialNumberRequired: true,
-              currentStockQty: 0,
-              outOfStockReminder: false,
-            ),
-          );
+      // If already a valid UUID and present in server categories
+      if (uuidRegex.hasMatch(inputCatId) && serverCats.any((c) => c.id == inputCatId)) {
+        return inputCatId;
+      }
 
-          Product realProduct;
-          if (match.id.isNotEmpty) {
-            realProduct = match;
-          } else {
-            realProduct = await api.createProduct(
-              brand: p.brand,
-              model: p.model,
-              categoryId: effectiveCatId,
-              name: p.name,
-              sku: p.sku,
-              sizeCapacity: p.sizeCapacity,
-              unit: p.unit,
-              serialNumberRequired: p.serialNumberRequired,
-              description: p.description,
-              openingStockQty: p.openingStockQty,
-            );
+      final nameLower = (catName ?? '').trim().toLowerCase();
+      final idLower = inputCatId.trim().toLowerCase();
+
+      // Check exact category name match
+      for (final sc in serverCats) {
+        if (sc.name.trim().toLowerCase() == nameLower && sc.id.isNotEmpty) {
+          return sc.id;
+        }
+      }
+
+      // Check category name and mock ID keywords
+      for (final sc in serverCats) {
+        final scLower = sc.name.toLowerCase();
+        if (idLower == 'cat_ac' || nameLower.contains('air cond') || nameLower.contains('ac')) {
+          if (scLower == 'ac' || scLower.contains('ac')) return sc.id;
+        }
+        if (idLower == 'cat_ref' || nameLower.contains('ref') || nameLower.contains('fridge')) {
+          if (scLower.contains('ref')) return sc.id;
+        }
+        if (idLower == 'cat_wm' || nameLower.contains('wash') || nameLower.contains('wm')) {
+          if (scLower.contains('wm')) return sc.id;
+        }
+        if (idLower == 'cat_tv' || nameLower.contains('tv') || nameLower.contains('led')) {
+          if (scLower.contains('tv')) return sc.id;
+        }
+        if (idLower == 'cat_mw' || nameLower.contains('micro') || nameLower.contains('oven')) {
+          if (scLower.contains('micro') || scLower.contains('oven')) return sc.id;
+        }
+        if (idLower == 'cat_cooler' || nameLower.contains('cool')) {
+          if (scLower.contains('cool')) return sc.id;
+        }
+      }
+
+      // Check partial substring match
+      if (nameLower.isNotEmpty) {
+        for (final sc in serverCats) {
+          final scLower = sc.name.toLowerCase();
+          if (scLower.contains(nameLower) || nameLower.contains(scLower)) {
+            return sc.id;
           }
+        }
+      }
 
-          productMap[p.tempId] = realProduct.id;
-          await removePendingProduct(p.tempId);
+      // If input is already a valid UUID format, keep it
+      if (uuidRegex.hasMatch(inputCatId)) {
+        return inputCatId;
+      }
 
-          // Update OfflineManager memory and disk cache
-          OfflineManager().remapProductId(p.tempId, realProduct.id, updatedProduct: realProduct);
-        } catch (e) {
-          debugPrint('[OfflineQueueService] Failed to sync pending model ${p.brand} ${p.model}: $e');
+      // Fallback to first available server category with valid UUID
+      if (serverCats.isNotEmpty) {
+        final valid = serverCats.firstWhere((c) => uuidRegex.hasMatch(c.id), orElse: () => serverCats.first);
+        return valid.id;
+      }
+
+      return inputCatId;
+    }
+
+    // 3. Fetch server products
+    List<Product> serverProds = [];
+    try {
+      serverProds = await api.getProducts(forceRefresh: true);
+    } catch (_) {
+      serverProds = OfflineManager().products;
+    }
+
+    // 4. Sync pending products (models)
+    final pendingProds = await getPendingProducts();
+    for (final p in pendingProds) {
+      try {
+        final effectiveCatId = resolveServerCategoryId(p.categoryId, p.categoryName);
+
+        // Check if server already has product with matching brand and model (case-insensitive)
+        final match = serverProds.firstWhere(
+          (sp) => sp.brand.trim().toLowerCase() == p.brand.trim().toLowerCase() &&
+                  sp.model.trim().toLowerCase() == p.model.trim().toLowerCase(),
+          orElse: () => Product(
+            id: '',
+            name: '',
+            categoryId: '',
+            brand: '',
+            model: '',
+            unit: '',
+            serialNumberRequired: true,
+            currentStockQty: 0,
+            outOfStockReminder: false,
+          ),
+        );
+
+        Product realProduct;
+        if (match.id.isNotEmpty) {
+          realProduct = match;
+        } else {
+          realProduct = await api.createProduct(
+            brand: p.brand,
+            model: p.model,
+            categoryId: effectiveCatId,
+            name: p.name,
+            sku: p.sku,
+            sizeCapacity: p.sizeCapacity,
+            unit: p.unit,
+            serialNumberRequired: p.serialNumberRequired,
+            description: p.description,
+            openingStockQty: p.openingStockQty,
+            allowOfflineFallback: false,
+          );
+          serverProds.add(realProduct);
+        }
+
+        productMap[p.tempId] = realProduct.id;
+        await removePendingProduct(p.tempId);
+        OfflineManager().remapProductId(p.tempId, realProduct.id, updatedProduct: realProduct);
+      } catch (e) {
+        debugPrint('[OfflineQueueService] Failed to sync pending model ${p.brand} ${p.model}: $e');
+      }
+    }
+
+    // 5. Scan all queued batches for any remaining offline_prod_ IDs that need remapping
+    final batches = await getQueue();
+    for (final b in batches) {
+      final List<Map<String, dynamic>> itemsToCheck = [];
+      if (b.payload['items'] is List) {
+        itemsToCheck.addAll(
+          (b.payload['items'] as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)),
+        );
+      }
+      if (b.payload['product_id'] != null) {
+        itemsToCheck.add(b.payload);
+      }
+
+      for (final item in itemsToCheck) {
+        final pid = item['product_id']?.toString();
+        if (pid != null && pid.startsWith('offline_prod_') && !productMap.containsKey(pid)) {
+          final localProd = OfflineManager().getProductById(pid);
+          final brand = item['product_brand']?.toString() ?? localProd?.brand ?? '';
+          final model = item['product_model']?.toString() ?? localProd?.model ?? '';
+          final name = item['product_name']?.toString() ?? localProd?.name;
+          final catId = localProd?.categoryId ?? '';
+          final catName = localProd?.categoryName;
+
+          if (brand.isNotEmpty && model.isNotEmpty) {
+            try {
+              final match = serverProds.firstWhere(
+                (sp) => sp.brand.trim().toLowerCase() == brand.trim().toLowerCase() &&
+                        sp.model.trim().toLowerCase() == model.trim().toLowerCase(),
+                orElse: () => Product(
+                  id: '',
+                  name: '',
+                  categoryId: '',
+                  brand: '',
+                  model: '',
+                  unit: '',
+                  serialNumberRequired: true,
+                  currentStockQty: 0,
+                  outOfStockReminder: false,
+                ),
+              );
+
+              Product realProd;
+              if (match.id.isNotEmpty) {
+                realProd = match;
+              } else {
+                final effectiveCatId = resolveServerCategoryId(catId, catName);
+                realProd = await api.createProduct(
+                  brand: brand,
+                  model: model,
+                  categoryId: effectiveCatId,
+                  name: name,
+                  allowOfflineFallback: false,
+                );
+                serverProds.add(realProd);
+              }
+              productMap[pid] = realProd.id;
+              OfflineManager().remapProductId(pid, realProd.id, updatedProduct: realProd);
+            } catch (e) {
+              debugPrint('[OfflineQueueService] Failed to resolve offline batch product $pid ($brand $model): $e');
+            }
+          }
         }
       }
     }
 
-    // 3. Remap all queued batches if any products were mapped
+    // 6. Remap all queued batches if any products were mapped
     if (productMap.isNotEmpty) {
-      final batches = await getQueue();
-      for (final b in batches) {
+      final currentBatches = await getQueue();
+      for (final b in currentBatches) {
         bool modified = false;
         final newPayload = Map<String, dynamic>.from(b.payload);
 
@@ -702,13 +849,13 @@ class OfflineQueueService {
   Future<Map<String, String>> syncPendingShops() async {
     final Map<String, String> shopMap = {};
     final pendingShops = await getPendingShops();
-    if (pendingShops.isEmpty) return shopMap;
-
     final api = ApiService();
     List<Shop> serverShops = [];
     try {
       serverShops = await api.getShops(forceRefresh: true);
-    } catch (_) {}
+    } catch (_) {
+      serverShops = OfflineManager().shops;
+    }
 
     for (final s in pendingShops) {
       try {
@@ -725,23 +872,60 @@ class OfflineQueueService {
             name: s.name,
             city: s.city,
             phone: s.phone,
+            allowOfflineFallback: false,
           );
+          serverShops.add(realShop);
         }
 
         shopMap[s.tempId] = realShop.id;
         await removePendingShop(s.tempId);
-
-        // Update OfflineManager memory and disk cache
         OfflineManager().remapShopId(s.tempId, realShop.id, updatedShop: realShop);
       } catch (e) {
         debugPrint('[OfflineQueueService] Failed to sync pending shop ${s.name}: $e');
       }
     }
 
+    // Scan all queued batches for any remaining offline_shop_ IDs
+    final batches = await getQueue();
+    for (final b in batches) {
+      if (b.type == QueueType.outward) {
+        final sid = b.payload['shop_id']?.toString();
+        if (sid != null && sid.startsWith('offline_shop_') && !shopMap.containsKey(sid)) {
+          final localShop = OfflineManager().getShopById(sid);
+          final shopName = b.payload['shop_name']?.toString() ?? localShop?.name ?? '';
+          if (shopName.isNotEmpty) {
+            try {
+              final match = serverShops.firstWhere(
+                (ss) => ss.name.trim().toLowerCase() == shopName.trim().toLowerCase(),
+                orElse: () => Shop(id: '', name: '', city: '', isActive: true),
+              );
+
+              Shop realShop;
+              if (match.id.isNotEmpty) {
+                realShop = match;
+              } else {
+                realShop = await api.createShop(
+                  name: shopName,
+                  city: localShop?.city ?? '',
+                  phone: localShop?.phone,
+                  allowOfflineFallback: false,
+                );
+                serverShops.add(realShop);
+              }
+              shopMap[sid] = realShop.id;
+              OfflineManager().remapShopId(sid, realShop.id, updatedShop: realShop);
+            } catch (e) {
+              debugPrint('[OfflineQueueService] Failed to resolve offline batch shop $sid ($shopName): $e');
+            }
+          }
+        }
+      }
+    }
+
     // Remap all queued outward batches if any shops were mapped
     if (shopMap.isNotEmpty) {
-      final batches = await getQueue();
-      for (final b in batches) {
+      final currentBatches = await getQueue();
+      for (final b in currentBatches) {
         if (b.type == QueueType.outward) {
           final newPayload = Map<String, dynamic>.from(b.payload);
           final sid = newPayload['shop_id']?.toString();

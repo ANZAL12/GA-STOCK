@@ -167,12 +167,12 @@ class OfflineManager {
 
   void _startHealthChecks() {
     _healthCheckTimer?.cancel();
-    _healthCheckTimer = Timer.periodic(const Duration(seconds: 45), (_) async {
-      await checkServerHealth(timeoutSeconds: 5);
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      await checkServerHealth(timeoutSeconds: 4);
     });
   }
 
-  Future<bool> checkServerHealth({int timeoutSeconds = 5}) async {
+  Future<bool> checkServerHealth({int timeoutSeconds = 4}) async {
     final api = ApiService();
     try {
       final baseUri = Uri.parse(api.baseUrl);
@@ -183,9 +183,6 @@ class OfflineManager {
       if (online) {
         _consecutiveFailures = 0;
         _setOnlineStatus(true);
-        if (_queuedDispatches.isNotEmpty) {
-          unawaited(syncPendingDispatches());
-        }
       } else {
         _consecutiveFailures++;
         if (_consecutiveFailures >= 2) {
@@ -216,8 +213,13 @@ class OfflineManager {
         // Auto-sync snapshot and queued dispatches silently on reconnect
         unawaited(syncFromBackend(silent: true));
         unawaited(syncPendingDispatches());
-      } else if (_queuedDispatches.isNotEmpty) {
-        unawaited(syncPendingDispatches());
+      } else {
+        // Automatically sync whenever pending queue items exist
+        unawaited(OfflineQueueService().totalPendingCount().then((count) {
+          if (count > 0 || _queuedDispatches.isNotEmpty) {
+            unawaited(syncPendingDispatches());
+          }
+        }));
       }
     } else {
       if (isOnlineNotifier.value) {
@@ -533,23 +535,41 @@ class OfflineManager {
         // Update Products
         if (data['products'] is List) {
           final List pList = data['products'];
+          final offlineProds = _products.where((p) => p.id.startsWith('offline_')).toList();
           _products = pList.map((p) => Product.fromJson(p)).toList();
-          await prefs.setString('cache_products_json', jsonEncode(data['products']));
+          for (final op in offlineProds) {
+            if (!_products.any((p) => p.id == op.id)) {
+              _products.add(op);
+            }
+          }
+          await prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
           api.invalidateProductCache();
         }
 
         // Update Categories
         if (data['categories'] is List) {
           final List cList = data['categories'];
+          final offlineCats = _categories.where((c) => c.id.startsWith('offline_')).toList();
           _categories = cList.map((c) => Category.fromJson(c)).toList();
-          await prefs.setString('cache_categories_json', jsonEncode(data['categories']));
+          for (final oc in offlineCats) {
+            if (!_categories.any((c) => c.id == oc.id)) {
+              _categories.add(oc);
+            }
+          }
+          await prefs.setString('cache_categories_json', jsonEncode(_categories.map((c) => c.toJson()).toList()));
         }
 
         // Update Shops
         if (data['shops'] is List) {
           final List sList = data['shops'];
+          final offlineShops = _shops.where((s) => s.id.startsWith('offline_')).toList();
           _shops = sList.map((s) => Shop.fromJson(s)).toList();
-          await prefs.setString('cache_shops_json', jsonEncode(data['shops']));
+          for (final os in offlineShops) {
+            if (!_shops.any((s) => s.id == os.id)) {
+              _shops.add(os);
+            }
+          }
+          await prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
           api.invalidateShopCache();
         }
 

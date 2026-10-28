@@ -2038,13 +2038,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     if (!OfflineManager().isOnline || hasOfflineShop || hasOfflineProduct) {
       await OfflineManager().queueDispatch(dispatchPayload);
-      await _queue.enqueue(QueuedBatch(
-        id: const Uuid().v4(),
-        type: QueueType.outward,
-        createdAt: DateTime.now(),
-        payload: dispatchPayload,
-        description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units)',
-      ));
       _dispatchRequestId = null;
       if (!mounted) return;
       setState(() {
@@ -2302,13 +2295,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
       if (isNetError) {
         OfflineManager().markOffline();
         await OfflineManager().queueDispatch(dispatchPayload);
-        await _queue.enqueue(QueuedBatch(
-          id: const Uuid().v4(),
-          type: QueueType.outward,
-          createdAt: DateTime.now(),
-          payload: dispatchPayload,
-          description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units)',
-        ));
         _dispatchRequestId = null;
         if (!mounted) return;
         setState(() {
