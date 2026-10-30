@@ -1,7 +1,11 @@
+import csv
+from datetime import date
+import io
 from typing import Annotated, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+import openpyxl
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +24,13 @@ from app.models.serial import SerialNumber
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.serial_status import (
+    BulkSerialCheckRequest,
+    BulkSerialCheckResponse,
+    ExcelSerialImportItem,
+    ExcelSerialImportRequest,
+    ExcelSerialImportResponse,
+    ExcelSerialPreviewResponse,
+    ExistingSerialInfo,
     SerialDetailResponse,
     SerialHistoryItem,
     SerialListItem,
@@ -579,6 +590,439 @@ async def update_serial_status(
 
     # Re-fetch for response
     return await lookup_serial(serial_number=sn.serial_number, current_user=current_user, db=db)
+
+
+# ─── EXCEL & CSV SERIAL PARSER HELPERS ──────────────────────────────────────
+
+COMMON_SERIAL_KEYWORDS = [
+    "serial", "sr", "sn", "s/n", "barcode", "imei", "chassis", "serial_no",
+    "serial_number", "serialno", "serialnumber", "tag", "qr", "uid",
+]
+COMMON_MODEL_KEYWORDS = [
+    "model", "model_no", "model_number", "modelno", "modelnumber", "item", "product", "sku", "appliance", "item_name", "product_name",
+]
+COMMON_BRAND_KEYWORDS = [
+    "brand", "make", "mfg", "manufacturer", "company",
+]
+COMMON_UNIT_TYPE_KEYWORDS = [
+    "unit", "unit_type", "type", "indoor", "outdoor", "idu", "odu",
+]
+
+
+def _read_excel_sheets_and_rows(file_bytes: bytes, filename: str, target_sheet: Optional[str] = None):
+    fname = filename.lower()
+    sheet_names: list[str] = []
+    selected_sheet = "Sheet1"
+    rows: list[list[str]] = []
+
+    if fname.endswith(".csv"):
+        sheet_names = ["CSV"]
+        selected_sheet = "CSV"
+        try:
+            text = file_bytes.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = file_bytes.decode("latin-1")
+        reader = csv.reader(io.StringIO(text))
+        for r in reader:
+            rows.append([str(c).strip() if c is not None else "" for c in r])
+    else:
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+        sheet_names = wb.sheetnames
+        if not sheet_names:
+            raise HTTPException(status_code=400, detail="Excel file does not contain any sheets.")
+        selected_sheet = target_sheet if (target_sheet and target_sheet in sheet_names) else sheet_names[0]
+        ws = wb[selected_sheet]
+        for r in ws.iter_rows(values_only=True):
+            rows.append([str(c).strip() if c is not None else "" for c in r])
+        wb.close()
+
+    return sheet_names, selected_sheet, rows
+
+
+def _find_sheet_header_and_columns(rows: list[list[str]]) -> tuple[int, list[str]]:
+    best_row_idx = 0
+    best_cols: list[str] = []
+    for r_idx in range(min(25, len(rows))):
+        row = rows[r_idx]
+        non_empty = [c for c in row if c]
+        if len(non_empty) > len(best_cols):
+            best_cols = non_empty
+            best_row_idx = r_idx
+
+    seen = set()
+    cleaned_cols = []
+    header_row = rows[best_row_idx] if best_row_idx < len(rows) else []
+    for idx, c in enumerate(header_row):
+        col_name = c.strip() if c else f"Column {idx + 1}"
+        if col_name.lower() not in seen:
+            seen.add(col_name.lower())
+            cleaned_cols.append(col_name)
+        else:
+            cleaned_cols.append(f"{col_name} ({idx + 1})")
+
+    return best_row_idx, cleaned_cols
+
+
+def _suggest_column(columns: list[str], keywords: list[str]) -> Optional[str]:
+    for kw in keywords:
+        for c in columns:
+            if kw == c.lower() or kw in c.lower():
+                return c
+    return None
+
+
+@router.post("/check-bulk", response_model=BulkSerialCheckResponse)
+async def check_bulk_serials(
+    req: BulkSerialCheckRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> BulkSerialCheckResponse:
+    """
+    Check a list of serial numbers against the database in a single query.
+    Returns existing serial details (model, brand, status) and count of new vs existing serials.
+    Checks globally across the database irrespective of which product/model is selected.
+    """
+    input_serials = req.serials or req.serial_numbers or []
+    raw_serials = [s.strip().upper() for s in input_serials if s and s.strip()]
+    if not raw_serials:
+        return BulkSerialCheckResponse(existing={}, existing_count=0, new_count=0, results=[])
+
+    # 1. Check SerialNumber table (irrespective of product/model)
+    sn_query = (
+        select(SerialNumber, Product.name, Product.brand, Product.model)
+        .join(Product, SerialNumber.product_id == Product.id)
+        .where(SerialNumber.serial_number.in_(raw_serials))
+    )
+    sn_rows = (await db.execute(sn_query)).all()
+    existing_map: dict[str, ExistingSerialInfo] = {}
+
+    for sn, p_name, p_brand, p_model in sn_rows:
+        existing_map[sn.serial_number] = ExistingSerialInfo(
+            serial_number=sn.serial_number,
+            product_id=sn.product_id,
+            product_name=p_name,
+            brand=p_brand,
+            model=p_model,
+            status=sn.status.value,
+            status_label="Available in Godown" if sn.status == SerialStatus.available else sn.status.value.capitalize(),
+            unit_type=sn.unit_type,
+            exists=True,
+        )
+
+    # 2. Check OutwardLine for unmatched outwards (irrespective of product/model)
+    unmatched_query = (
+        select(OutwardLine.serial_text, OutwardLine.product_id, Product.name, Product.brand, Product.model, OutwardLine.unit_type)
+        .join(Product, OutwardLine.product_id == Product.id)
+        .where(OutwardLine.serial_text.in_(raw_serials))
+    )
+    out_rows = (await db.execute(unmatched_query)).all()
+    for s_text, p_id, p_name, p_brand, p_model, u_type in out_rows:
+        if s_text not in existing_map:
+            existing_map[s_text] = ExistingSerialInfo(
+                serial_number=s_text,
+                product_id=p_id,
+                product_name=p_name,
+                brand=p_brand,
+                model=p_model,
+                status="dispatched",
+                status_label="Previously Dispatched",
+                unit_type=u_type,
+                exists=True,
+            )
+
+    unique_input_count = len(set(raw_serials))
+    results_list = list(existing_map.values())
+    return BulkSerialCheckResponse(
+        existing=existing_map,
+        existing_count=len(existing_map),
+        new_count=max(0, unique_input_count - len(existing_map)),
+        results=results_list,
+    )
+
+
+@router.post("/import-bulk", response_model=ExcelSerialImportResponse, status_code=status.HTTP_201_CREATED)
+async def import_bulk_serials(
+    req: ExcelSerialImportRequest,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ExcelSerialImportResponse:
+    """
+    Admin only: Import serial numbers into inventory under their specified products.
+    Creates SerialNumber records, InwardBatch, InwardLines, updates running product stock,
+    and logs audit entries. All serials are converted to UPPERCASE.
+    """
+    if not req.items:
+        raise HTTPException(status_code=400, detail="No serial items provided for import.")
+
+    # 1. Clean, uppercase, and deduplicate within payload
+    seen_in_payload: set[str] = set()
+    cleaned_items: list[ExcelSerialImportItem] = []
+    skipped_invalid: list[dict[str, Any]] = []
+
+    # Cache model name to product_id if needed
+    model_name_map: dict[str, uuid.UUID] = {}
+    if any(it.model_name and not it.product_id for it in req.items):
+        all_prods_res = await db.execute(select(Product.id, Product.model, Product.name))
+        for p_id, p_model, p_name in all_prods_res.all():
+            model_name_map[p_model.strip().upper()] = p_id
+            model_name_map[p_name.strip().upper()] = p_id
+
+    for it in req.items:
+        sn_clean = it.serial_number.strip().upper()
+        if not sn_clean:
+            continue
+
+        prod_id = it.product_id or req.default_product_id
+        if not prod_id and it.model_name:
+            prod_id = model_name_map.get(it.model_name.strip().upper())
+
+        if not prod_id:
+            skipped_invalid.append({
+                "serial_number": sn_clean,
+                "reason": "No product model specified or matched",
+            })
+            continue
+
+        if sn_clean not in seen_in_payload:
+            seen_in_payload.add(sn_clean)
+            cleaned_items.append(ExcelSerialImportItem(
+                serial_number=sn_clean,
+                product_id=prod_id,
+                unit_type=it.unit_type.strip().lower() if it.unit_type else None,
+            ))
+
+    if not cleaned_items and not skipped_invalid:
+        raise HTTPException(status_code=400, detail="All provided serial numbers were blank.")
+
+    all_serials = [it.serial_number for it in cleaned_items]
+
+    # 2. Check existing serials in DB (globally, irrespective of model)
+    existing_sn_res = await db.execute(
+        select(SerialNumber.serial_number).where(SerialNumber.serial_number.in_(all_serials))
+    )
+    existing_sn_set = {s.upper() for s in existing_sn_res.scalars().all()}
+
+    existing_out_res = await db.execute(
+        select(OutwardLine.serial_text).where(OutwardLine.serial_text.in_(all_serials))
+    )
+    existing_out_set = {s.upper() for s in existing_out_res.scalars().all()}
+
+    all_existing = existing_sn_set | existing_out_set
+
+    if not req.skip_existing and all_existing:
+        sample_conflicts = list(all_existing)[:5]
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(all_existing)} serial(s) already exist in database (e.g. {', '.join(sample_conflicts)}). Enable 'Skip existing' to bypass them.",
+        )
+
+    to_import = [it for it in cleaned_items if it.serial_number not in all_existing]
+    skipped_existing = [it.serial_number for it in cleaned_items if it.serial_number in all_existing]
+
+    if not to_import:
+        return ExcelSerialImportResponse(
+            total_submitted=len(req.items),
+            total_processed=len(req.items),
+            imported_count=0,
+            skipped_existing_count=len(skipped_existing),
+            skipped_invalid_count=len(skipped_invalid),
+            skipped_serials=skipped_existing + [s["serial_number"] for s in skipped_invalid],
+            imported_serials=[],
+            products_updated=[],
+            inward_batch_ids=[],
+            message="No new serials to import; all submitted serials already exist in the database or had unassigned models.",
+        )
+
+    # 3. Group by product_id
+    items_by_product: dict[uuid.UUID, list[ExcelSerialImportItem]] = {}
+    for it in to_import:
+        if it.product_id:
+            items_by_product.setdefault(it.product_id, []).append(it)
+
+    products_updated = []
+    imported_all: list[str] = []
+    created_batch_ids: list[str] = []
+    batch_ref = (req.batch_reference or req.inward_reference or "EXCEL_IMPORT").strip().upper()
+    remarks_text = req.remarks or f"Excel import: {len(to_import)} serials"
+
+    for prod_id, p_items in items_by_product.items():
+        prod_res = await db.execute(
+            select(Product).where(Product.id == prod_id).with_for_update()
+        )
+        product = prod_res.scalar_one_or_none()
+        if not product:
+            raise HTTPException(status_code=400, detail=f"Product with ID {prod_id} not found.")
+
+        # Check category for dual serial
+        cat_res = await db.execute(select(Category).where(Category.id == product.category_id))
+        cat = cat_res.scalar_one_or_none()
+        has_dual = cat.has_dual_serial if cat else False
+
+        units_count = (len(p_items) // 2) if has_dual else len(p_items)
+        if units_count == 0 and has_dual:
+            units_count = len(p_items)  # fallback if odd/single unit uploaded for dual model
+
+        # Create InwardBatch for audit and godown records
+        batch = InwardBatch(
+            product_id=product.id,
+            inward_type="stock_in",
+            transaction_date=date.today(),
+            invoice_reference=batch_ref,
+            quantity=units_count,
+            received_by_user_id=admin.id,
+            remarks=remarks_text,
+        )
+        db.add(batch)
+        await db.flush()
+        created_batch_ids.append(str(batch.id))
+
+        for it in p_items:
+            sn_obj = SerialNumber(
+                serial_number=it.serial_number,
+                product_id=product.id,
+                status=SerialStatus.available,
+                last_shop_id=None,
+                unit_type=it.unit_type,
+            )
+            db.add(sn_obj)
+            await db.flush()
+
+            line = InwardLine(
+                batch_id=batch.id,
+                serial_number_id=sn_obj.id,
+            )
+            db.add(line)
+
+            history = SerialHistory(
+                serial_number_id=sn_obj.id,
+                serial_text=it.serial_number,
+                action=HistoryAction.inward_recorded,
+                from_status=None,
+                to_status=SerialStatus.available,
+                inward_batch_id=batch.id,
+                user_id=admin.id,
+                remarks=f"Excel Import [{batch_ref}]: Added to godown stock",
+            )
+            db.add(history)
+            imported_all.append(it.serial_number)
+
+        # Update product current stock count
+        product.current_stock_qty += units_count
+        product.has_had_inward = True
+
+        products_updated.append({
+            "product_id": str(product.id),
+            "product_name": product.name,
+            "brand": product.brand,
+            "model": product.model,
+            "new_stock_qty": product.current_stock_qty,
+            "new_stock": product.current_stock_qty,
+            "added_count": units_count,
+            "units_added": units_count,
+        })
+
+    # 4. Audit Log
+    audit = AuditLog(
+        user_id=admin.id,
+        action="SERIALS_EXCEL_IMPORTED",
+        entity_type="inward_batch",
+        entity_id=str(products_updated[0]["product_id"]) if products_updated else "bulk",
+        details={
+            "batch_reference": batch_ref,
+            "imported_count": len(imported_all),
+            "skipped_count": len(skipped_existing),
+            "products_count": len(products_updated),
+            "sample_serials": imported_all[:10],
+        },
+    )
+    db.add(audit)
+    await db.commit()
+
+    # 5. Real-time WebSocket Broadcasts
+    for pu in products_updated:
+        await ws_manager.broadcast("stock_updated", {"product_id": pu["product_id"]})
+    await ws_manager.broadcast("serial_created", {"count": len(imported_all), "bulk": True})
+
+    msg = f"Successfully imported {len(imported_all)} serial number(s) across {len(products_updated)} product model(s)."
+    if skipped_existing:
+        msg += f" Skipped {len(skipped_existing)} duplicate(s) already in database."
+
+    return ExcelSerialImportResponse(
+        total_submitted=len(req.items),
+        total_processed=len(req.items),
+        imported_count=len(imported_all),
+        skipped_existing_count=len(skipped_existing),
+        skipped_invalid_count=len(skipped_invalid),
+        skipped_serials=skipped_existing + [s["serial_number"] for s in skipped_invalid],
+        imported_serials=imported_all,
+        products_updated=products_updated,
+        inward_batch_ids=created_batch_ids,
+        message=msg,
+    )
+
+
+@router.post("/import-excel/preview", response_model=ExcelSerialPreviewResponse)
+async def preview_excel_file(
+    admin: Annotated[User, Depends(require_admin)],
+    file: UploadFile = File(...),
+    sheet_name: Optional[str] = Form(None),
+) -> ExcelSerialPreviewResponse:
+    """
+    Admin only: Upload an Excel (.xlsx, .xlsm) or CSV file to inspect sheet tabs,
+    column headers, suggested column mapping, and preview the first 10 rows.
+    """
+    filename = file.filename or "uploaded.xlsx"
+    ext = filename.lower().split(".")[-1]
+    if ext not in ["xlsx", "xlsm", "xltx", "xltm", "csv"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported format. Please upload an Excel (.xlsx, .xlsm) or .csv file.",
+        )
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        sheet_names, selected_sheet, rows = _read_excel_sheets_and_rows(content, filename, sheet_name)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse file: {str(e)}")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows found in uploaded sheet.")
+
+    header_idx, columns = _find_sheet_header_and_columns(rows)
+    if not columns:
+        raise HTTPException(status_code=400, detail="Could not detect column headers in the file.")
+
+    suggested_serial = _suggest_column(columns, COMMON_SERIAL_KEYWORDS)
+    suggested_model = _suggest_column(columns, COMMON_MODEL_KEYWORDS)
+    suggested_brand = _suggest_column(columns, COMMON_BRAND_KEYWORDS)
+    suggested_unit = _suggest_column(columns, COMMON_UNIT_TYPE_KEYWORDS)
+
+    sample_rows = []
+    for r_idx in range(header_idx + 1, min(header_idx + 11, len(rows))):
+        row = rows[r_idx]
+        row_dict = {}
+        for c_idx, col_name in enumerate(columns):
+            row_dict[col_name] = row[c_idx] if c_idx < len(row) else ""
+        if any(row_dict.values()):
+            sample_rows.append(row_dict)
+
+    data_rows_count = max(0, len(rows) - header_idx - 1)
+
+    return ExcelSerialPreviewResponse(
+        filename=filename,
+        sheet_names=sheet_names,
+        selected_sheet=selected_sheet,
+        columns=columns,
+        suggested_serial_column=suggested_serial,
+        suggested_model_column=suggested_model,
+        suggested_brand_column=suggested_brand,
+        suggested_unit_type_column=suggested_unit,
+        total_rows=data_rows_count,
+        sample_rows=sample_rows,
+    )
 
 
 @router.delete("/{serial_id}")

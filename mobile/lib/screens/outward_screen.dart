@@ -13,6 +13,8 @@ import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
 import '../widgets/add_shop_dialog.dart';
+import '../widgets/uppercase_formatter.dart';
+import '../widgets/office_pc_confirm_dialog.dart';
 import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
 
@@ -1009,6 +1011,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     padding: const EdgeInsets.all(16),
                     child: TextField(
                       autofocus: false,
+                      textCapitalization: TextCapitalization.characters,
+                      inputFormatters: const [UpperCaseTextFormatter()],
                       decoration: InputDecoration(
                         hintText: 'Search brand or model (e.g. GXI 360)...',
                         prefixIcon: const Icon(Icons.search, size: 20),
@@ -2160,6 +2164,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   onPressed: printCooldownSeconds > 0
                       ? null
                       : () async {
+                          final confirmed = await confirmOfficePcPrint(
+                            dialogCtx,
+                            title: 'Print on Office PC',
+                            message: 'Are you sure you want to send Bill #$finalBillNumber to the Office PC printer?',
+                            documentName: 'Bill #$finalBillNumber',
+                          );
+                          if (!confirmed || !dialogCtx.mounted) return;
+
                           setDialogState(() => printCooldownSeconds = 30);
                           printCooldownTimer?.cancel();
                           printCooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
@@ -2172,7 +2184,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           });
 
                           TopToast.show(
-                            context,
+                            dialogCtx,
                             message: 'Sending Bill #$finalBillNumber to Office PC...',
                             backgroundColor: const Color(0xFF3C3489),
                             icon: Icons.print_rounded,
@@ -2603,6 +2615,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
             children: [
               Expanded(
                 child: TextField(
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: const [UpperCaseTextFormatter()],
                   decoration: InputDecoration(
                     hintText: 'Search dealer shop or city...',
                     prefixIcon: const Icon(Icons.search, size: 20),
@@ -2883,6 +2897,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
           const SizedBox(height: 8),
 
           TextField(
+            textCapitalization: TextCapitalization.characters,
+            inputFormatters: const [UpperCaseTextFormatter()],
             decoration: InputDecoration(
               hintText: 'Search appliance model (e.g. GXI 360)...',
               prefixIcon: const Icon(Icons.search, size: 20),

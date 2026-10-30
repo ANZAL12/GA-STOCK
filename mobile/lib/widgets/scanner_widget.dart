@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/sound_service.dart';
 import '../services/hardware_scanner_service.dart';
+import 'uppercase_formatter.dart';
 
 class BarcodeScannerWidget extends StatefulWidget {
   final String title;
@@ -378,6 +379,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
           controller: _manualTextController,
           autofocus: true,
           textCapitalization: TextCapitalization.characters,
+          inputFormatters: const [UpperCaseTextFormatter()],
           style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
           decoration: InputDecoration(
             hintText: 'e.g. LG2026-X89',

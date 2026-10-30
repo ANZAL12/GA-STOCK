@@ -587,7 +587,7 @@ class ApiService {
     String? phone,
     bool allowOfflineFallback = true,
   }) async {
-    final cleanName = name.trim();
+    final cleanName = name.trim().toUpperCase();
     final cleanCity = city?.trim() ?? '';
     final cleanPhone = phone?.trim();
 
@@ -646,7 +646,7 @@ class ApiService {
     final tempId = 'offline_shop_${const Uuid().v4()}';
     final newShop = Shop(
       id: tempId,
-      name: name,
+      name: name.trim().toUpperCase(),
       city: city,
       phone: phone,
       isActive: true,
@@ -765,7 +765,7 @@ class ApiService {
     bool hasDualSerial = false,
     bool allowOfflineFallback = true,
   }) async {
-    final cleanName = name.trim();
+    final cleanName = name.trim().toUpperCase();
     if (allowOfflineFallback && !OfflineManager().isOnline) {
       return _createCategoryOffline(cleanName, hasDualSerial);
     }
@@ -837,10 +837,10 @@ class ApiService {
     int openingStockQty = 0,
     bool allowOfflineFallback = true,
   }) async {
-    final cleanBrand = brand.trim();
-    final cleanModel = model.trim();
+    final cleanBrand = brand.trim().toUpperCase();
+    final cleanModel = model.trim().toUpperCase();
     final autoName = (name != null && name.trim().isNotEmpty)
-        ? name.trim()
+        ? name.trim().toUpperCase()
         : '$cleanBrand $cleanModel';
 
     final payload = {
@@ -940,8 +940,8 @@ class ApiService {
       categoryId: categoryId,
       categoryName: cat?.name ?? 'General',
       hasDualSerial: cat?.hasDualSerial ?? false,
-      brand: brand,
-      model: model,
+      brand: brand.trim().toUpperCase(),
+      model: model.trim().toUpperCase(),
       sizeCapacity: sizeCapacity,
       unit: unit,
       serialNumberRequired: serialNumberRequired,

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
+import { useAuth } from "../context/AuthContext";
 import type { SerialDetail, SerialListItem, SerialListResponse } from "../types";
 import { Badge } from "../components/Badge";
 import { Modal } from "../components/Modal";
@@ -16,11 +18,13 @@ import {
   ChevronRight,
   Layers,
   FileDown,
-  Printer
+  Printer,
+  FileSpreadsheet
 } from "lucide-react";
 import { generateSerialListPdf, generateSerialTracePdf } from "../utils/generateSerialReportPdf";
 
 export const SerialsPage: React.FC = () => {
+  const { isAdmin } = useAuth();
   const [serials, setSerials] = useState<SerialListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -191,6 +195,17 @@ export const SerialsPage: React.FC = () => {
 
         {/* Action Buttons & Quick summary badges */}
         <div className="flex flex-wrap items-center gap-2.5">
+          {isAdmin && (
+            <Link
+              to="/import-serials"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 border border-indigo-200 text-xs font-semibold text-[#3C3489] hover:bg-indigo-100/80 transition-all shadow-sm"
+              title="Import Serial Numbers from Excel or CSV via Column Select"
+            >
+              <FileSpreadsheet size={14} />
+              <span>Import Excel Serials</span>
+            </Link>
+          )}
+
           <button
             onClick={() => handleExportList(false)}
             disabled={filteredSerials.length === 0}

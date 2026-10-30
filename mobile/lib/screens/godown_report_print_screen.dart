@@ -3,6 +3,8 @@ import '../services/api_service.dart';
 import '../models/models.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/uppercase_formatter.dart';
+import '../widgets/office_pc_confirm_dialog.dart';
 import 'godown_report_preview_screen.dart';
 
 class GodownReportPrintScreen extends StatefulWidget {
@@ -175,6 +177,15 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
       );
       return;
     }
+
+    final confirmed = await confirmOfficePcPrint(
+      context,
+      title: 'Print on Office PC',
+      message: 'Are you sure you want to send this report to the Office PC printer?',
+      documentName: _selectedReportType.replaceAll('_', ' ').toUpperCase(),
+      printerName: _selectedPrinter ?? 'Default Office PC Printer',
+    );
+    if (!confirmed || !mounted) return;
 
     setState(() {
       _isPrinting = true;
@@ -674,6 +685,8 @@ class _GodownReportPrintScreenState extends State<GodownReportPrintScreen> {
         // 1. Search Box
         TextField(
           controller: _modelSearchController,
+          textCapitalization: TextCapitalization.characters,
+          inputFormatters: const [UpperCaseTextFormatter()],
           decoration: InputDecoration(
             labelText: 'Search & Filter by Model',
             labelStyle: const TextStyle(fontSize: 12),

@@ -3,6 +3,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/offline_manager.dart';
 import 'responsive_utils.dart';
+import 'uppercase_formatter.dart';
 
 /// Shows a dialog or modal sheet to add a new shop with only shop name.
 /// Returns the newly created [Shop], or `null` if cancelled.
@@ -36,7 +37,7 @@ class _AddShopDialogState extends State<AddShopDialog> {
   @override
   void initState() {
     super.initState();
-    _nameController = TextEditingController(text: widget.initialName ?? '');
+    _nameController = TextEditingController(text: (widget.initialName ?? '').toUpperCase());
   }
 
   @override
@@ -52,7 +53,7 @@ class _AddShopDialogState extends State<AddShopDialog> {
       return;
     }
 
-    final name = _nameController.text.trim();
+    final name = _nameController.text.trim().toUpperCase();
 
     setState(() => _isSubmitting = true);
 
@@ -212,7 +213,8 @@ class _AddShopDialogState extends State<AddShopDialog> {
                       TextFormField(
                         controller: _nameController,
                         autofocus: true,
-                        textCapitalization: TextCapitalization.words,
+                        textCapitalization: TextCapitalization.characters,
+                        inputFormatters: const [UpperCaseTextFormatter()],
                         style: TextStyle(
                           fontSize: isTablet ? 16 : 14,
                           color: const Color(0xFF0F172A),

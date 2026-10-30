@@ -11,6 +11,7 @@ import { BillsPage } from "./pages/BillsPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { DevicesPage } from "./pages/DevicesPage";
+import { ImportSerialsPage } from "./pages/ImportSerialsPage";
 
 export const App: React.FC = () => {
   return (
@@ -31,6 +32,7 @@ export const App: React.FC = () => {
 
           {/* Admin-only Routes */}
           <Route element={<ProtectedLayout requireAdmin={true} />}>
+            <Route path="/import-serials" element={<ImportSerialsPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/devices" element={<DevicesPage />} />
           </Route>

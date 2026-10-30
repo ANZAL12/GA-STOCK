@@ -13,6 +13,7 @@ import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
 import '../widgets/add_product_dialog.dart';
+import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 
 enum InwardStage {
@@ -875,6 +876,8 @@ class _InwardScreenState extends State<InwardScreen> {
                           const SizedBox(height: 12),
                           TextField(
                             autofocus: false,
+                            textCapitalization: TextCapitalization.characters,
+                            inputFormatters: const [UpperCaseTextFormatter()],
                             decoration: InputDecoration(
                               hintText: 'Search brand or model (e.g. GXI 360)...',
                               prefixIcon: const Icon(Icons.search, size: 18),
@@ -2132,6 +2135,8 @@ class _InwardScreenState extends State<InwardScreen> {
             children: [
               Expanded(
                 child: TextField(
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: const [UpperCaseTextFormatter()],
                   decoration: InputDecoration(
                     hintText: 'Search brand, model, or SKU...',
                     prefixIcon: const Icon(Icons.search, size: 20),

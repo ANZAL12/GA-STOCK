@@ -10,7 +10,8 @@ import {
   FileText, 
   Users, 
   Smartphone, 
-  LogOut
+  LogOut,
+  FileSpreadsheet
 } from "lucide-react";
 
 import logoImg from "../assets/GLOBAL2.png";
@@ -31,6 +32,7 @@ export const Navbar: React.FC = () => {
     { label: "Shops", path: "/shops", icon: Store },
     { label: "Bills", path: "/bills", icon: Receipt },
     { label: "Reports", path: "/reports", icon: FileText },
+    ...(isAdmin ? [{ label: "Import Serials", path: "/import-serials", icon: FileSpreadsheet }] : []),
     ...(isAdmin ? [{ label: "Users", path: "/users", icon: Users }] : []),
     ...(isAdmin ? [{ label: "Devices", path: "/devices", icon: Smartphone }] : []),
   ];

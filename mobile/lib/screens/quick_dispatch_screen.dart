@@ -10,6 +10,7 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
+import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
 
@@ -592,6 +593,8 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                   padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 6),
                   child: TextField(
                     autofocus: false,
+                    textCapitalization: TextCapitalization.characters,
+                    inputFormatters: const [UpperCaseTextFormatter()],
                     decoration: InputDecoration(
                       hintText: 'Search brand or model (e.g. GXI 360)...',
                       prefixIcon: const Icon(Icons.search, size: 20),
@@ -1099,6 +1102,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                             controller: _billNumberController,
                             focusNode: _billNumberFocus,
                             textCapitalization: TextCapitalization.characters,
+                            inputFormatters: const [UpperCaseTextFormatter()],
                             keyboardType: TextInputType.text,
                             textInputAction: TextInputAction.next,
                             onTap: () {
@@ -1115,6 +1119,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                             controller: _deliveryRefController,
                             focusNode: _deliveryRefFocus,
                             textCapitalization: TextCapitalization.characters,
+                            inputFormatters: const [UpperCaseTextFormatter()],
                             keyboardType: TextInputType.text,
                             textInputAction: TextInputAction.next,
                             onTap: () {
@@ -1441,6 +1446,8 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         children: [
           TextField(
             autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            inputFormatters: const [UpperCaseTextFormatter()],
             decoration: InputDecoration(
               hintText: 'Search dealer shop or city...',
               prefixIcon: const Icon(Icons.search, size: 20),
@@ -1638,6 +1645,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                               child: TextField(
                                 controller: _manualController,
                                 textCapitalization: TextCapitalization.characters,
+                                inputFormatters: const [UpperCaseTextFormatter()],
                                 style: const TextStyle(fontSize: 13),
                                 decoration: InputDecoration(
                                   hintText: 'Or enter serial manually...',
@@ -1745,6 +1753,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                           child: TextField(
                             controller: _manualController,
                             textCapitalization: TextCapitalization.characters,
+                            inputFormatters: const [UpperCaseTextFormatter()],
                             decoration: InputDecoration(
                               hintText: 'Or enter serial manually...',
                               prefixIcon: const Icon(Icons.search, size: 18),

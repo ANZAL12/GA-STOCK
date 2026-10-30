@@ -3,6 +3,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/offline_manager.dart';
 import 'responsive_utils.dart';
+import 'uppercase_formatter.dart';
 
 /// Shows a dialog to add a new Product Model matching the Master Product Catalog.
 /// Returns the newly created [Product], or `null` if cancelled.
@@ -57,8 +58,8 @@ class _AddProductDialogState extends State<AddProductDialog> {
   @override
   void initState() {
     super.initState();
-    _brandController = TextEditingController(text: widget.initialBrand ?? '');
-    _modelController = TextEditingController(text: widget.initialModel ?? '');
+    _brandController = TextEditingController(text: (widget.initialBrand ?? '').toUpperCase());
+    _modelController = TextEditingController(text: (widget.initialModel ?? '').toUpperCase());
     _openingStockController = TextEditingController(text: '0');
     _descriptionController = TextEditingController();
     _loadData();
@@ -131,9 +132,11 @@ class _AddProductDialogState extends State<AddProductDialog> {
               TextField(
                 controller: nameCtrl,
                 autofocus: true,
+                textCapitalization: TextCapitalization.characters,
+                inputFormatters: const [UpperCaseTextFormatter()],
                 decoration: const InputDecoration(
                   labelText: 'Category Name',
-                  hintText: 'e.g. Microwave, Air Cooler',
+                  hintText: 'e.g. MICROWAVE, AIR COOLER',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -157,7 +160,7 @@ class _AddProductDialogState extends State<AddProductDialog> {
                 foregroundColor: Colors.white,
               ),
               onPressed: () async {
-                final name = nameCtrl.text.trim();
+                final name = nameCtrl.text.trim().toUpperCase();
                 if (name.isEmpty) return;
                 try {
                   final cat = await _api.createCategory(name: name, hasDualSerial: dualSerial);
@@ -197,8 +200,8 @@ class _AddProductDialogState extends State<AddProductDialog> {
       return;
     }
 
-    final brand = _brandController.text.trim();
-    final model = _modelController.text.trim();
+    final brand = _brandController.text.trim().toUpperCase();
+    final model = _modelController.text.trim().toUpperCase();
     final openingStock = int.tryParse(_openingStockController.text.trim()) ?? 0;
     final description = _descriptionController.text.trim();
 
@@ -407,9 +410,11 @@ class _AddProductDialogState extends State<AddProductDialog> {
                             const SizedBox(height: 6),
                             TextFormField(
                               controller: _brandController,
+                              textCapitalization: TextCapitalization.characters,
+                              inputFormatters: const [UpperCaseTextFormatter()],
                               style: const TextStyle(fontSize: 13),
                               decoration: InputDecoration(
-                                hintText: 'e.g. Samsung, LG, IFB',
+                                hintText: 'e.g. SAMSUNG, LG, IFB',
                                 hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
                                 filled: true,
                                 fillColor: const Color(0xFFF8FAFC),
@@ -476,7 +481,7 @@ class _AddProductDialogState extends State<AddProductDialog> {
                                             visualDensity: VisualDensity.compact,
                                             onPressed: () {
                                               setState(() {
-                                                _brandController.text = b;
+                                                _brandController.text = b.toUpperCase();
                                               });
                                             },
                                           ),
@@ -574,6 +579,8 @@ class _AddProductDialogState extends State<AddProductDialog> {
                             const SizedBox(height: 6),
                             TextFormField(
                               controller: _modelController,
+                              textCapitalization: TextCapitalization.characters,
+                              inputFormatters: const [UpperCaseTextFormatter()],
                               style: const TextStyle(fontSize: 13),
                               decoration: InputDecoration(
                                 hintText: 'e.g. UA43T5350',

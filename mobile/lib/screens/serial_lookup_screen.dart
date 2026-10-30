@@ -5,6 +5,7 @@ import '../services/hardware_scanner_service.dart';
 import '../widgets/offline_banner.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
+import '../widgets/uppercase_formatter.dart';
 
 class SerialLookupScreen extends StatefulWidget {
   final String? initialSerial;
@@ -175,6 +176,7 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
                       child: TextField(
                         controller: _searchController,
                         textCapitalization: TextCapitalization.characters,
+                        inputFormatters: const [UpperCaseTextFormatter()],
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontFamily: 'monospace',

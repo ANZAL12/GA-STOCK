@@ -8,6 +8,8 @@ import '../services/api_service.dart';
 import '../models/models.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/top_toast.dart';
+import '../widgets/uppercase_formatter.dart';
+import '../widgets/office_pc_confirm_dialog.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  PrintBillScreen – list bills and print/share as PDF
@@ -116,6 +118,15 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
       );
       return;
     }
+
+    final confirmed = await confirmOfficePcPrint(
+      context,
+      title: 'Print on Office PC',
+      message: 'Are you sure you want to send Bill #$billNumber to the Office PC printer?',
+      documentName: 'Bill #$billNumber',
+    );
+    if (!confirmed || !mounted) return;
+
     _startListCooldown(billNumber);
 
     TopToast.show(
@@ -176,6 +187,8 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
             ),
             child: TextField(
               controller: _searchCtrl,
+              textCapitalization: TextCapitalization.characters,
+              inputFormatters: const [UpperCaseTextFormatter()],
               onChanged: _onSearch,
               style: TextStyle(fontSize: context.isTablet ? 16 : 14),
               decoration: InputDecoration(
@@ -494,6 +507,16 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       );
       return;
     }
+
+    final confirmed = await confirmOfficePcPrint(
+      context,
+      title: 'Print on Office PC',
+      message: 'Are you sure you want to print Challan #${widget.billNumber} on the Office PC printer?',
+      documentName: 'Challan #${widget.billNumber}',
+      printerName: _selectedOfficePrinter ?? 'Default Office PC Printer',
+    );
+    if (!confirmed || !mounted) return;
+
     _startPrintCooldown();
     setState(() => _isPrintingToOfficePc = true);
     TopToast.show(
@@ -1747,6 +1770,8 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             border: Border.all(color: const Color(0xFFE2E8F0)),
           ),
           child: TextField(
+            textCapitalization: TextCapitalization.characters,
+            inputFormatters: const [UpperCaseTextFormatter()],
             onChanged: (val) => setState(() => _serialSearchQuery = val),
             style: TextStyle(fontSize: context.isTablet ? 14 : 12),
             decoration: InputDecoration(
@@ -2208,6 +2233,14 @@ class BillPdfViewerScreen extends StatelessWidget {
             icon: const Icon(Icons.print_outlined, size: 18),
             label: const Text('Office PC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             onPressed: () async {
+              final confirmed = await confirmOfficePcPrint(
+                context,
+                title: 'Print Challan on Office PC',
+                message: 'Are you sure you want to send Challan #${bill.billNumber} to the Office PC printer?',
+                documentName: 'Challan #${bill.billNumber}',
+              );
+              if (!confirmed || !context.mounted) return;
+
               try {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(

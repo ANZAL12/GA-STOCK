@@ -5,6 +5,7 @@ import 'package:printing/printing.dart';
 import '../services/api_service.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/responsive_utils.dart';
+import '../widgets/office_pc_confirm_dialog.dart';
 
 class GodownReportPreviewScreen extends StatefulWidget {
   final Uint8List pdfBytes;
@@ -27,6 +28,15 @@ class _GodownReportPreviewScreenState extends State<GodownReportPreviewScreen> {
   bool _isPrinting = false;
 
   Future<void> _handlePrintToOfficePc() async {
+    final confirmed = await confirmOfficePcPrint(
+      context,
+      title: 'Print on Office PC',
+      message: 'Are you sure you want to send this report to the Office PC printer?',
+      documentName: widget.reportTitle,
+      printerName: widget.selectedPrinter ?? 'Default Office PC Printer',
+    );
+    if (!confirmed || !mounted) return;
+
     setState(() => _isPrinting = true);
 
     try {

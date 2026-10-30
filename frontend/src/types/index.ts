@@ -315,3 +315,77 @@ export interface BillListItem {
   total_batches: number;
   models_summary: string[];
 }
+
+export interface BulkSerialCheckItem {
+  serial_number: string;
+  exists: boolean;
+  status?: string | null;
+  status_label?: string | null;
+  product_id?: string | null;
+  product_name?: string | null;
+  brand?: string | null;
+  model?: string | null;
+  shop_name?: string | null;
+  unit_type?: string | null;
+}
+
+export interface BulkSerialCheckRequest {
+  serials?: string[];
+  serial_numbers?: string[];
+}
+
+export interface BulkSerialCheckResponse {
+  total_checked?: number;
+  existing_count: number;
+  new_count: number;
+  results?: BulkSerialCheckItem[];
+  existing?: Record<string, BulkSerialCheckItem>;
+}
+
+export interface ExcelSerialImportItem {
+  serial_number: string;
+  product_id?: string | null;
+  model_name?: string | null;
+  unit_type?: string | null;
+  row_index?: number | null;
+}
+
+export interface ExcelSerialImportRequest {
+  items: ExcelSerialImportItem[];
+  default_product_id?: string | null;
+  inward_reference?: string | null;
+  skip_existing?: boolean;
+}
+
+export interface ExcelSerialImportResponse {
+  total_processed: number;
+  imported_count: number;
+  skipped_existing_count: number;
+  skipped_invalid_count: number;
+  skipped_serials: Array<{
+    serial_number: string;
+    reason: string;
+    existing_status?: string | null;
+    product_name?: string | null;
+  }>;
+  products_updated: Array<{
+    product_id: string;
+    product_name: string;
+    model: string;
+    added_count: number;
+    new_stock: number;
+  }>;
+  inward_batch_ids: string[];
+}
+
+export interface ExcelSerialPreviewResponse {
+  filename: string;
+  sheet_names: string[];
+  selected_sheet: string;
+  columns: string[];
+  suggested_serial_column?: string | null;
+  suggested_model_column?: string | null;
+  suggested_unit_type_column?: string | null;
+  total_rows: number;
+  sample_rows: Record<string, any>[];
+}

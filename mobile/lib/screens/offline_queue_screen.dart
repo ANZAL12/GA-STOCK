@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/offline_queue_service.dart';
 import '../widgets/responsive_utils.dart';
+import '../widgets/uppercase_formatter.dart';
 
 class OfflineQueueScreen extends StatefulWidget {
   const OfflineQueueScreen({super.key});
@@ -851,6 +852,8 @@ class _BatchDetailsSheetState extends State<_BatchDetailsSheet> {
 
                 // Search Box
                 TextField(
+                  textCapitalization: TextCapitalization.characters,
+                  inputFormatters: const [UpperCaseTextFormatter()],
                   onChanged: (val) => setState(() => _searchQuery = val.trim()),
                   decoration: InputDecoration(
                     hintText: 'Search serial number or model...',
