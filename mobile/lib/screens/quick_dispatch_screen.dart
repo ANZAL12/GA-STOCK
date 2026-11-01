@@ -13,6 +13,7 @@ import '../widgets/offline_banner.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
+import '../services/session_recovery_service.dart';
 
 class QuickScanItem {
   int sequenceNumber;
@@ -32,10 +33,31 @@ class QuickScanItem {
     this.unitType,
     required this.isMatched,
   });
+
+  Map<String, dynamic> toJson() => {
+    'sequenceNumber': sequenceNumber,
+    'serialNumber': serialNumber,
+    'productId': productId,
+    'modelName': modelName,
+    'brand': brand,
+    'unitType': unitType,
+    'isMatched': isMatched,
+  };
+
+  factory QuickScanItem.fromJson(Map<String, dynamic> json) => QuickScanItem(
+    sequenceNumber: json['sequenceNumber'] ?? 0,
+    serialNumber: json['serialNumber'] ?? '',
+    productId: json['productId'] ?? '',
+    modelName: json['modelName'] ?? '',
+    brand: json['brand'] ?? '',
+    unitType: json['unitType'],
+    isMatched: json['isMatched'] ?? true,
+  );
 }
 
 class QuickDispatchScreen extends StatefulWidget {
-  const QuickDispatchScreen({super.key});
+  final SessionDraft? restoredDraft;
+  const QuickDispatchScreen({super.key, this.restoredDraft});
 
   @override
   State<QuickDispatchScreen> createState() => _QuickDispatchScreenState();
@@ -102,6 +124,24 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     }
   }
 
+  void _persistDraft() {
+    if (_scannedItems.isEmpty) {
+      SessionRecoveryService().clearDraft();
+      return;
+    }
+    final draft = SessionDraft(
+      type: SessionType.quickDispatch,
+      updatedAt: DateTime.now(),
+      shopId: _selectedShop?.id,
+      shopName: _selectedShop?.name,
+      billNumber: _billNumberController.text.trim().isEmpty ? null : _billNumberController.text.trim(),
+      deliveryReference: _deliveryRefController.text.trim().isEmpty ? null : _deliveryRefController.text.trim(),
+      remarks: _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim(),
+      items: _scannedItems.map((e) => e.toJson()).toList(),
+    );
+    SessionRecoveryService().saveDraftDebounced(draft);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -117,7 +157,37 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     _loadMetadata();
     _initWebSocket();
 
-    _scannerSub = HardwareScannerService().registerListener((barcode) {
+    // Restore draft if resuming session
+    if (widget.restoredDraft != null) {
+      final draft = widget.restoredDraft!;
+      if (draft.shopId != null) {
+        final existingShop = _shops.where((s) => s.id == draft.shopId).firstOrNull;
+        _selectedShop = existingShop ?? Shop(
+          id: draft.shopId!,
+          name: draft.shopName ?? 'Shop',
+          city: '',
+          isActive: true,
+        );
+      }
+      if (draft.billNumber != null) _billNumberController.text = draft.billNumber!;
+      if (draft.deliveryReference != null) _deliveryRefController.text = draft.deliveryReference!;
+      if (draft.remarks != null) _remarksController.text = draft.remarks!;
+
+      for (final itemJson in draft.items) {
+        try {
+          final item = QuickScanItem.fromJson(itemJson);
+          _scannedItems.add(item);
+          _scannedSerialSet.add(item.serialNumber.trim().toUpperCase());
+          if (item.sequenceNumber >= _sequenceCounter) {
+            _sequenceCounter = item.sequenceNumber;
+          }
+        } catch (e) {
+          debugPrint('Error restoring quick dispatch item: $e');
+        }
+      }
+    }
+
+    _scannerSub = HardwareScannerService().registerListener((barcode) async {
       if (!mounted) return;
       if (ModalRoute.of(context)?.isCurrent != true) return;
       _lastScanTime = DateTime.now();
@@ -126,7 +196,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         _showToast('Select a shop first', const Color(0xFFD97706));
         return;
       }
-      _handleQuickScan(barcode);
+      await _handleQuickScan(barcode);
     });
   }
 
@@ -234,6 +304,10 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         setState(() {
           _shops = s;
           _indexProducts(p);
+          if (_selectedShop != null) {
+            final refreshed = _shops.where((sh) => sh.id == _selectedShop!.id).firstOrNull;
+            if (refreshed != null) _selectedShop = refreshed;
+          }
           _loadingShops = false;
         });
       }
@@ -365,6 +439,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
       return false;
     } finally {
       _inFlightSerials.remove(cleanSerial);
+      _persistDraft();
     }
   }
 
@@ -820,6 +895,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         _scannedItems.insert(0, newItem);
         _lastScanFeedback = '✓ Added: $serial (${p.model})';
       });
+      _persistDraft();
       return true;
     }
     return false;
@@ -1212,6 +1288,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
     if (!OfflineManager().isOnline) {
       await OfflineManager().queueDispatch(dispatchPayload);
+      await SessionRecoveryService().clearDraft();
       if (!mounted) return;
       setState(() {
         _isSubmitting = false;
@@ -1232,6 +1309,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         remarks: _remarksController.text.trim().isNotEmpty ? _remarksController.text.trim() : null,
       );
 
+      await SessionRecoveryService().clearDraft();
       final String? billNum = res['bill_number'];
       if (!mounted) return;
 
@@ -1256,6 +1334,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         if (isNetError) {
           OfflineManager().markOffline();
           await OfflineManager().queueDispatch(dispatchPayload);
+          await SessionRecoveryService().clearDraft();
           if (mounted) {
             setState(() {
               _isSubmitting = false;
@@ -1325,6 +1404,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
           if (_scannedItems.isNotEmpty) {
             final confirm = await _showClearConfirmationDialog();
             if (confirm != true) return;
+            await SessionRecoveryService().clearDraft();
           }
           if (mounted) {
             setState(() {
@@ -1366,6 +1446,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                   if (_scannedItems.isNotEmpty) {
                     final confirm = await _showClearConfirmationDialog();
                     if (confirm != true) return;
+                    await SessionRecoveryService().clearDraft();
                   }
                   if (mounted) {
                     setState(() {
@@ -1404,6 +1485,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                     if (_scannedItems.isNotEmpty) {
                       final confirm = await _showClearConfirmationDialog();
                       if (confirm != true) return;
+                      await SessionRecoveryService().clearDraft();
                     }
                     setState(() {
                       _selectedShop = null;
@@ -2103,6 +2185,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
           _scannedSerialSet.remove(item.serialNumber);
           _reindexScannedItems();
         });
+        _persistDraft();
       },
       child: RepaintBoundary(
         key: ValueKey(item.serialNumber),

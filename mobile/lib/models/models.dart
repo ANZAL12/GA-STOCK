@@ -239,6 +239,39 @@ class OutwardScanResult {
     this.unitType,
     this.sequenceNumber = 0,
   });
+
+  Map<String, dynamic> toJson() => {
+    'serialNumber': serialNumber,
+    'product': product?.toJson(),
+    'caseType': caseType.name,
+    'isMatched': isMatched,
+    'isFlaggedForReview': isFlaggedForReview,
+    'warningMessage': warningMessage,
+    'existingModelName': existingModelName,
+    'lastShopName': lastShopName,
+    'currentStatus': currentStatus,
+    'unitType': unitType,
+    'sequenceNumber': sequenceNumber,
+  };
+
+  factory OutwardScanResult.fromJson(Map<String, dynamic> json) {
+    return OutwardScanResult(
+      serialNumber: json['serialNumber'] ?? '',
+      product: json['product'] != null ? Product.fromJson(json['product']) : null,
+      caseType: OutwardCase.values.firstWhere(
+        (e) => e.name == json['caseType'],
+        orElse: () => OutwardCase.matched,
+      ),
+      isMatched: json['isMatched'] ?? true,
+      isFlaggedForReview: json['isFlaggedForReview'] ?? false,
+      warningMessage: json['warningMessage'],
+      existingModelName: json['existingModelName'],
+      lastShopName: json['lastShopName'],
+      currentStatus: json['currentStatus'],
+      unitType: json['unitType'],
+      sequenceNumber: json['sequenceNumber'] ?? 0,
+    );
+  }
 }
 
 class SerialHistoryEntry {

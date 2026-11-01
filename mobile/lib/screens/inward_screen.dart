@@ -15,6 +15,7 @@ import '../widgets/offline_banner.dart';
 import '../widgets/add_product_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
+import '../services/session_recovery_service.dart';
 
 enum InwardStage {
   selectCase,   // Step 1: Pick Stock In, Returned Product, or Damaged Product
@@ -36,10 +37,27 @@ class InwardScannedItem {
     this.isAutoDetected = false,
     required this.sequenceNumber,
   });
+
+  Map<String, dynamic> toJson() => {
+    'serialNumber': serialNumber,
+    'product': product.toJson(),
+    'unitType': unitType,
+    'isAutoDetected': isAutoDetected,
+    'sequenceNumber': sequenceNumber,
+  };
+
+  factory InwardScannedItem.fromJson(Map<String, dynamic> json) => InwardScannedItem(
+    serialNumber: json['serialNumber'] ?? '',
+    product: Product.fromJson(json['product'] as Map<String, dynamic>),
+    unitType: json['unitType'],
+    isAutoDetected: json['isAutoDetected'] ?? false,
+    sequenceNumber: json['sequenceNumber'] ?? 0,
+  );
 }
 
 class InwardScreen extends StatefulWidget {
-  const InwardScreen({super.key});
+  final SessionDraft? restoredDraft;
+  const InwardScreen({super.key, this.restoredDraft});
 
   @override
   State<InwardScreen> createState() => _InwardScreenState();
@@ -108,6 +126,25 @@ class _InwardScreenState extends State<InwardScreen> {
     _warningDialogContext = null;
   }
 
+  void _persistDraft() {
+    if (_scannedItems.isEmpty) {
+      SessionRecoveryService().clearDraft();
+      return;
+    }
+    final draft = SessionDraft(
+      type: SessionType.inward,
+      updatedAt: DateTime.now(),
+      inwardType: _inwardType,
+      productId: _selectedProduct?.id,
+      productName: _selectedProduct != null ? '${_selectedProduct!.brand} ${_selectedProduct!.model}' : null,
+      remarks: _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim(),
+      unitType: _inwardUnitType,
+      currentStep: _stage == InwardStage.scanning ? 3 : 1,
+      items: _scannedItems.map((e) => e.toJson()).toList(),
+    );
+    SessionRecoveryService().saveDraftDebounced(draft);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -119,6 +156,36 @@ class _InwardScreenState extends State<InwardScreen> {
     }
     _loadProducts();
     _initWebSocket();
+
+    // Restore draft if resuming session
+    if (widget.restoredDraft != null) {
+      final draft = widget.restoredDraft!;
+      _inwardType = draft.inwardType ?? 'stock_in';
+      _stage = InwardStage.scanning;
+      if (draft.unitType != null) _inwardUnitType = draft.unitType!;
+      if (draft.remarks != null) _remarksController.text = draft.remarks!;
+
+      if (draft.productId != null) {
+        _selectedProduct = _products.where((p) => p.id == draft.productId).firstOrNull;
+      }
+
+      for (final itemJson in draft.items) {
+        try {
+          final item = InwardScannedItem.fromJson(itemJson);
+          _scannedItems.add(item);
+          _scannedSerialSet.add(item.serialNumber.trim().toUpperCase());
+          if (item.sequenceNumber >= _sequenceCounter) {
+            _sequenceCounter = item.sequenceNumber + 1;
+          }
+        } catch (e) {
+          debugPrint('Error restoring inward item: $e');
+        }
+      }
+
+      if (_selectedProduct == null && _scannedItems.isNotEmpty) {
+        _selectedProduct = _scannedItems.first.product;
+      }
+    }
 
     // Hardware barcode scanner support
     _scannerSub = HardwareScannerService().registerListener((barcode) {
@@ -707,6 +774,7 @@ class _InwardScreenState extends State<InwardScreen> {
       _showWarningDialog('Validation Error', 'Failed to validate serial "$cleanSerial": $e');
     } finally {
       _inFlightSerials.remove(cleanSerial);
+      _persistDraft();
     }
   }
 
@@ -1528,6 +1596,7 @@ class _InwardScreenState extends State<InwardScreen> {
         description: '${_getInwardTypeTitle(_inwardType)}: ${_scannedItems.length} units',
       );
       await _queue.enqueue(batch);
+      await SessionRecoveryService().clearDraft();
 
       // Record scanned serials directly into local offline inventory cache
       for (final item in _scannedItems) {
@@ -1569,6 +1638,7 @@ class _InwardScreenState extends State<InwardScreen> {
       );
 
       _inwardRequestId = null;
+      await SessionRecoveryService().clearDraft();
 
       if (!mounted) return;
       setState(() => _submitting = false);
@@ -1721,6 +1791,7 @@ class _InwardScreenState extends State<InwardScreen> {
           description: '${_getInwardTypeTitle(_inwardType)}: ${_scannedItems.length} units',
         );
         await _queue.enqueue(batch);
+        await SessionRecoveryService().clearDraft();
 
         // Record scanned serials directly into local offline inventory cache
         for (final item in _scannedItems) {
@@ -1834,8 +1905,10 @@ class _InwardScreenState extends State<InwardScreen> {
                       );
                       if (discard != true) return;
                     }
+                    await SessionRecoveryService().clearDraft();
                     setState(() {
                       _scannedItems.clear();
+                      _scannedSerialSet.clear();
                       _stage = InwardStage.selectCase;
                     });
                   },
@@ -2694,6 +2767,7 @@ class _InwardScreenState extends State<InwardScreen> {
           _scannedItems.removeWhere((e) => e.serialNumber == item.serialNumber);
           _reindexScannedItems();
         });
+        _persistDraft();
       },
       child: RepaintBoundary(
         key: ValueKey(item.serialNumber),

@@ -4,6 +4,7 @@ import '../services/hardware_scanner_service.dart';
 import '../services/offline_queue_service.dart';
 import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
+import '../services/session_recovery_service.dart';
 import '../widgets/responsive_utils.dart';
 import '../widgets/add_shop_dialog.dart';
 import '../widgets/add_product_dialog.dart';
@@ -36,6 +37,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _refreshQueueCount();
     WebSocketService().connect();
     _api.preWarmCache();
+    SessionRecoveryService().init();
 
     // Listen for hardware barcode scanner on home screen (auto-opens Serial Trace only when on home screen)
     _scannerSub = HardwareScannerService().registerListener((barcode) {
@@ -359,6 +361,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     onRefresh: () async {
                       await _refreshQueueCount();
                       await OfflineManager().syncFromBackend();
+                      await SessionRecoveryService().checkActiveDraft();
                     },
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -369,6 +372,18 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+
+                // Unsubmitted session recovery card (visible if crash / unexpected close occurred during session)
+                ValueListenableBuilder<SessionDraft?>(
+                  valueListenable: SessionRecoveryService().activeDraftNotifier,
+                  builder: (context, draft, _) {
+                    if (draft == null || draft.items.isEmpty) return const SizedBox.shrink();
+                    return Padding(
+                      padding: EdgeInsets.only(bottom: isTablet ? 20 : 16),
+                      child: _buildUnsubmittedSessionCard(isTablet, draft),
+                    );
+                  },
+                ),
 
                 Text(
                   'WAREHOUSE OPERATIONS',
@@ -650,6 +665,380 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildUnsubmittedSessionCard(bool isTablet, SessionDraft draft) {
+    Color primaryColor = const Color(0xFFD97706);
+    Color bgColor = const Color(0xFFFFFBEB);
+    Color borderColor = const Color(0xFFFDE68A);
+    IconData icon = Icons.pending_actions_rounded;
+
+    if (draft.type == SessionType.inward) {
+      if (draft.inwardType == 'damaged') {
+        primaryColor = const Color(0xFFDC2626);
+        bgColor = const Color(0xFFFEF2F2);
+        borderColor = const Color(0xFFFECACA);
+        icon = Icons.warning_amber_rounded;
+      } else if (draft.inwardType == 'return') {
+        primaryColor = const Color(0xFFD97706);
+        bgColor = const Color(0xFFFFFBEB);
+        borderColor = const Color(0xFFFDE68A);
+        icon = Icons.assignment_return_rounded;
+      } else {
+        primaryColor = const Color(0xFF059669);
+        bgColor = const Color(0xFFECFDF5);
+        borderColor = const Color(0xFFA7F3D0);
+        icon = Icons.input_rounded;
+      }
+    } else if (draft.type == SessionType.quickDispatch) {
+      primaryColor = const Color(0xFFEA580C);
+      bgColor = const Color(0xFFFFF7ED);
+      borderColor = const Color(0xFFFED7AA);
+      icon = Icons.bolt_rounded;
+    }
+
+    final totalItems = draft.items.length;
+    final String timeFormatted = TimeOfDay.fromDateTime(draft.updatedAt).format(context);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(isTablet ? 18 : 16),
+        border: Border.all(color: borderColor, width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: primaryColor.withValues(alpha: 0.12),
+            offset: const Offset(0, 4),
+            blurRadius: 14,
+            spreadRadius: 0,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Banner Top Bar
+          Container(
+            padding: EdgeInsets.symmetric(
+              horizontal: isTablet ? 18 : 14,
+              vertical: isTablet ? 12 : 10,
+            ),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.only(
+                topLeft: Radius.circular(isTablet ? 16 : 14),
+                topRight: Radius.circular(isTablet ? 16 : 14),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: primaryColor.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, color: primaryColor, size: isTablet ? 20 : 16),
+                ),
+                SizedBox(width: isTablet ? 10 : 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              'Unsubmitted Session Detected',
+                              style: TextStyle(
+                                fontSize: isTablet ? 14 : 12,
+                                fontWeight: FontWeight.bold,
+                                color: primaryColor,
+                                letterSpacing: 0.3,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: primaryColor,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              'Auto-Saved',
+                              style: TextStyle(
+                                fontSize: isTablet ? 10.5 : 9.5,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Last active at $timeFormatted • App closed or interrupted',
+                        style: TextStyle(
+                          fontSize: isTablet ? 12 : 10.5,
+                          color: const Color(0xFF64748B),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Body Content
+          Padding(
+            padding: EdgeInsets.all(isTablet ? 18 : 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            draft.typeTitle,
+                            style: TextStyle(
+                              fontSize: isTablet ? 18 : 15.5,
+                              fontWeight: FontWeight.bold,
+                              color: const Color(0xFF0F172A),
+                            ),
+                          ),
+                          SizedBox(height: isTablet ? 6 : 4),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              if (draft.shopName != null && draft.shopName!.isNotEmpty)
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.storefront_rounded, size: 14, color: Color(0xFF64748B)),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      draft.shopName!,
+                                      style: TextStyle(
+                                        fontSize: isTablet ? 13 : 11.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: const Color(0xFF475569),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              if (draft.productName != null && draft.productName!.isNotEmpty)
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.devices_rounded, size: 14, color: Color(0xFF64748B)),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      draft.productName!,
+                                      style: TextStyle(
+                                        fontSize: isTablet ? 13 : 11.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: const Color(0xFF475569),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              if (draft.billNumber != null && draft.billNumber!.isNotEmpty)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFF1F5F9),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    'Bill: ${draft.billNumber}',
+                                    style: TextStyle(
+                                      fontSize: isTablet ? 12 : 10.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: const Color(0xFF334155),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: isTablet ? 12 : 10,
+                        vertical: isTablet ? 8 : 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: bgColor,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: borderColor),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '$totalItems',
+                            style: TextStyle(
+                              fontSize: isTablet ? 20 : 17,
+                              fontWeight: FontWeight.w800,
+                              color: primaryColor,
+                            ),
+                          ),
+                          Text(
+                            totalItems == 1 ? 'Unit' : 'Units',
+                            style: TextStyle(
+                              fontSize: isTablet ? 11 : 9.5,
+                              fontWeight: FontWeight.w600,
+                              color: primaryColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: isTablet ? 16 : 14),
+
+                // Action buttons: Continue/Resume & Discard
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 3,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF0F172A),
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          padding: EdgeInsets.symmetric(vertical: isTablet ? 14 : 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(isTablet ? 12 : 10),
+                          ),
+                        ),
+                        icon: const Icon(Icons.play_arrow_rounded, size: 20),
+                        label: Text(
+                          'Continue / Resume ($totalItems units)',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: isTablet ? 14 : 12.5,
+                          ),
+                        ),
+                        onPressed: () async {
+                          if (draft.type == SessionType.outward) {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => OutwardScreen(restoredDraft: draft),
+                              ),
+                            );
+                          } else if (draft.type == SessionType.inward) {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => InwardScreen(restoredDraft: draft),
+                              ),
+                            );
+                          } else if (draft.type == SessionType.quickDispatch) {
+                            await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => QuickDispatchScreen(restoredDraft: draft),
+                              ),
+                            );
+                          }
+                          _refreshQueueCount();
+                          await SessionRecoveryService().checkActiveDraft();
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 2,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFDC2626),
+                          side: const BorderSide(color: Color(0xFFFCA5A5)),
+                          padding: EdgeInsets.symmetric(vertical: isTablet ? 14 : 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(isTablet ? 12 : 10),
+                          ),
+                        ),
+                        icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                        label: Text(
+                          'Discard',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: isTablet ? 13.5 : 12,
+                          ),
+                        ),
+                        onPressed: () async {
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              title: const Row(
+                                children: [
+                                  Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 24),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Discard Draft?',
+                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                  ),
+                                ],
+                              ),
+                              content: Text(
+                                'You have $totalItems scanned serial number${totalItems == 1 ? "" : "s"} in this ${draft.typeTitle} session.\n\nDiscarding will permanently delete this unsubmitted draft.',
+                                style: const TextStyle(fontSize: 13, height: 1.4, color: Color(0xFF475569)),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
+                                ),
+                                ElevatedButton(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFFDC2626),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text('Discard Draft', style: TextStyle(fontWeight: FontWeight.bold)),
+                                ),
+                              ],
+                            ),
+                          );
+
+                          if (confirm == true) {
+                            await SessionRecoveryService().clearDraft();
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Unsubmitted session discarded'),
+                                  duration: Duration(seconds: 2),
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
+                          }
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

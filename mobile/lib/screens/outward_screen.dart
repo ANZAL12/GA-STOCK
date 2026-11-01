@@ -16,10 +16,12 @@ import '../widgets/add_shop_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../widgets/office_pc_confirm_dialog.dart';
 import '../services/sound_service.dart';
+import '../services/session_recovery_service.dart';
 import 'print_bill_screen.dart';
 
 class OutwardScreen extends StatefulWidget {
-  const OutwardScreen({super.key});
+  final SessionDraft? restoredDraft;
+  const OutwardScreen({super.key, this.restoredDraft});
 
   @override
   State<OutwardScreen> createState() => _OutwardScreenState();
@@ -100,6 +102,28 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
+  void _persistDraft() {
+    if (_scannedItems.isEmpty) {
+      SessionRecoveryService().clearDraft();
+      return;
+    }
+    final draft = SessionDraft(
+      type: SessionType.outward,
+      updatedAt: DateTime.now(),
+      shopId: _selectedShop?.id,
+      shopName: _selectedShop?.name,
+      productId: _selectedProduct?.id,
+      productName: _selectedProduct != null ? '${_selectedProduct!.brand} ${_selectedProduct!.model}' : null,
+      billNumber: _billNumberController.text.trim().isEmpty ? null : _billNumberController.text.trim(),
+      deliveryReference: _deliveryRefController.text.trim().isEmpty ? null : _deliveryRefController.text.trim(),
+      remarks: _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim(),
+      unitType: _outwardUnitType,
+      currentStep: _currentStep,
+      items: _scannedItems.map((e) => e.toJson()).toList(),
+    );
+    SessionRecoveryService().saveDraftDebounced(draft);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -116,6 +140,49 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
     _loadMetadata();
     _initWebSocket();
+
+    // Restore unsubmitted draft if recovering
+    if (widget.restoredDraft != null) {
+      final draft = widget.restoredDraft!;
+      if (draft.shopId != null) {
+        final existingShop = _shops.where((s) => s.id == draft.shopId).firstOrNull;
+        _selectedShop = existingShop ?? Shop(
+          id: draft.shopId!,
+          name: draft.shopName ?? 'Shop',
+          city: '',
+          isActive: true,
+        );
+      }
+      if (draft.productId != null) {
+        final existingProd = _products.where((p) => p.id == draft.productId).firstOrNull;
+        _selectedProduct = existingProd;
+        _activeFilterModelId = draft.productId!;
+      }
+      if (draft.billNumber != null) _billNumberController.text = draft.billNumber!;
+      if (draft.deliveryReference != null) _deliveryRefController.text = draft.deliveryReference!;
+      if (draft.remarks != null) _remarksController.text = draft.remarks!;
+      if (draft.unitType != null) _outwardUnitType = draft.unitType!;
+
+      for (final itemJson in draft.items) {
+        try {
+          final item = OutwardScanResult.fromJson(itemJson);
+          _scannedItems.add(item);
+          _scannedSerialSet.add(item.serialNumber.trim().toUpperCase());
+          if (item.sequenceNumber >= _sequenceCounter) {
+            _sequenceCounter = item.sequenceNumber + 1;
+          }
+        } catch (e) {
+          debugPrint('Error restoring outward item: $e');
+        }
+      }
+
+      if (_selectedProduct == null && _scannedItems.isNotEmpty && _scannedItems.first.product != null) {
+        _selectedProduct = _scannedItems.first.product;
+        _activeFilterModelId = _selectedProduct!.id;
+      }
+
+      _currentStep = 3;
+    }
 
     // Hardware barcode scanner support
     _scannerSub = HardwareScannerService().registerListener((barcode) {
@@ -300,6 +367,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
               orElse: () => _selectedProduct!,
             );
             _selectedProduct = refreshed;
+          }
+          if (_selectedShop != null) {
+            final refreshedShop = _shops.firstWhere(
+              (s) => s.id == _selectedShop!.id,
+              orElse: () => _selectedShop!,
+            );
+            _selectedShop = refreshedShop;
           }
           _loadingShops = false;
           _loadingProducts = false;
@@ -638,6 +712,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       _showSimpleAlert('Validation Error', 'Could not verify serial "$cleanSerial": $e');
     } finally {
       _inFlightSerials.remove(cleanSerial);
+      _persistDraft();
     }
   }
 
@@ -2042,6 +2117,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     if (!OfflineManager().isOnline || hasOfflineShop || hasOfflineProduct) {
       await OfflineManager().queueDispatch(dispatchPayload);
+      await SessionRecoveryService().clearDraft();
       _dispatchRequestId = null;
       if (!mounted) return;
       setState(() {
@@ -2077,6 +2153,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       // Successfully processed: reset request ID
       _dispatchRequestId = null;
+      await SessionRecoveryService().clearDraft();
 
       if (!mounted) return;
       setState(() => _submitting = false);
@@ -2372,6 +2449,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units, ${byProduct.length} models)',
         );
         await _queue.enqueue(batch);
+        await SessionRecoveryService().clearDraft();
         _dispatchRequestId = null;
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2455,6 +2533,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     if (confirm == true) {
       HapticFeedback.mediumImpact();
+      SessionRecoveryService().clearDraft();
       setState(() {
         _currentStep = 1;
         _selectedProduct = null;
@@ -3752,6 +3831,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           _scannedSerialSet.remove(item.serialNumber);
           _reindexScannedItems();
         });
+        _persistDraft();
       },
       child: Container(
         key: ValueKey(item.serialNumber),
@@ -3882,6 +3962,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       setState(() {
                         item.unitType = (item.unitType == 'indoor') ? 'outdoor' : 'indoor';
                       });
+                      _persistDraft();
                       ScaffoldMessenger.of(context).removeCurrentSnackBar();
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(

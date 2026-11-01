@@ -3,11 +3,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'sound_service.dart';
 
-typedef BarcodeScanCallback = void Function(String barcode);
+typedef BarcodeScanCallback = FutureOr<void> Function(String barcode);
 
-/// High-performance service to intercept and process scans from external hardware
-/// barcode scanners (Bluetooth HID handheld guns, back-clip scanners, ring scanners,
-/// USB OTG scanners, and integrated Android PDA laser scanners).
+/// High-performance, anti-fragmentation service to intercept, reassemble,
+/// and sequentially queue scans from external hardware barcode scanners
+/// (2.4GHz Wi-Fi/USB dongle wireless scanners, Bluetooth HID guns, USB OTG,
+/// back-clip scanners, ring scanners, and integrated Android PDA lasers).
 class HardwareScannerService {
   static final HardwareScannerService _instance = HardwareScannerService._internal();
   factory HardwareScannerService() => _instance;
@@ -17,29 +18,65 @@ class HardwareScannerService {
   final StreamController<String> _scanStreamController = StreamController<String>.broadcast();
   Stream<String> get onScan => _scanStreamController.stream;
 
+  static const MethodChannel _nativeChannel =
+      MethodChannel('com.globalagencies.godown_scanner/scanner');
+
+  // Keystroke burst assembly buffer
   final StringBuffer _buffer = StringBuffer();
-  final Map<String, DateTime> _recentScanTimes = {};
   DateTime? _lastKeystrokeTime;
+  Timer? _burstTimer;
   bool _initialized = false;
-  bool isEnabled = true;
-  bool _scannerUsesTerminator = true;
+  bool _isEnabled = true;
+
+  bool get isEnabled => _isEnabled;
+  set isEnabled(bool value) {
+    _isEnabled = value;
+    try {
+      _nativeChannel.invokeMethod('setEnabled', {'enabled': value});
+    } catch (_) {}
+  }
+
+  // Dedicated FIFO Scan Processing Queue
+  final List<String> _scanQueue = [];
+  bool _isProcessingQueue = false;
+
+  // Duplicate debounce within a short window
+  final Map<String, DateTime> _recentScanTimes = {};
 
   /// Number of active screen listeners registered
   int get activeListenersCount => _listeners.length;
 
+  /// Current number of barcodes pending in queue
+  int get pendingQueueCount => _scanQueue.length;
+
   void init() {
     if (_initialized) return;
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+    _nativeChannel.setMethodCallHandler(_handleNativeCall);
     _initialized = true;
-    debugPrint('[HardwareScannerService] Initialized - listening for Bluetooth/USB barcode scanners');
+    debugPrint('[HardwareScannerService] Initialized - native Android & Dart scan queue active');
   }
 
-  /// Clears any pending or partial keystroke buffer
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'onBarcodeScanned') {
+      final barcode = call.arguments?.toString();
+      if (barcode != null && barcode.isNotEmpty) {
+        debugPrint('[HardwareScannerService] Received barcode from native Android: $barcode');
+        _enqueueBarcode(barcode);
+      }
+    }
+    return null;
+  }
+
+  /// Clears any pending or partial keystroke buffer and resets burst timer
   void clearBuffer() {
-    _debounceTimer?.cancel();
-    _debounceTimer = null;
+    _burstTimer?.cancel();
+    _burstTimer = null;
     _buffer.clear();
     _lastKeystrokeTime = null;
+    try {
+      _nativeChannel.invokeMethod('clearBuffer');
+    } catch (_) {}
   }
 
   /// Register a listener on the stack. The top-most active screen or widget
@@ -47,20 +84,33 @@ class HardwareScannerService {
   /// Returns a function to unregister this listener when the screen is disposed.
   VoidCallback registerListener(BarcodeScanCallback callback) {
     init(); // Ensure handler is active
-    clearBuffer(); // Clean slate whenever a screen registers to prevent first-scan corruption
+
+    // Only clear buffer if it is truly stale (> 1500ms).
+    // NEVER wipe an active scan in progress (< 1500ms) when a screen mounts!
+    if (_lastKeystrokeTime != null &&
+        DateTime.now().difference(_lastKeystrokeTime!).inMilliseconds > 1500) {
+      clearBuffer();
+    }
+
     _listeners.add(callback);
+    debugPrint('[HardwareScannerService] Listener registered (total: ${_listeners.length})');
+
+    // If a scan was completed while navigating/mounting, deliver it immediately!
+    if (_scanQueue.isNotEmpty) {
+      scheduleMicrotask(() => _drainQueue());
+    }
+
     return () {
       _listeners.remove(callback);
-      clearBuffer();
+      debugPrint('[HardwareScannerService] Listener unregistered (remaining: ${_listeners.length})');
     };
   }
-
-  Timer? _debounceTimer;
 
   bool _handleKeyEvent(KeyEvent event) {
     if (!isEnabled) return false;
 
     final key = event.logicalKey;
+    final physKey = event.physicalKey;
     final now = DateTime.now();
 
     // Allow hardware volume buttons through for physical volume adjustment
@@ -69,93 +119,120 @@ class HardwareScannerService {
       return false;
     }
 
+    // Ignore modifier-only key events completely (Shift, Ctrl, Alt, CapsLock, NumLock)
+    // to avoid false starts or buffer corruption during dongle connect / wake-up
+    if (key == LogicalKeyboardKey.shiftLeft ||
+        key == LogicalKeyboardKey.shiftRight ||
+        key == LogicalKeyboardKey.controlLeft ||
+        key == LogicalKeyboardKey.controlRight ||
+        key == LogicalKeyboardKey.altLeft ||
+        key == LogicalKeyboardKey.altRight ||
+        key == LogicalKeyboardKey.capsLock ||
+        key == LogicalKeyboardKey.numLock ||
+        key == LogicalKeyboardKey.scrollLock) {
+      return true; // Swallowed completely so UI is never disrupted
+    }
+
     // Handle KeyUp / KeyRepeat: swallow immediately so no trailing events reach UI
     if (event is! KeyDownEvent) {
       return true;
     }
 
-    // 1. Scanner Terminator Keys (Enter, NumpadEnter, Tab, \r, \n)
+    // 1. Escape / Back Key: cancel current burst and clear buffer
+    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+      clearBuffer();
+      return true; // 100% swallowed: never pop screen or exit unexpectedly
+    }
+
+    // 2. Discard stale partial buffer if gap between keystrokes exceeds 1500ms
+    if (_lastKeystrokeTime != null &&
+        now.difference(_lastKeystrokeTime!).inMilliseconds > 1500) {
+      _buffer.clear();
+    }
+
+    // 3. Check for Terminator Keys (Enter / NumpadEnter / Carriage Return / LineFeed)
+    // NOTE: We deliberately DO NOT treat Tab as a terminator because many 2.4GHz
+    // scanners transmit 2D or multi-field barcodes with an embedded Tab.
     final bool isTerminator = key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter ||
-        key == LogicalKeyboardKey.tab ||
+        physKey == PhysicalKeyboardKey.enter ||
+        physKey == PhysicalKeyboardKey.numpadEnter ||
         event.character == '\n' ||
         event.character == '\r';
 
     if (isTerminator) {
-      _scannerUsesTerminator = true;
-      _debounceTimer?.cancel();
-      _debounceTimer = null;
-
-      if (_buffer.isNotEmpty) {
-        final barcode = _buffer.toString().trim();
-        _buffer.clear();
-        _lastKeystrokeTime = null;
-
-        if (barcode.length >= 2) {
-          _dispatchBarcode(barcode);
-        }
-      }
-      return true; // 100% swallowed: never activate buttons or trigger focus traversal!
+      _lastKeystrokeTime = now;
+      _buffer.write('\n');
+      // Terminator received: scan is complete.
+      // Use 30ms micro-window to ensure trailing CR/LF or final hardware packets arrive.
+      _scheduleBurstCompletion(delayMs: 30);
+      return true; // Swallowed completely
     }
-
-    // 2. Escape / Back
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
-      _debounceTimer?.cancel();
-      _debounceTimer = null;
-      if (_buffer.isNotEmpty) {
-        _buffer.clear();
-        _lastKeystrokeTime = null;
-      }
-      return true; // 100% swallowed: never pop screen or go to home screen!
-    }
-
-    // 3. Clear buffer if gap between characters is too long (> 2000ms stale threshold)
-    // Avoid clearing during 500-800ms CPU spikes on low-RAM tablets
-    if (_lastKeystrokeTime != null &&
-        now.difference(_lastKeystrokeTime!).inMilliseconds > 2000) {
-      _buffer.clear();
-    }
-    _lastKeystrokeTime = now;
 
     // 4. Extract printable character
     final char = _extractCharacter(event);
     if (char != null && char.isNotEmpty) {
+      _lastKeystrokeTime = now;
       _buffer.write(char);
 
-      // Auto-dispatch fallback: ONLY for scanners that do not send an Enter key.
-      // Once a terminator key has been observed, we disable timeout-based dispatch
-      // so CPU stalls on low-RAM devices never prematurely split a serial number!
-      _debounceTimer?.cancel();
-      if (!_scannerUsesTerminator) {
-        _debounceTimer = Timer(const Duration(milliseconds: 1200), () {
-          if (_buffer.isNotEmpty) {
-            final barcode = _buffer.toString().trim();
-            // Require at least 6 characters for timer-based auto-dispatch to prevent
-            // chopping partial barcodes in half during heavy device load
-            if (barcode.length >= 6) {
-              _buffer.clear();
-              _lastKeystrokeTime = null;
-              _dispatchBarcode(barcode);
-            }
-          }
-        });
-      }
+      // Auto-assembly fallback:
+      // For scanners without Enter, or during cold startup jitter where Android
+      // introduces an initial 100-250ms pause between the first few characters,
+      // wait 400ms of quiet.
+      // Normal scanner typing speed is 10-30ms per character. 400ms is imperceptible
+      // to humans, yet guarantees that cold-start USB/Bluetooth latency NEVER splits the barcode!
+      _scheduleBurstCompletion(delayMs: 400);
     }
 
     // 100% SWALLOWED: All external hardware keyboard events are consumed here!
-    // No physical keystroke can EVER leak into Flutter widgets, buttons, or focus traversal!
     return true;
   }
 
-  void _dispatchBarcode(String rawBarcode) {
-    final barcode = rawBarcode.trim().toUpperCase();
-    if (barcode.length < 2) return;
+  /// Schedules burst finalization after a quiet period.
+  /// If more characters arrive before the timer fires, the timer is reset,
+  /// guaranteeing that the full barcode is received intact!
+  void _scheduleBurstCompletion({required int delayMs}) {
+    _burstTimer?.cancel();
+    _burstTimer = Timer(Duration(milliseconds: delayMs), () {
+      _finalizeBurst();
+    });
+  }
 
+  /// Assembles the complete burst from `_buffer`, sanitizes it,
+  /// enqueues it into `_scanQueue`, and kicks off the background queue processor.
+  void _finalizeBurst() {
+    _burstTimer?.cancel();
+    _burstTimer = null;
+    _lastKeystrokeTime = null;
+
+    final raw = _buffer.toString();
+    _buffer.clear();
+
+    if (raw.trim().isEmpty) return;
+
+    // Split on newlines if multiple distinct lines were sent in one burst
+    // (e.g. 2D carton barcode containing both Model and Serial, or multi-scan)
+    final lines = raw.split(RegExp(r'[\r\n]+'));
+    for (final line in lines) {
+      // Strip any unprintable ASCII control characters (0x00-0x1F, 0x7F-0x9F)
+      final clean = line
+          .replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F]'), '')
+          .trim()
+          .toUpperCase();
+      // Only process valid barcode tokens (length >= 2, ignore empty chunks)
+      if (clean.length >= 2) {
+        _enqueueBarcode(clean);
+      }
+    }
+  }
+
+  /// Enqueues a clean, assembled barcode into the FIFO scan processing queue
+  void _enqueueBarcode(String barcode) {
     final now = DateTime.now();
     final lastTime = _recentScanTimes[barcode];
-    // Prevent accidental repeat double-scanning of the exact same barcode within 1200ms
-    if (lastTime != null && now.difference(lastTime).inMilliseconds < 1200) {
-      debugPrint('[HardwareScannerService] Debounced repeat scan of $barcode');
+    // Debounce exact identical repeat within 500ms to eliminate accidental optical bounces
+    if (lastTime != null && now.difference(lastTime).inMilliseconds < 500) {
+      debugPrint('[HardwareScannerService] Debounced rapid duplicate scan of $barcode');
       return;
     }
     _recentScanTimes[barcode] = now;
@@ -163,34 +240,63 @@ class HardwareScannerService {
       _recentScanTimes.removeWhere((_, time) => now.difference(time).inSeconds > 10);
     }
 
-    debugPrint('[HardwareScannerService] Scanned barcode: $barcode');
+    _scanQueue.add(barcode);
+    debugPrint('[HardwareScannerService] Enqueued barcode: $barcode (Queue size: ${_scanQueue.length})');
 
-    // Asynchronously dispatch on microtask queue so _handleKeyEvent returns
-    // true immediately to Android, unblocking Android's hardware input pipeline
+    // Asynchronously drain queue without blocking the hardware keyboard handler
     scheduleMicrotask(() {
-      // Dismiss focus only if an active element actually holds focus, avoiding Android ViewRootImpl surface relayout
-      final currentFocus = FocusManager.instance.primaryFocus;
-      if (currentFocus != null && currentFocus.hasFocus && currentFocus.context != null) {
-        currentFocus.unfocus();
-      }
-
-      // Immediate zero-latency audio and haptic feedback
-      try {
-        SoundService().playScannerBeep();
-        HapticFeedback.lightImpact();
-      } catch (_) {}
-
-      _scanStreamController.add(barcode);
-
-      // Notify the topmost registered screen listener
-      if (_listeners.isNotEmpty) {
-        final activeListener = _listeners.last;
-        activeListener(barcode);
-      }
+      _drainQueue();
     });
   }
 
+  /// Dedicated sequential queue worker. Processes one barcode at a time in exact FIFO order.
+  /// Even if the user rapid-scans multiple barcodes in 1-2 seconds, each item is processed
+  /// sequentially without race conditions, thread stalls, or split barcodes!
+  Future<void> _drainQueue() async {
+    if (_isProcessingQueue) return;
+    _isProcessingQueue = true;
+
+    try {
+      while (_scanQueue.isNotEmpty) {
+        // If no screen has registered a listener yet (e.g. during app startup or route transition),
+        // pause draining and preserve the queue so the barcode is NOT dropped!
+        if (_listeners.isEmpty) {
+          debugPrint('[HardwareScannerService] Scan queue paused waiting for screen listener (pending: ${_scanQueue.length})');
+          break;
+        }
+
+        final barcode = _scanQueue.removeAt(0);
+
+        // 1. Unfocus any active text field to prevent trailing keystroke contamination
+        final currentFocus = FocusManager.instance.primaryFocus;
+        if (currentFocus != null && currentFocus.hasFocus && currentFocus.context != null) {
+          currentFocus.unfocus();
+        }
+
+        // 2. Immediate zero-latency audio and haptic feedback
+        try {
+          SoundService().playScannerBeep();
+          HapticFeedback.lightImpact();
+        } catch (_) {}
+
+        // 3. Emit on public scan stream
+        _scanStreamController.add(barcode);
+
+        // 4. Notify topmost screen listener and await completion
+        final activeListener = _listeners.last;
+        try {
+          await Future.sync(() => activeListener(barcode));
+        } catch (e) {
+          debugPrint('[HardwareScannerService] Listener error on barcode $barcode: $e');
+        }
+      }
+    } finally {
+      _isProcessingQueue = false;
+    }
+  }
+
   String? _extractCharacter(KeyDownEvent event) {
+    // 1. Direct character from OS (fastest & most accurate when available)
     final rawChar = event.character;
     if (rawChar != null && rawChar.isNotEmpty) {
       final codeUnit = rawChar.codeUnitAt(0);
@@ -201,7 +307,27 @@ class HardwareScannerService {
     }
 
     final key = event.logicalKey;
-    // Fallback using keyLabel for alphanumeric characters if character is null
+    final physKey = event.physicalKey;
+
+    // 2. Numpad keys (frequently used by 2.4GHz wireless USB dongles and external scanners)
+    // Note: LogicalKeyboardKey.numpadX has keyLabel like "Numpad 1" (len 8), so label.length == 1 fails!
+    if (key == LogicalKeyboardKey.numpad0 || physKey == PhysicalKeyboardKey.numpad0) return '0';
+    if (key == LogicalKeyboardKey.numpad1 || physKey == PhysicalKeyboardKey.numpad1) return '1';
+    if (key == LogicalKeyboardKey.numpad2 || physKey == PhysicalKeyboardKey.numpad2) return '2';
+    if (key == LogicalKeyboardKey.numpad3 || physKey == PhysicalKeyboardKey.numpad3) return '3';
+    if (key == LogicalKeyboardKey.numpad4 || physKey == PhysicalKeyboardKey.numpad4) return '4';
+    if (key == LogicalKeyboardKey.numpad5 || physKey == PhysicalKeyboardKey.numpad5) return '5';
+    if (key == LogicalKeyboardKey.numpad6 || physKey == PhysicalKeyboardKey.numpad6) return '6';
+    if (key == LogicalKeyboardKey.numpad7 || physKey == PhysicalKeyboardKey.numpad7) return '7';
+    if (key == LogicalKeyboardKey.numpad8 || physKey == PhysicalKeyboardKey.numpad8) return '8';
+    if (key == LogicalKeyboardKey.numpad9 || physKey == PhysicalKeyboardKey.numpad9) return '9';
+    if (key == LogicalKeyboardKey.numpadDecimal || physKey == PhysicalKeyboardKey.numpadDecimal) return '.';
+    if (key == LogicalKeyboardKey.numpadDivide || physKey == PhysicalKeyboardKey.numpadDivide) return '/';
+    if (key == LogicalKeyboardKey.numpadMultiply || physKey == PhysicalKeyboardKey.numpadMultiply) return '*';
+    if (key == LogicalKeyboardKey.numpadSubtract || physKey == PhysicalKeyboardKey.numpadSubtract) return '-';
+    if (key == LogicalKeyboardKey.numpadAdd || physKey == PhysicalKeyboardKey.numpadAdd) return '+';
+
+    // 3. Fallback using keyLabel for single-character alphanumeric keys
     final label = key.keyLabel;
     if (label.length == 1) {
       final cu = label.codeUnitAt(0);
@@ -210,11 +336,56 @@ class HardwareScannerService {
       }
     }
 
-    // Fallbacks for common barcode characters if event.character is null
-    if (key == LogicalKeyboardKey.minus || key == LogicalKeyboardKey.numpadSubtract) return '-';
-    if (key == LogicalKeyboardKey.slash || key == LogicalKeyboardKey.numpadDivide) return '/';
-    if (key == LogicalKeyboardKey.space) return ' ';
-    if (key == LogicalKeyboardKey.period || key == LogicalKeyboardKey.numpadDecimal) return '.';
+    // 4. Physical key fallback for standard top-row digits (0-9)
+    if (physKey == PhysicalKeyboardKey.digit0) return '0';
+    if (physKey == PhysicalKeyboardKey.digit1) return '1';
+    if (physKey == PhysicalKeyboardKey.digit2) return '2';
+    if (physKey == PhysicalKeyboardKey.digit3) return '3';
+    if (physKey == PhysicalKeyboardKey.digit4) return '4';
+    if (physKey == PhysicalKeyboardKey.digit5) return '5';
+    if (physKey == PhysicalKeyboardKey.digit6) return '6';
+    if (physKey == PhysicalKeyboardKey.digit7) return '7';
+    if (physKey == PhysicalKeyboardKey.digit8) return '8';
+    if (physKey == PhysicalKeyboardKey.digit9) return '9';
+
+    // 5. Physical key fallback for standard letters (A-Z)
+    if (physKey == PhysicalKeyboardKey.keyA) return 'A';
+    if (physKey == PhysicalKeyboardKey.keyB) return 'B';
+    if (physKey == PhysicalKeyboardKey.keyC) return 'C';
+    if (physKey == PhysicalKeyboardKey.keyD) return 'D';
+    if (physKey == PhysicalKeyboardKey.keyE) return 'E';
+    if (physKey == PhysicalKeyboardKey.keyF) return 'F';
+    if (physKey == PhysicalKeyboardKey.keyG) return 'G';
+    if (physKey == PhysicalKeyboardKey.keyH) return 'H';
+    if (physKey == PhysicalKeyboardKey.keyI) return 'I';
+    if (physKey == PhysicalKeyboardKey.keyJ) return 'J';
+    if (physKey == PhysicalKeyboardKey.keyK) return 'K';
+    if (physKey == PhysicalKeyboardKey.keyL) return 'L';
+    if (physKey == PhysicalKeyboardKey.keyM) return 'M';
+    if (physKey == PhysicalKeyboardKey.keyN) return 'N';
+    if (physKey == PhysicalKeyboardKey.keyO) return 'O';
+    if (physKey == PhysicalKeyboardKey.keyP) return 'P';
+    if (physKey == PhysicalKeyboardKey.keyQ) return 'Q';
+    if (physKey == PhysicalKeyboardKey.keyR) return 'R';
+    if (physKey == PhysicalKeyboardKey.keyS) return 'S';
+    if (physKey == PhysicalKeyboardKey.keyT) return 'T';
+    if (physKey == PhysicalKeyboardKey.keyU) return 'U';
+    if (physKey == PhysicalKeyboardKey.keyV) return 'V';
+    if (physKey == PhysicalKeyboardKey.keyW) return 'W';
+    if (physKey == PhysicalKeyboardKey.keyX) return 'X';
+    if (physKey == PhysicalKeyboardKey.keyY) return 'Y';
+    if (physKey == PhysicalKeyboardKey.keyZ) return 'Z';
+
+    // 6. Symbols with shift modifier awareness (e.g. '_' vs '-', ':' vs ';')
+    final bool isShift = HardwareKeyboard.instance.isShiftPressed;
+    if (key == LogicalKeyboardKey.minus || physKey == PhysicalKeyboardKey.minus) return isShift ? '_' : '-';
+    if (key == LogicalKeyboardKey.equal || physKey == PhysicalKeyboardKey.equal) return isShift ? '+' : '=';
+    if (key == LogicalKeyboardKey.semicolon || physKey == PhysicalKeyboardKey.semicolon) return isShift ? ':' : ';';
+    if (key == LogicalKeyboardKey.slash || physKey == PhysicalKeyboardKey.slash) return isShift ? '?' : '/';
+    if (key == LogicalKeyboardKey.backslash || physKey == PhysicalKeyboardKey.backslash) return isShift ? '|' : '\\';
+    if (key == LogicalKeyboardKey.comma || physKey == PhysicalKeyboardKey.comma) return isShift ? '<' : ',';
+    if (key == LogicalKeyboardKey.period || physKey == PhysicalKeyboardKey.period) return isShift ? '>' : '.';
+    if (key == LogicalKeyboardKey.space || physKey == PhysicalKeyboardKey.space) return ' ';
 
     return null;
   }
