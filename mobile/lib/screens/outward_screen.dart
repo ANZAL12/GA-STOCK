@@ -730,6 +730,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           final isDual = targetProd.hasDualSerial;
+          final inCount = _scannedItems.where((e) => (e.product?.id == targetProd.id) && e.unitType?.toLowerCase() == 'indoor').length;
+          final outCount = _scannedItems.where((e) => (e.product?.id == targetProd.id) && e.unitType?.toLowerCase() == 'outdoor').length;
 
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -887,7 +889,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                 ),
                                 const SizedBox(width: 5),
                                 Text(
-                                  'Indoor Unit',
+                                  'Indoor ($inCount)',
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: selectedUnitType == 'indoor' ? FontWeight.bold : FontWeight.w500,
@@ -924,7 +926,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                 ),
                                 const SizedBox(width: 5),
                                 Text(
-                                  'Outdoor Unit',
+                                  'Outdoor ($outCount)',
                                   style: TextStyle(
                                     fontSize: 12,
                                     fontWeight: selectedUnitType == 'outdoor' ? FontWeight.bold : FontWeight.w500,
@@ -2856,289 +2858,315 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }).toList();
 
     return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Shop header
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 28,
-                  height: 28,
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF8FAFC),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: const Color(0xFFE2E8F0)),
+      padding: EdgeInsets.symmetric(
+        horizontal: context.isTablet ? 24 : 16,
+        vertical: context.isLandscapeTablet ? 8 : 16,
+      ),
+      child: RefreshIndicator(
+        onRefresh: () => _loadMetadata(forceRefresh: true),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Shop header
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 28,
+                          height: 28,
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                          ),
+                          child: Image.asset(
+                            'assets/images/shop_icon.png',
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, color: Color(0xFF059669), size: 16),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _selectedShop!.city.trim().isNotEmpty
+                                ? 'Destination: ${_selectedShop!.name} (${_selectedShop!.city.trim()})'
+                                : 'Destination: ${_selectedShop!.name}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () => setState(() => _currentStep = 1),
+                          child: const Text('Change', style: TextStyle(fontSize: 11)),
+                        ),
+                      ],
+                    ),
                   ),
-                  child: Image.asset(
-                    'assets/images/shop_icon.png',
-                    fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, color: Color(0xFF059669), size: 16),
+                  SizedBox(height: context.isLandscapeTablet ? 8 : 12),
+
+                  // Bill Number input
+                  TextField(
+                    controller: _billNumberController,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: InputDecoration(
+                      hintText: 'Bill / Invoice No (e.g. BILL-1024, INV-8841)',
+                      prefixIcon: const Icon(Icons.receipt_long, size: 20, color: Color(0xFF4F46E5)),
+                      filled: true,
+                      fillColor: Colors.white,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: context.isLandscapeTablet ? 10 : 14,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _selectedShop!.city.trim().isNotEmpty
-                        ? 'Destination: ${_selectedShop!.name} (${_selectedShop!.city.trim()})'
-                        : 'Destination: ${_selectedShop!.name}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  SizedBox(height: context.isLandscapeTablet ? 6 : 8),
+
+                  // Delivery Reference input
+                  TextField(
+                    controller: _deliveryRefController,
+                    textCapitalization: TextCapitalization.characters,
+                    onChanged: (_) => _checkReferenceDuplicate(),
+                    decoration: InputDecoration(
+                      hintText: 'Delivery / Vehicle Ref (e.g. DEL-8890, KL-07-8822)',
+                      prefixIcon: const Icon(Icons.local_shipping_outlined, size: 20),
+                      filled: true,
+                      fillColor: Colors.white,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: context.isLandscapeTablet ? 10 : 14,
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                    ),
                   ),
-                ),
-                TextButton(
-                  onPressed: () => setState(() => _currentStep = 1),
-                  child: const Text('Change', style: TextStyle(fontSize: 11)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
+                  if (_deliveryRefWarning != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      _deliveryRefWarning!,
+                      style: const TextStyle(color: Color(0xFFD97706), fontSize: 11, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                  SizedBox(height: context.isLandscapeTablet ? 8 : 14),
 
-          // Bill Number input
-          TextField(
-            controller: _billNumberController,
-            textCapitalization: TextCapitalization.characters,
-            decoration: InputDecoration(
-              hintText: 'Bill / Invoice No (e.g. BILL-1024, INV-8841)',
-              prefixIcon: const Icon(Icons.receipt_long, size: 20, color: Color(0xFF4F46E5)),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // Delivery Reference input
-          TextField(
-            controller: _deliveryRefController,
-            textCapitalization: TextCapitalization.characters,
-            onChanged: (_) => _checkReferenceDuplicate(),
-            decoration: InputDecoration(
-              hintText: 'Delivery / Vehicle Ref (e.g. DEL-8890, KL-07-8822)',
-              prefixIcon: const Icon(Icons.local_shipping_outlined, size: 20),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-              ),
-            ),
-          ),
-          if (_deliveryRefWarning != null) ...[
-            const SizedBox(height: 6),
-            Text(
-              _deliveryRefWarning!,
-              style: const TextStyle(color: Color(0xFFD97706), fontSize: 11, fontWeight: FontWeight.w600),
-            ),
-          ],
-          const SizedBox(height: 14),
-
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Select Model to Dispatch:',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
-              ),
-              InkWell(
-                onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
-                borderRadius: BorderRadius.circular(6),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  child: Row(
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      _loadingProducts
-                          ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
-                          : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
-                      const SizedBox(width: 4),
-                      Text(
-                        _loadingProducts ? 'Syncing...' : 'Sync Models',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                      const Text(
+                        'Select Model to Dispatch:',
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
+                      ),
+                      InkWell(
+                        onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                        borderRadius: BorderRadius.circular(6),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          child: Row(
+                            children: [
+                              _loadingProducts
+                                  ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
+                                  : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
+                              const SizedBox(width: 4),
+                              Text(
+                                _loadingProducts ? 'Syncing...' : 'Sync Models',
+                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-          TextField(
-            textCapitalization: TextCapitalization.characters,
-            inputFormatters: const [UpperCaseTextFormatter()],
-            decoration: InputDecoration(
-              hintText: 'Search appliance model (e.g. GXI 360)...',
-              prefixIcon: const Icon(Icons.search, size: 20),
-              suffixIcon: _loadingProducts
-                  ? const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                  TextField(
+                    textCapitalization: TextCapitalization.characters,
+                    inputFormatters: const [UpperCaseTextFormatter()],
+                    decoration: InputDecoration(
+                      hintText: 'Search appliance model (e.g. GXI 360)...',
+                      prefixIcon: const Icon(Icons.search, size: 20),
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: context.isLandscapeTablet ? 10 : 14,
                       ),
-                    )
-                  : (_productSearch.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear, size: 18),
-                          onPressed: () => setState(() => _productSearch = ''),
-                        )
-                      : null),
-              filled: true,
-              fillColor: Colors.white,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                      suffixIcon: _loadingProducts
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            )
+                          : (_productSearch.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear, size: 18),
+                                  onPressed: () => setState(() => _productSearch = ''),
+                                )
+                              : null),
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
+                      ),
+                    ),
+                    onChanged: (val) {
+                      setState(() => _productSearch = val);
+                      if (val.trim().length >= 2 && filtered.isEmpty && !_loadingProducts) {
+                        _loadMetadata(forceRefresh: true);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                ],
               ),
             ),
-            onChanged: (val) {
-              setState(() => _productSearch = val);
-              if (val.trim().length >= 2 && filtered.isEmpty && !_loadingProducts) {
-                _loadMetadata(forceRefresh: true);
-              }
-            },
-          ),
-          const SizedBox(height: 10),
-
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
-                          const SizedBox(height: 12),
-                          Text(
-                            _productSearch.isEmpty
-                                ? 'No models available'
-                                : 'No local match for "$_productSearch"',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                              color: Color(0xFF1E293B),
-                            ),
-                            textAlign: TextAlign.center,
+            if (filtered.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
+                        const SizedBox(height: 12),
+                        Text(
+                          _productSearch.isEmpty
+                              ? 'No models available'
+                              : 'No local match for "$_productSearch"',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 15,
+                            color: Color(0xFF1E293B),
                           ),
-                          const SizedBox(height: 6),
-                          const Text(
-                            'If this model was just added on the admin dashboard, tap below to sync immediately.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          'If this model was just added on the admin dashboard, tap below to sync immediately.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                        ),
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF4F46E5),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           ),
-                          const SizedBox(height: 16),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF4F46E5),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            icon: _loadingProducts
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                  )
-                                : const Icon(Icons.cloud_sync_outlined, size: 18),
-                            label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
-                            onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                : RefreshIndicator(
-                    onRefresh: () => _loadMetadata(forceRefresh: true),
-                    child: ListView.separated(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      itemCount: filtered.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 8),
-                      itemBuilder: (ctx, idx) {
-                        final p = filtered[idx];
-
-                        return Material(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(14),
-                          child: InkWell(
-                            onTap: () {
-                              setState(() {
-                                _selectedProduct = p;
-                                _currentStep = 3;
-                              });
-                            },
-                            borderRadius: BorderRadius.circular(14),
-                            child: Container(
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(color: const Color(0xFFE2E8F0)),
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          p.name,
-                                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          '${p.brand} • ${p.model}',
-                                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
-                                        ),
-                                        if (p.hasDualSerial) ...[
-                                          const SizedBox(height: 4),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xFFEFF6FF),
-                                              borderRadius: BorderRadius.circular(6),
-                                            ),
-                                            child: const Text(
-                                              'Dual Serial Model: Scan Indoor & Outdoor units as 2 separate serials',
-                                              style: TextStyle(fontSize: 10, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w500),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Text(
-                                        '${p.currentStockQty}',
-                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
-                                      ),
-                                      const Text('on shelves', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
+                          icon: _loadingProducts
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.cloud_sync_outlined, size: 18),
+                          label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
+                          onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                        ),
+                      ],
                     ),
                   ),
-          ),
-        ],
+                ),
+              )
+            else
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (ctx, idx) {
+                    final p = filtered[idx];
+
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Material(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        child: InkWell(
+                          onTap: () {
+                            setState(() {
+                              _selectedProduct = p;
+                              _currentStep = 3;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(14),
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        p.name,
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        '${p.brand} • ${p.model}',
+                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
+                                      ),
+                                      if (p.hasDualSerial) ...[
+                                        const SizedBox(height: 4),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFFEFF6FF),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: const Text(
+                                            'Dual Serial Model: Scan Indoor & Outdoor units as 2 separate serials',
+                                            style: TextStyle(fontSize: 10, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w500),
+                                          ),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      '${p.currentStockQty}',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                    ),
+                                    const Text('on shelves', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                  childCount: filtered.length,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -3147,6 +3175,21 @@ class _OutwardScreenState extends State<OutwardScreen> {
   Widget _buildScanningAndReviewView() {
     final matchedCount = _scannedItems.where((e) => e.isMatched).length;
     final recordedOnlyCount = _scannedItems.where((e) => !e.isMatched).length;
+
+    // Separate indoor and outdoor unit counts for currently active dual serial model
+    final currentProdId = _selectedProduct?.id;
+    final int dualIndoorCount = _selectedProduct == null
+        ? 0
+        : _scannedItems.where((e) {
+            final pid = e.product?.id ?? _selectedProduct?.id;
+            return pid == currentProdId && e.unitType?.toLowerCase() == 'indoor';
+          }).length;
+    final int dualOutdoorCount = _selectedProduct == null
+        ? 0
+        : _scannedItems.where((e) {
+            final pid = e.product?.id ?? _selectedProduct?.id;
+            return pid == currentProdId && e.unitType?.toLowerCase() == 'outdoor';
+          }).length;
 
     // Distinct models in current batch + selected
     final Map<String, Product> modelMap = {};
@@ -3322,7 +3365,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    'Indoor',
+                                    'Indoor ($dualIndoorCount)',
                                     style: TextStyle(
                                       fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                                       fontWeight: _outwardUnitType == 'indoor' ? FontWeight.bold : FontWeight.w500,
@@ -3358,7 +3401,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   ),
                                   const SizedBox(width: 4),
                                   Text(
-                                    'Outdoor',
+                                    'Outdoor ($dualOutdoorCount)',
                                     style: TextStyle(
                                       fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
                                       fontWeight: _outwardUnitType == 'outdoor' ? FontWeight.bold : FontWeight.w500,

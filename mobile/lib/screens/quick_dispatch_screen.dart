@@ -709,51 +709,58 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                     },
                   ),
                 ),
-                if (chosenProduct != null && chosenProduct!.hasDualSerial)
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 6),
-                    child: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF8FAFC),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Row(
-                        children: [
-                          const Text('Unit Type:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                          const SizedBox(width: 12),
-                          ChoiceChip(
-                            label: const Text('Indoor'),
-                            selected: chosenUnitType == 'indoor',
-                            selectedColor: const Color(0xFF3C3489),
-                            labelStyle: TextStyle(
-                              color: chosenUnitType == 'indoor' ? Colors.white : const Color(0xFF334155),
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            onSelected: (val) {
-                              if (val) setModalState(() => chosenUnitType = 'indoor');
-                            },
+                if (chosenProduct != null && chosenProduct!.hasDualSerial) ...[
+                  Builder(
+                    builder: (context) {
+                      final qInCount = _scannedItems.where((e) => (e.productId == chosenProduct!.id || e.modelName == chosenProduct!.model) && e.unitType?.toLowerCase() == 'indoor').length;
+                      final qOutCount = _scannedItems.where((e) => (e.productId == chosenProduct!.id || e.modelName == chosenProduct!.model) && e.unitType?.toLowerCase() == 'outdoor').length;
+                      return Padding(
+                        padding: EdgeInsets.symmetric(horizontal: isTablet ? 24 : 16, vertical: 6),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF8FAFC),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
                           ),
-                          const SizedBox(width: 8),
-                          ChoiceChip(
-                            label: const Text('Outdoor'),
-                            selected: chosenUnitType == 'outdoor',
-                            selectedColor: const Color(0xFF0D9488),
-                            labelStyle: TextStyle(
-                              color: chosenUnitType == 'outdoor' ? Colors.white : const Color(0xFF334155),
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            onSelected: (val) {
-                              if (val) setModalState(() => chosenUnitType = 'outdoor');
-                            },
+                          child: Row(
+                            children: [
+                              const Text('Unit Type:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                              const SizedBox(width: 12),
+                              ChoiceChip(
+                                label: Text('Indoor ($qInCount)'),
+                                selected: chosenUnitType == 'indoor',
+                                selectedColor: const Color(0xFF3C3489),
+                                labelStyle: TextStyle(
+                                  color: chosenUnitType == 'indoor' ? Colors.white : const Color(0xFF334155),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                onSelected: (val) {
+                                  if (val) setModalState(() => chosenUnitType = 'indoor');
+                                },
+                              ),
+                              const SizedBox(width: 8),
+                              ChoiceChip(
+                                label: Text('Outdoor ($qOutCount)'),
+                                selected: chosenUnitType == 'outdoor',
+                                selectedColor: const Color(0xFF0D9488),
+                                labelStyle: TextStyle(
+                                  color: chosenUnitType == 'outdoor' ? Colors.white : const Color(0xFF334155),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                onSelected: (val) {
+                                  if (val) setModalState(() => chosenUnitType = 'outdoor');
+                                },
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                    ),
+                        ),
+                      );
+                    },
                   ),
+                ],
                 Expanded(
                   child: filtered.isEmpty
                       ? Center(
