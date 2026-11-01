@@ -17,6 +17,7 @@ class WebSocketService {
   Timer? _pingTimer;
   bool _isConnected = false;
   bool _isConnecting = false;
+  final ValueNotifier<bool> isConnectedNotifier = ValueNotifier<bool>(false);
 
   Stream<Map<String, dynamic>> get stream => _eventController.stream;
   bool get isConnected => _isConnected;
@@ -47,6 +48,7 @@ class WebSocketService {
       _socket = await WebSocket.connect(uri.toString()).timeout(const Duration(seconds: 4));
       _isConnected = true;
       _isConnecting = false;
+      isConnectedNotifier.value = true;
       debugPrint('[WS] Connected to $uriStr');
 
       // Heartbeat ping every 20 seconds
@@ -95,6 +97,7 @@ class WebSocketService {
   void _handleDisconnect() {
     _isConnected = false;
     _isConnecting = false;
+    isConnectedNotifier.value = false;
     _pingTimer?.cancel();
     try {
       _socket?.close();
@@ -113,6 +116,7 @@ class WebSocketService {
     _pingTimer?.cancel();
     _isConnected = false;
     _isConnecting = false;
+    isConnectedNotifier.value = false;
     try {
       _socket?.close();
     } catch (_) {}

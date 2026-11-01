@@ -1,7 +1,7 @@
 import uuid
 from typing import Optional
 
-from sqlalchemy import Enum, ForeignKey, String
+from sqlalchemy import Enum, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,10 @@ class SerialNumber(Base, PrimaryKeyMixin, TimestampMixin):
     The DB enforces this with a unique index.
     """
     __tablename__ = "serial_numbers"
+    __table_args__ = (
+        Index("ix_serial_numbers_created_at", text("created_at DESC")),
+        Index("ix_serial_numbers_status_created_at", "status", text("created_at DESC")),
+    )
 
     serial_number: Mapped[str]           = mapped_column(String(100), unique=True, nullable=False, index=True)
     product_id:    Mapped[uuid.UUID]     = mapped_column(
@@ -40,3 +44,4 @@ class SerialNumber(Base, PrimaryKeyMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<SerialNumber {self.serial_number!r} status={self.status}>"
+

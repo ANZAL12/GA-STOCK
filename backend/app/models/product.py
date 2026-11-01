@@ -1,7 +1,7 @@
 import uuid
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,9 +26,12 @@ class Product(Base, PrimaryKeyMixin, TimestampMixin):
       (they may still have untracked opening stock).
     """
     __tablename__ = "products"
+    __table_args__ = (
+        Index("ix_products_sku", "sku", unique=True),
+    )
 
     name:                   Mapped[str]           = mapped_column(String(255), nullable=False)
-    sku:                    Mapped[Optional[str]]  = mapped_column(String(100), unique=True, nullable=True)
+    sku:                    Mapped[Optional[str]]  = mapped_column(String(100), nullable=True)
     category_id:            Mapped[uuid.UUID]      = mapped_column(
         UUID(as_uuid=True), ForeignKey("categories.id", ondelete="RESTRICT"), nullable=False, index=True
     )

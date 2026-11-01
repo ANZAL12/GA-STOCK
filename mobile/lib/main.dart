@@ -5,6 +5,9 @@ import 'services/hardware_scanner_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Bound image memory cache to avoid garbage collection stutter on 3GB RAM devices
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 40 * 1024 * 1024; // 40 MB
+  PaintingBinding.instance.imageCache.maximumSize = 100;
   await SoundService().init();
   HardwareScannerService().init();
   runApp(const GodownScannerApp());

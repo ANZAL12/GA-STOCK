@@ -1,7 +1,7 @@
-﻿import uuid
+import uuid
 from typing import Optional
 
-from sqlalchemy import Boolean, Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, Enum, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,6 +28,10 @@ class SerialHistory(Base, PrimaryKeyMixin, CreatedAtMixin):
       - user_id + device_id : who did it and from where.
     """
     __tablename__ = "serial_history"
+    __table_args__ = (
+        Index("ix_serial_history_created_at", "created_at"),
+        Index("ix_serial_history_snid_action", "serial_number_id", "action"),
+    )
 
     serial_number_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("serial_numbers.id", ondelete="SET NULL"), nullable=True, index=True

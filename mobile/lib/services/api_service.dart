@@ -314,6 +314,9 @@ class ApiService {
             res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
           }
         }
+        if (res.statusCode >= 200 && res.statusCode < 500) {
+          OfflineManager().markOnline();
+        }
         return res;
       } catch (e) {
         if (attempts <= maxRetries && _isTransientNetworkError(e)) {
@@ -337,6 +340,9 @@ class ApiService {
           if (refreshed) {
             res = await _client.post(uri, headers: _headers(), body: body).timeout(const Duration(seconds: 14));
           }
+        }
+        if (res.statusCode >= 200 && res.statusCode < 500) {
+          OfflineManager().markOnline();
         }
         return res;
       } catch (e) {
@@ -997,10 +1003,21 @@ class ApiService {
       queryParams['product_id'] = productId;
     }
 
-    // Network is #1 priority! Live validation with 3-second timeout before falling back to offline cache
+    // Network is #1 priority! Live validation with 8-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
-      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 3));
+      http.Response res;
+      try {
+        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+      } catch (e) {
+        if (_isTransientNetworkError(e)) {
+          _resetClient();
+          await Future.delayed(const Duration(milliseconds: 300));
+          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+        } else {
+          rethrow;
+        }
+      }
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
@@ -1028,6 +1045,7 @@ class ApiService {
         rethrow;
       }
 
+      _resetClient();
       // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
@@ -1121,10 +1139,21 @@ class ApiService {
       queryParams['product_id'] = productId;
     }
 
-    // Network is #1 priority! Try live server query for several seconds (3s) before falling back to offline cache
+    // Network is #1 priority! Live server query with 8-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
-      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 3));
+      http.Response res;
+      try {
+        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+      } catch (e) {
+        if (_isTransientNetworkError(e)) {
+          _resetClient();
+          await Future.delayed(const Duration(milliseconds: 300));
+          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+        } else {
+          rethrow;
+        }
+      }
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
@@ -1151,6 +1180,7 @@ class ApiService {
         rethrow;
       }
 
+      _resetClient();
       // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
@@ -1261,12 +1291,23 @@ class ApiService {
       throw Exception('Serial number cannot be empty');
     }
 
-    // Network is #1 priority! Try live server query for several seconds (3s) before falling back to offline cache
+    // Network is #1 priority! Try live server query with 8-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse(
         '$_baseUrl/serials/lookup?serial_number=${Uri.encodeComponent(cleanSerial)}',
       );
-      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 3));
+      http.Response res;
+      try {
+        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+      } catch (e) {
+        if (_isTransientNetworkError(e)) {
+          _resetClient();
+          await Future.delayed(const Duration(milliseconds: 300));
+          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+        } else {
+          rethrow;
+        }
+      }
 
       if (res.statusCode == 200) {
         OfflineManager().markOnline();

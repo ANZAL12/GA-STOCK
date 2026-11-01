@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,6 +73,8 @@ class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
     __table_args__ = (
         # Prevents the same serial being scanned twice in one batch at the DB level.
         UniqueConstraint("batch_id", "serial_text", name="uq_outward_lines_batch_serial"),
+        Index("ix_outward_lines_is_flagged", "is_flagged_for_review"),
+        Index("ix_outward_lines_created_at", text("created_at DESC")),
     )
 
     batch_id:     Mapped[uuid.UUID]           = mapped_column(
@@ -84,7 +86,7 @@ class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
     )
     # Model selected at scan time — may differ from serial's registered model if flagged.
     product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     # Denormalised from OutwardBatch
     shop_id:          Mapped[uuid.UUID] = mapped_column(
@@ -93,7 +95,7 @@ class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
     transaction_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
 
     is_matched:           Mapped[bool]          = mapped_column(Boolean, nullable=False, default=False, index=True)
-    is_flagged_for_review: Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False, index=True)
+    is_flagged_for_review: Mapped[bool]         = mapped_column(Boolean, nullable=False, default=False)
     flag_reason:          Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     unit_type:            Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 

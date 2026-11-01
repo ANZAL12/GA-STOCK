@@ -217,6 +217,9 @@ export interface SerialListItem {
 
 export interface SerialListResponse {
   total: number;
+  total_inward?: number;
+  total_outward?: number;
+  total_damaged?: number;
   items: SerialListItem[];
 }
 
@@ -388,4 +391,32 @@ export interface ExcelSerialPreviewResponse {
   suggested_unit_type_column?: string | null;
   total_rows: number;
   sample_rows: Record<string, any>[];
+}
+
+export interface PrinterInfo {
+  name: string;
+  description?: string;
+  comment?: string;
+  is_default: boolean;
+  status: string;
+}
+
+export interface PrintersResponse {
+  printers: PrinterInfo[];
+  default_printer?: string | null;
+  server_time?: string;
+  tailscale_ready?: boolean;
+}
+
+export interface GodownPrintReportRequest {
+  report_type: string;
+  printer_name?: string | null;
+  category_id?: string | null;
+  shop_id?: string | null;
+  product_id?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  inward_type?: string | null;
+  is_matched?: boolean | null;
+  dry_run?: boolean;
 }

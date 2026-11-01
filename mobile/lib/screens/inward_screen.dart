@@ -416,6 +416,7 @@ class _InwardScreenState extends State<InwardScreen> {
   }
 
   void _onModelSelectedForStockIn(Product p) {
+    FocusScope.of(context).unfocus();
     setState(() {
       _selectedProduct = p;
       // Keep all previously scanned items and serials intact for multi-model batching
@@ -455,6 +456,7 @@ class _InwardScreenState extends State<InwardScreen> {
     }
 
     if (_stage == InwardStage.selectCase) {
+      await SessionRecoveryService().clearDraft();
       return true;
     }
 
@@ -473,42 +475,47 @@ class _InwardScreenState extends State<InwardScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Text('Discard Scanned Items?'),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Color(0xFFE11D48), size: 24),
+              SizedBox(width: 8),
+              Text(
+                'Discard Scanned Items?',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+              ),
+            ],
+          ),
           content: Text(
-            'You have scanned ${_scannedItems.length} unit(s). Leaving will discard this batch.',
-            style: const TextStyle(fontSize: 13),
+            'You have scanned ${_scannedItems.length} unit(s). Leaving will discard this batch and clear the session.',
+            style: const TextStyle(fontSize: 13, color: Color(0xFF475569), height: 1.4),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Stay'),
+              child: const Text('Stay', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.w600)),
             ),
             ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFE11D48)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE11D48),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Discard & Leave', style: TextStyle(color: Colors.white)),
+              child: const Text('Discard & Leave', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
       );
 
-      if (discard != true) return false;
+      if (discard == true) {
+        await SessionRecoveryService().clearDraft();
+        return true;
+      }
+      return false;
     }
 
-    setState(() {
-      _scannedItems.clear();
-      _scannedSerialSet.clear();
-      _sequenceCounter = 1;
-      _scanQueue.clear();
-      _isProcessingQueue = false;
-      _lastScanFeedback = null;
-      if (_inwardType == 'stock_in') {
-        _stage = InwardStage.selectModel;
-      } else {
-        _stage = InwardStage.selectCase;
-      }
-    });
-    return false;
+    await SessionRecoveryService().clearDraft();
+    return true;
   }
 
   void _openScanner() {
@@ -1077,6 +1084,9 @@ class _InwardScreenState extends State<InwardScreen> {
 
   // Prompt user to select unit type (Indoor/Outdoor) for dual serial models
   Future<String?> _showSelectUnitTypeDialog(String serial, Product product) async {
+    final inCount = _scannedItems.where((it) => it.product.id == product.id && it.unitType == 'indoor').length;
+    final outCount = _scannedItems.where((it) => it.product.id == product.id && it.unitType == 'outdoor').length;
+
     return showDialog<String>(
       context: context,
       barrierDismissible: false,
@@ -1097,7 +1107,10 @@ class _InwardScreenState extends State<InwardScreen> {
             const SizedBox(height: 4),
             Text('Serial: $serial', style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF64748B), fontSize: 12)),
             const SizedBox(height: 12),
-            const Text('Is this unit Indoor or Outdoor?', style: TextStyle(fontSize: 13, color: Color(0xFF334155))),
+            Text(
+              'Select unit type for this item:\nCurrent counts: Indoor ($inCount) • Outdoor ($outCount)',
+              style: const TextStyle(fontSize: 13, color: Color(0xFF334155)),
+            ),
           ],
         ),
         actions: [
@@ -1112,7 +1125,7 @@ class _InwardScreenState extends State<InwardScreen> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             icon: const Icon(Icons.home_outlined, size: 16),
-            label: const Text('Indoor'),
+            label: Text('Indoor ($inCount)'),
             onPressed: () => Navigator.pop(ctx, 'indoor'),
           ),
           ElevatedButton.icon(
@@ -1122,7 +1135,7 @@ class _InwardScreenState extends State<InwardScreen> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             icon: const Icon(Icons.wb_sunny_outlined, size: 16),
-            label: const Text('Outdoor'),
+            label: Text('Outdoor ($outCount)'),
             onPressed: () => Navigator.pop(ctx, 'outdoor'),
           ),
         ],
@@ -1837,8 +1850,9 @@ class _InwardScreenState extends State<InwardScreen> {
           return;
         }
         final canPop = await _handleWillPop();
-        if (canPop && mounted) {
-          Navigator.pop(context);
+        if (canPop) {
+          if (!mounted) return;
+          Navigator.of(context).pop();
         }
       },
       child: Scaffold(
@@ -1856,8 +1870,9 @@ class _InwardScreenState extends State<InwardScreen> {
               icon: const Icon(Icons.arrow_back),
               onPressed: () async {
                 final canPop = await _handleWillPop();
-                if (canPop && mounted) {
-                  Navigator.pop(context);
+                if (canPop) {
+                  if (!mounted) return;
+                  Navigator.of(context).pop();
                 }
               },
             ),
@@ -2395,102 +2410,108 @@ class _InwardScreenState extends State<InwardScreen> {
 
         // Dual serial toggle (only for stock_in with dual serial)
         if (_inwardType == 'stock_in' && _selectedProduct != null && _selectedProduct!.hasDualSerial)
-          Container(
-            margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF1F5F9),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFE2E8F0)),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: InkWell(
-                    onTap: () => setState(() => _inwardUnitType = 'indoor'),
-                    borderRadius: BorderRadius.circular(9),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.symmetric(vertical: 9),
-                      decoration: BoxDecoration(
-                        color: _inwardUnitType == 'indoor' ? Colors.white : Colors.transparent,
+          Builder(
+            builder: (context) {
+              final dualIndoorCount = _scannedItems.where((it) => it.product.id == _selectedProduct!.id && it.unitType?.toLowerCase() == 'indoor').length;
+              final dualOutdoorCount = _scannedItems.where((it) => it.product.id == _selectedProduct!.id && it.unitType?.toLowerCase() == 'outdoor').length;
+              return Container(
+                margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: InkWell(
+                        onTap: () => setState(() => _inwardUnitType = 'indoor'),
                         borderRadius: BorderRadius.circular(9),
-                        boxShadow: _inwardUnitType == 'indoor'
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 1),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          padding: const EdgeInsets.symmetric(vertical: 9),
+                          decoration: BoxDecoration(
+                            color: _inwardUnitType == 'indoor' ? Colors.white : Colors.transparent,
+                            borderRadius: BorderRadius.circular(9),
+                            boxShadow: _inwardUnitType == 'indoor'
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: 0.08),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 1),
+                                    ),
+                                  ]
+                                : null,
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.home_outlined,
+                                size: 16,
+                                color: _inwardUnitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF64748B),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Indoor ($dualIndoorCount)',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: _inwardUnitType == 'indoor' ? FontWeight.bold : FontWeight.w500,
+                                  color: _inwardUnitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF64748B),
                                 ),
-                              ]
-                            : null,
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.home_outlined,
-                            size: 16,
-                            color: _inwardUnitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF64748B),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Indoor Unit',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: _inwardUnitType == 'indoor' ? FontWeight.bold : FontWeight.w500,
-                              color: _inwardUnitType == 'indoor' ? const Color(0xFF3C3489) : const Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
-                Expanded(
-                  child: InkWell(
-                    onTap: () => setState(() => _inwardUnitType = 'outdoor'),
-                    borderRadius: BorderRadius.circular(9),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.symmetric(vertical: 9),
-                      decoration: BoxDecoration(
-                        color: _inwardUnitType == 'outdoor' ? Colors.white : Colors.transparent,
+                    Expanded(
+                      child: InkWell(
+                        onTap: () => setState(() => _inwardUnitType = 'outdoor'),
                         borderRadius: BorderRadius.circular(9),
-                        boxShadow: _inwardUnitType == 'outdoor'
-                            ? [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.08),
-                                  blurRadius: 4,
-                                  offset: const Offset(0, 1),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          padding: const EdgeInsets.symmetric(vertical: 9),
+                          decoration: BoxDecoration(
+                            color: _inwardUnitType == 'outdoor' ? Colors.white : Colors.transparent,
+                            borderRadius: BorderRadius.circular(9),
+                            boxShadow: _inwardUnitType == 'outdoor'
+                                ? [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(alpha: 0.08),
+                                      blurRadius: 4,
+                                      offset: const Offset(0, 1),
+                                    ),
+                                  ]
+                                : null,
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.wb_sunny_outlined,
+                                size: 16,
+                                color: _inwardUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFF64748B),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Outdoor ($dualOutdoorCount)',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: _inwardUnitType == 'outdoor' ? FontWeight.bold : FontWeight.w500,
+                                  color: _inwardUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFF64748B),
                                 ),
-                              ]
-                            : null,
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.wb_sunny_outlined,
-                            size: 16,
-                            color: _inwardUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFF64748B),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Outdoor Unit',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: _inwardUnitType == 'outdoor' ? FontWeight.bold : FontWeight.w500,
-                              color: _inwardUnitType == 'outdoor' ? const Color(0xFF0D9488) : const Color(0xFF64748B),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
+              );
+            },
           ),
 
         // Big Scan Barcode Action
@@ -2573,9 +2594,18 @@ class _InwardScreenState extends State<InwardScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Scanned Units (${_scannedItems.length})',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+                      Builder(
+                        builder: (context) {
+                          final inCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'indoor').length;
+                          final outCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'outdoor').length;
+                          final hasDual = (_selectedProduct?.hasDualSerial == true) || inCount > 0 || outCount > 0;
+                          return Text(
+                            hasDual
+                                ? 'Scanned Units (${_scannedItems.length}) • Indoor: $inCount | Outdoor: $outCount'
+                                : 'Scanned Units (${_scannedItems.length})',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+                          );
+                        },
                       ),
                       Text(
                         'Newest (#${_scannedItems.isNotEmpty ? _scannedItems.first.sequenceNumber : 0}) at top • #1 at bottom',
@@ -2851,6 +2881,9 @@ class _InwardScreenState extends State<InwardScreen> {
     if (_inwardType == 'stock_in' && _selectedProduct != null) {
       final p = _selectedProduct!;
       final distinctModels = _scannedItems.map((e) => e.product.id).toSet().length;
+      final inCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'indoor').length;
+      final outCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'outdoor').length;
+      final bool hasDual = p.hasDualSerial || inCount > 0 || outCount > 0;
       return Container(
         width: double.infinity,
         color: Colors.white,
@@ -2901,9 +2934,11 @@ class _InwardScreenState extends State<InwardScreen> {
                 border: Border.all(color: _getInwardTypeColor(_inwardType).withOpacity(0.3)),
               ),
               child: Text(
-                distinctModels > 1
-                    ? '${_scannedItems.length} Scanned ($distinctModels models)'
-                    : '${_scannedItems.length} Scanned',
+                hasDual
+                    ? '${_scannedItems.length} Scanned (Indoor: $inCount, Outdoor: $outCount)'
+                    : (distinctModels > 1
+                        ? '${_scannedItems.length} Scanned ($distinctModels models)'
+                        : '${_scannedItems.length} Scanned'),
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _getInwardTypeColor(_inwardType)),
               ),
             ),
@@ -2912,6 +2947,9 @@ class _InwardScreenState extends State<InwardScreen> {
       );
     } else {
       // Returned Product or Damaged Product Header
+      final inCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'indoor').length;
+      final outCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'outdoor').length;
+      final bool hasDual = inCount > 0 || outCount > 0;
       return Container(
         width: double.infinity,
         color: Colors.white,
@@ -2958,7 +2996,9 @@ class _InwardScreenState extends State<InwardScreen> {
                     border: Border.all(color: _getInwardTypeColor(_inwardType).withOpacity(0.3)),
                   ),
                   child: Text(
-                    '${_scannedItems.length} Scanned',
+                    hasDual
+                        ? '${_scannedItems.length} Scanned (Indoor: $inCount, Outdoor: $outCount)'
+                        : '${_scannedItems.length} Scanned',
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: _getInwardTypeColor(_inwardType)),
                   ),
                 ),

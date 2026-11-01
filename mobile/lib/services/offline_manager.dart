@@ -65,8 +65,17 @@ class OfflineManager {
 
   bool get isOnline => isOnlineNotifier.value;
 
-  void markOffline() => _setOnlineStatus(false);
+  void markOffline() {
+    // Never mark offline if WebSocket is actively connected and alive
+    if (WebSocketService().isConnected) return;
+    _consecutiveFailures++;
+    if (_consecutiveFailures >= 3) {
+      _setOnlineStatus(false);
+    }
+  }
+
   void markOnline() {
+    _consecutiveFailures = 0;
     _setOnlineStatus(true);
     if (_queuedDispatches.isNotEmpty) {
       unawaited(syncPendingDispatches());
@@ -168,11 +177,18 @@ class OfflineManager {
   void _startHealthChecks() {
     _healthCheckTimer?.cancel();
     _healthCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
-      await checkServerHealth(timeoutSeconds: 4);
+      await checkServerHealth(timeoutSeconds: 6);
     });
   }
 
-  Future<bool> checkServerHealth({int timeoutSeconds = 4}) async {
+  Future<bool> checkServerHealth({int timeoutSeconds = 6}) async {
+    // If WebSocket is actively connected, the server is definitively reachable
+    if (WebSocketService().isConnected) {
+      _consecutiveFailures = 0;
+      _setOnlineStatus(true);
+      return true;
+    }
+
     final api = ApiService();
     try {
       final baseUri = Uri.parse(api.baseUrl);
@@ -185,14 +201,20 @@ class OfflineManager {
         _setOnlineStatus(true);
       } else {
         _consecutiveFailures++;
-        if (_consecutiveFailures >= 2) {
+        if (_consecutiveFailures >= 3) {
           _setOnlineStatus(false);
         }
       }
       return online;
     } catch (_) {
+      // Re-verify if WebSocket connected in the meantime
+      if (WebSocketService().isConnected) {
+        _consecutiveFailures = 0;
+        _setOnlineStatus(true);
+        return true;
+      }
       _consecutiveFailures++;
-      if (_consecutiveFailures >= 2) {
+      if (_consecutiveFailures >= 3) {
         _setOnlineStatus(false);
       }
       return false;
@@ -430,10 +452,18 @@ class OfflineManager {
     _wsSubscription?.cancel();
     _wsSubscription = WebSocketService().stream.listen(
       (event) {
+        markOnline();
         _handleWebSocketMessage(event);
       },
       onError: (_) {},
     );
+
+    // Auto-mark online whenever the WebSocket connects
+    WebSocketService().isConnectedNotifier.addListener(() {
+      if (WebSocketService().isConnected) {
+        markOnline();
+      }
+    });
   }
 
   void _handleWebSocketMessage(Map<String, dynamic> json) {

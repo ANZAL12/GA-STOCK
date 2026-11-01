@@ -1113,9 +1113,18 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                   ),
                                 ),
-                                Text(
-                                  '${_scannedItems.length} units',
-                                  style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
+                                Builder(
+                                  builder: (context) {
+                                    final qIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
+                                    final qOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
+                                    final hasDual = qIn > 0 || qOut > 0;
+                                    return Text(
+                                      hasDual
+                                          ? '${_scannedItems.length} units ($qIn In / $qOut Out)'
+                                          : '${_scannedItems.length} units',
+                                      style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
+                                    );
+                                  },
                                 ),
                               ],
                             ),
@@ -1426,9 +1435,9 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
           return;
         }
 
-        if (mounted) {
-          Navigator.pop(context);
-        }
+        await SessionRecoveryService().clearDraft();
+        if (!mounted) return;
+        Navigator.of(context).pop();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
@@ -1467,9 +1476,9 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                   }
                   return;
                 }
-                if (mounted) {
-                  Navigator.pop(context);
-                }
+                await SessionRecoveryService().clearDraft();
+                if (!mounted) return;
+                Navigator.of(context).pop();
               },
             ),
           ),
@@ -1986,11 +1995,20 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      _activeFilterModel == 'ALL'
-                          ? 'Scanned Items (${_scannedItems.length})'
-                          : 'Scanned Items (${displayedItems.length} / ${_scannedItems.length})',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+                    Builder(
+                      builder: (context) {
+                        final qIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
+                        final qOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
+                        final hasDual = qIn > 0 || qOut > 0;
+                        return Text(
+                          _activeFilterModel == 'ALL'
+                              ? (hasDual
+                                  ? 'Scanned Items (${_scannedItems.length}) • Indoor: $qIn | Outdoor: $qOut'
+                                  : 'Scanned Items (${_scannedItems.length})')
+                              : 'Scanned Items (${displayedItems.length} / ${_scannedItems.length})',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
+                        );
+                      },
                     ),
                     if (_scannedItems.isNotEmpty)
                       Text(

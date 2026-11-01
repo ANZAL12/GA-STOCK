@@ -430,51 +430,44 @@ def export_inward_register_to_pdf(
             ])
         )
 
-        # Serials Table
+        # Serials Table (using plain string cells with TableStyle for high-performance rendering of 25,000+ serials)
         table_rows = [
-            [
-                Paragraph("#", head_style),
-                Paragraph("Serial Number", head_style),
-                Paragraph("Unit", head_style),
-                Paragraph("Inward Type", head_style),
-                Paragraph("Invoice / DC Ref", head_style),
-                Paragraph("Time", head_style),
-                Paragraph("Received By", head_style),
-            ]
+            ["#", "Serial Number", "Unit", "Inward Type", "Invoice / DC Ref", "Time", "Received By"]
+        ]
+
+        t_style = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 7.5),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#334155")),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 1), (-1, -1), 7),
+            ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#0F172A")),
+            ("FONTNAME", (1, 1), (1, -1), "Helvetica-Bold"),
+            ("TEXTCOLOR", (1, 1), (1, -1), colors.HexColor("#1E1B4B")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
         ]
 
         for idx, s in enumerate(serials, start=1):
             itype = s.get("inward_type", "Stock In")
-            if "Return" in itype:
-                b_style = badge_return
-            elif "Damaged" in itype:
-                b_style = badge_damaged
-            else:
-                b_style = badge_stock_in
-
             table_rows.append([
-                Paragraph(str(idx), cell_style),
-                Paragraph(s.get("serial_number", "-"), serial_cell),
-                Paragraph(s.get("unit_type", "-").capitalize() if s.get("unit_type") else "-", cell_style),
-                Paragraph(itype, b_style),
-                Paragraph(s.get("reference") or "-", cell_style),
-                Paragraph(s.get("time") or "-", cell_style),
-                Paragraph(s.get("received_by") or "-", cell_style),
+                str(idx),
+                s.get("serial_number", "-"),
+                s.get("unit_type", "-").capitalize() if s.get("unit_type") else "-",
+                itype,
+                s.get("reference") or "-",
+                s.get("time") or "-",
+                s.get("received_by") or "-",
             ])
 
         serials_table = Table(table_rows, colWidths=col_widths, repeatRows=1)
-        serials_table.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8FAFC")]),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
-            ])
-        )
+        serials_table.setStyle(TableStyle(t_style))
 
         story.append(model_bar)
         story.append(serials_table)

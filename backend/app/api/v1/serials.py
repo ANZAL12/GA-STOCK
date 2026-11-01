@@ -90,22 +90,6 @@ async def list_serials(
         .subquery()
     )
 
-    # 1c. Damaged history lookup (serials with damaged history/remarks)
-    damaged_hist_query = (
-        select(SerialHistory.serial_number_id, func.lower(SerialHistory.serial_text))
-        .where(
-            or_(
-                SerialHistory.from_status == SerialStatus.damaged,
-                SerialHistory.to_status == SerialStatus.damaged,
-                func.lower(SerialHistory.remarks).contains("damage"),
-            )
-        )
-        .distinct()
-    )
-    damaged_hist_rows = (await db.execute(damaged_hist_query)).all()
-    damaged_sn_ids = {row[0] for row in damaged_hist_rows if row[0] is not None}
-    damaged_sn_texts = {row[1] for row in damaged_hist_rows if row[1]}
-
     # 2. Tracked serial numbers query
     tracked_query = (
         select(
@@ -138,9 +122,132 @@ async def list_serials(
         .outerjoin(Shop, SerialNumber.last_shop_id == Shop.id)
         .outerjoin(inward_subq, inward_subq.c.serial_number_id == SerialNumber.id)
         .outerjoin(outward_subq, outward_subq.c.serial_number_id == SerialNumber.id)
-        .order_by(SerialNumber.created_at.desc())
     )
-    tracked_rows = (await db.execute(tracked_query)).all()
+
+    # 3. Unmatched outward lines query (pre-go-live dispatches not in serial_numbers)
+    unm_query = (
+        select(
+            OutwardLine.serial_text.label("serial_text"),
+            OutwardLine.created_at.label("created_at"),
+            OutwardLine.transaction_date.label("outward_date"),
+            OutwardLine.unit_type.label("unit_type"),
+            OutwardLine.is_flagged_for_review.label("outward_is_flagged"),
+            OutwardLine.flag_reason.label("outward_flag_reason"),
+            Product.name.label("prod_name"),
+            Product.brand.label("prod_brand"),
+            Product.model.label("prod_model"),
+            Category.name.label("cat_name"),
+            Shop.name.label("shop_name"),
+            Shop.city.label("shop_city"),
+            OutwardBatch.bill_number.label("outward_bill_no"),
+            OutwardBatch.delivery_reference.label("outward_ref"),
+        )
+        .join(Product, OutwardLine.product_id == Product.id)
+        .outerjoin(Category, Product.category_id == Category.id)
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
+        .where(OutwardLine.serial_number_id.is_(None))
+    )
+
+    # SQL-level flow filtering for high speed at scale
+    run_unm = True
+    if flow == "inward":
+        tracked_query = tracked_query.where(SerialNumber.status != SerialStatus.dispatched)
+        run_unm = False
+    elif flow == "outward":
+        tracked_query = tracked_query.where(SerialNumber.status == SerialStatus.dispatched)
+    elif flow == "damaged":
+        tracked_query = tracked_query.where(
+            or_(
+                SerialNumber.status.in_([SerialStatus.damaged, SerialStatus.under_repair, SerialStatus.lost]),
+                outward_subq.c.outward_is_flagged == True,
+            )
+        )
+        unm_query = unm_query.where(OutwardLine.is_flagged_for_review == True)
+
+    # SQL-level search term filtering for high speed at scale
+    if q and q.strip():
+        term = f"%{q.strip().lower()}%"
+        tracked_query = tracked_query.where(
+            or_(
+                func.lower(SerialNumber.serial_number).like(term),
+                func.lower(Product.model).like(term),
+                func.lower(Product.brand).like(term),
+                func.lower(Product.name).like(term),
+                func.lower(Category.name).like(term),
+                func.lower(Shop.name).like(term),
+                func.lower(Shop.city).like(term),
+                func.lower(outward_subq.c.outward_bill_no).like(term),
+                func.lower(outward_subq.c.outward_ref).like(term),
+                func.lower(inward_subq.c.inward_ref).like(term),
+            )
+        )
+        if run_unm:
+            unm_query = unm_query.where(
+                or_(
+                    func.lower(OutwardLine.serial_text).like(term),
+                    func.lower(Product.model).like(term),
+                    func.lower(Product.brand).like(term),
+                    func.lower(Product.name).like(term),
+                    func.lower(Category.name).like(term),
+                    func.lower(Shop.name).like(term),
+                    func.lower(Shop.city).like(term),
+                    func.lower(OutwardBatch.bill_number).like(term),
+                    func.lower(OutwardBatch.delivery_reference).like(term),
+                )
+            )
+
+    active_search_total = None
+    if q and q.strip():
+        tracked_cnt = (await db.execute(select(func.count()).select_from(tracked_query.subquery()))).scalar() or 0
+        if run_unm:
+            unm_cnt = (await db.execute(select(func.count()).select_from(unm_query.subquery()))).scalar() or 0
+            active_search_total = tracked_cnt + unm_cnt
+        else:
+            active_search_total = tracked_cnt
+
+    # Apply ordering and pagination
+    if not run_unm:
+        tracked_query = tracked_query.order_by(SerialNumber.created_at.desc()).offset(offset).limit(limit)
+        tracked_rows = (await db.execute(tracked_query)).all()
+        unm_rows = []
+    else:
+        if offset == 0:
+            unm_query = unm_query.order_by(OutwardLine.created_at.desc()).limit(limit)
+            unm_rows = (await db.execute(unm_query)).all()
+        else:
+            unm_rows = []
+        tracked_query = tracked_query.order_by(SerialNumber.created_at.desc()).offset(offset).limit(limit)
+        tracked_rows = (await db.execute(tracked_query)).all()
+
+    # 4. Targeted damaged history check ONLY for the serials on this page (avoids scanning entire table)
+    candidate_sn_ids = [r.sn_id for r in tracked_rows if r.sn_id]
+    candidate_sn_texts = [r.sn_text.lower() for r in tracked_rows] + [r.serial_text.lower() for r in unm_rows]
+
+    damaged_sn_ids: set = set()
+    damaged_sn_texts: set = set()
+    if candidate_sn_ids or candidate_sn_texts:
+        conds = []
+        if candidate_sn_ids:
+            conds.append(SerialHistory.serial_number_id.in_(candidate_sn_ids))
+        if candidate_sn_texts:
+            conds.append(func.lower(SerialHistory.serial_text).in_(candidate_sn_texts))
+
+        damaged_hist_query = (
+            select(SerialHistory.serial_number_id, func.lower(SerialHistory.serial_text))
+            .where(
+                or_(*conds),
+                or_(
+                    SerialHistory.from_status == SerialStatus.damaged,
+                    SerialHistory.to_status == SerialStatus.damaged,
+                    func.lower(SerialHistory.remarks).contains("damage"),
+                ),
+            )
+            .distinct()
+        )
+        damaged_hist_rows = (await db.execute(damaged_hist_query)).all()
+        damaged_sn_ids = {row[0] for row in damaged_hist_rows if row[0] is not None}
+        damaged_sn_texts = {row[1] for row in damaged_hist_rows if row[1]}
 
     items: list[SerialListItem] = []
     seen_serials = set()
@@ -170,7 +277,6 @@ async def list_serials(
             ts = r.outward_created_at or r.sn_created_at
             bill_no = (r.outward_bill_no or "").strip() or None
             deliv_ref = (r.outward_ref or "").strip() or None
-            # Prioritize bill number as the reference for dispatched, otherwise delivery/vehicle ref
             ref = bill_no if bill_no else deliv_ref
             s_name = r.outward_shop_name or r.shop_name
             s_city = r.outward_shop_city or r.shop_city
@@ -210,33 +316,6 @@ async def list_serials(
             )
         )
 
-    # 3. Unmatched outward lines (pre-go-live dispatches not in serial_numbers)
-    unm_query = (
-        select(
-            OutwardLine.serial_text.label("serial_text"),
-            OutwardLine.created_at.label("created_at"),
-            OutwardLine.transaction_date.label("outward_date"),
-            OutwardLine.unit_type.label("unit_type"),
-            OutwardLine.is_flagged_for_review.label("outward_is_flagged"),
-            OutwardLine.flag_reason.label("outward_flag_reason"),
-            Product.name.label("prod_name"),
-            Product.brand.label("prod_brand"),
-            Product.model.label("prod_model"),
-            Category.name.label("cat_name"),
-            Shop.name.label("shop_name"),
-            Shop.city.label("shop_city"),
-            OutwardBatch.bill_number.label("outward_bill_no"),
-            OutwardBatch.delivery_reference.label("outward_ref"),
-        )
-        .join(Product, OutwardLine.product_id == Product.id)
-        .outerjoin(Category, Product.category_id == Category.id)
-        .join(Shop, OutwardLine.shop_id == Shop.id)
-        .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
-        .where(OutwardLine.serial_number_id.is_(None))
-        .order_by(OutwardLine.created_at.desc())
-    )
-    unm_rows = (await db.execute(unm_query)).all()
-
     for r in unm_rows:
         if r.serial_text.lower() in seen_serials:
             continue
@@ -273,38 +352,52 @@ async def list_serials(
             )
         )
 
-    # 4. Filter by flow type
-    if flow == "inward":
-        items = [i for i in items if i.flow_type == "inward"]
+    # Sliced items for page
+    if run_unm and unm_rows:
+        items.sort(key=lambda x: x.created_at, reverse=True)
+        sliced = items[:limit]
+    else:
+        sliced = items[:limit]
+
+    # Fast global counts for tabs
+    inward_cnt_res = await db.execute(
+        select(func.count(SerialNumber.id)).where(SerialNumber.status != SerialStatus.dispatched)
+    )
+    total_inward = inward_cnt_res.scalar() or 0
+
+    outward_cnt_res = await db.execute(
+        select(func.count(SerialNumber.id)).where(SerialNumber.status == SerialStatus.dispatched)
+    )
+    unm_cnt_res = await db.execute(
+        select(func.count(OutwardLine.id)).where(OutwardLine.serial_number_id.is_(None))
+    )
+    total_outward = (outward_cnt_res.scalar() or 0) + (unm_cnt_res.scalar() or 0)
+
+    damaged_cnt_res = await db.execute(
+        select(func.count(SerialNumber.id)).where(
+            SerialNumber.status.in_([SerialStatus.damaged, SerialStatus.under_repair, SerialStatus.lost])
+        )
+    )
+    total_damaged = damaged_cnt_res.scalar() or 0
+
+    if active_search_total is not None:
+        active_total = active_search_total
+    elif flow == "inward":
+        active_total = total_inward
     elif flow == "outward":
-        items = [i for i in items if i.flow_type == "outward"]
+        active_total = total_outward
     elif flow == "damaged":
-        items = [i for i in items if i.is_damaged or i.status in ("damaged", "under_repair", "lost")]
+        active_total = total_damaged
+    else:
+        active_total = total_inward + total_outward
 
-    # 5. Search query filtering
-    if q and q.strip():
-        term = q.strip().lower()
-        items = [
-            i
-            for i in items
-            if term in i.serial_number.lower()
-            or term in i.model.lower()
-            or term in i.brand.lower()
-            or (i.category_name and term in i.category_name.lower())
-            or term in i.product_name.lower()
-            or (i.shop_name and term in i.shop_name.lower())
-            or (i.shop_city and term in i.shop_city.lower())
-            or (i.reference and term in i.reference.lower())
-            or (i.bill_number and term in i.bill_number.lower())
-            or (i.delivery_reference and term in i.delivery_reference.lower())
-        ]
-
-    # Sort newest first
-    items.sort(key=lambda x: x.created_at, reverse=True)
-    total_count = len(items)
-    sliced = items[offset : offset + limit]
-
-    return SerialListResponse(total=total_count, items=sliced)
+    return SerialListResponse(
+        total=active_total,
+        total_inward=total_inward,
+        total_outward=total_outward,
+        total_damaged=total_damaged,
+        items=sliced,
+    )
 
 
 @router.get("/lookup", response_model=SerialDetailResponse)
@@ -687,48 +780,53 @@ async def check_bulk_serials(
     if not raw_serials:
         return BulkSerialCheckResponse(existing={}, existing_count=0, new_count=0, results=[])
 
-    # 1. Check SerialNumber table (irrespective of product/model)
-    sn_query = (
-        select(SerialNumber, Product.name, Product.brand, Product.model)
-        .join(Product, SerialNumber.product_id == Product.id)
-        .where(SerialNumber.serial_number.in_(raw_serials))
-    )
-    sn_rows = (await db.execute(sn_query)).all()
+    # 1. Check SerialNumber table with parameter chunking (PostgreSQL max 65535 params)
+    CHUNK_SIZE = 5000
     existing_map: dict[str, ExistingSerialInfo] = {}
 
-    for sn, p_name, p_brand, p_model in sn_rows:
-        existing_map[sn.serial_number] = ExistingSerialInfo(
-            serial_number=sn.serial_number,
-            product_id=sn.product_id,
-            product_name=p_name,
-            brand=p_brand,
-            model=p_model,
-            status=sn.status.value,
-            status_label="Available in Godown" if sn.status == SerialStatus.available else sn.status.value.capitalize(),
-            unit_type=sn.unit_type,
-            exists=True,
+    for i in range(0, len(raw_serials), CHUNK_SIZE):
+        chunk = raw_serials[i : i + CHUNK_SIZE]
+        sn_query = (
+            select(SerialNumber, Product.name, Product.brand, Product.model)
+            .join(Product, SerialNumber.product_id == Product.id)
+            .where(SerialNumber.serial_number.in_(chunk))
         )
-
-    # 2. Check OutwardLine for unmatched outwards (irrespective of product/model)
-    unmatched_query = (
-        select(OutwardLine.serial_text, OutwardLine.product_id, Product.name, Product.brand, Product.model, OutwardLine.unit_type)
-        .join(Product, OutwardLine.product_id == Product.id)
-        .where(OutwardLine.serial_text.in_(raw_serials))
-    )
-    out_rows = (await db.execute(unmatched_query)).all()
-    for s_text, p_id, p_name, p_brand, p_model, u_type in out_rows:
-        if s_text not in existing_map:
-            existing_map[s_text] = ExistingSerialInfo(
-                serial_number=s_text,
-                product_id=p_id,
+        sn_rows = (await db.execute(sn_query)).all()
+        for sn, p_name, p_brand, p_model in sn_rows:
+            existing_map[sn.serial_number] = ExistingSerialInfo(
+                serial_number=sn.serial_number,
+                product_id=sn.product_id,
                 product_name=p_name,
                 brand=p_brand,
                 model=p_model,
-                status="dispatched",
-                status_label="Previously Dispatched",
-                unit_type=u_type,
+                status=sn.status.value,
+                status_label="Available in Godown" if sn.status == SerialStatus.available else sn.status.value.capitalize(),
+                unit_type=sn.unit_type,
                 exists=True,
             )
+
+    # 2. Check OutwardLine for unmatched outwards with parameter chunking
+    for i in range(0, len(raw_serials), CHUNK_SIZE):
+        chunk = raw_serials[i : i + CHUNK_SIZE]
+        unmatched_query = (
+            select(OutwardLine.serial_text, OutwardLine.product_id, Product.name, Product.brand, Product.model, OutwardLine.unit_type)
+            .join(Product, OutwardLine.product_id == Product.id)
+            .where(OutwardLine.serial_text.in_(chunk))
+        )
+        out_rows = (await db.execute(unmatched_query)).all()
+        for s_text, p_id, p_name, p_brand, p_model, u_type in out_rows:
+            if s_text not in existing_map:
+                existing_map[s_text] = ExistingSerialInfo(
+                    serial_number=s_text,
+                    product_id=p_id,
+                    product_name=p_name,
+                    brand=p_brand,
+                    model=p_model,
+                    status="dispatched",
+                    status_label="Previously Dispatched",
+                    unit_type=u_type,
+                    exists=True,
+                )
 
     unique_input_count = len(set(raw_serials))
     results_list = list(existing_map.values())
@@ -796,16 +894,22 @@ async def import_bulk_serials(
 
     all_serials = [it.serial_number for it in cleaned_items]
 
-    # 2. Check existing serials in DB (globally, irrespective of model)
-    existing_sn_res = await db.execute(
-        select(SerialNumber.serial_number).where(SerialNumber.serial_number.in_(all_serials))
-    )
-    existing_sn_set = {s.upper() for s in existing_sn_res.scalars().all()}
+    # 2. Check existing serials in DB (globally, irrespective of model) with parameter chunking
+    existing_sn_set: set[str] = set()
+    existing_out_set: set[str] = set()
+    CHUNK_SIZE = 5000
 
-    existing_out_res = await db.execute(
-        select(OutwardLine.serial_text).where(OutwardLine.serial_text.in_(all_serials))
-    )
-    existing_out_set = {s.upper() for s in existing_out_res.scalars().all()}
+    for i in range(0, len(all_serials), CHUNK_SIZE):
+        chunk = all_serials[i : i + CHUNK_SIZE]
+        existing_sn_res = await db.execute(
+            select(SerialNumber.serial_number).where(SerialNumber.serial_number.in_(chunk))
+        )
+        existing_sn_set.update(s.upper() for s in existing_sn_res.scalars().all())
+
+        existing_out_res = await db.execute(
+            select(OutwardLine.serial_text).where(OutwardLine.serial_text.in_(chunk))
+        )
+        existing_out_set.update(s.upper() for s in existing_out_res.scalars().all())
 
     all_existing = existing_sn_set | existing_out_set
 

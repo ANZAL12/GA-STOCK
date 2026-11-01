@@ -78,6 +78,9 @@ class SerialListItem(BaseModel):
 
 class SerialListResponse(BaseModel):
     total: int
+    total_inward: int = 0
+    total_outward: int = 0
+    total_damaged: int = 0
     items: list[SerialListItem]
 
 

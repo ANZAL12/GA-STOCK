@@ -2535,7 +2535,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     if (confirm == true) {
       HapticFeedback.mediumImpact();
-      SessionRecoveryService().clearDraft();
+      await SessionRecoveryService().clearDraft();
       setState(() {
         _currentStep = 1;
         _selectedProduct = null;
@@ -2551,19 +2551,73 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
+  Future<bool> _handleWillPop() async {
+    final now = DateTime.now();
+    // If a barcode scan occurred within the last 2000ms, swallow the pop request
+    if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
+      debugPrint('[OutwardScreen] Swallowed pop attempt from scanner keys');
+      return false;
+    }
+
+    if (_scannedItems.isNotEmpty) {
+      final int count = _scannedItems.length;
+      final bool? discard = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Color(0xFFDC2626), size: 24),
+              SizedBox(width: 8),
+              Text(
+                'Discard Dispatch?',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+              ),
+            ],
+          ),
+          content: Text(
+            'You have scanned $count serial number${count == 1 ? "" : "s"}. Leaving will discard this dispatch and clear the session.',
+            style: const TextStyle(fontSize: 13, color: Color(0xFF475569), height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Stay', style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.w600)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFDC2626),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Discard & Leave', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+
+      if (discard != true) {
+        return false;
+      }
+    }
+
+    // User is intentionally discarding/leaving: clear any unsubmitted draft so home screen won't show it
+    await SessionRecoveryService().clearDraft();
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        final now = DateTime.now();
-        // If a barcode scan occurred within the last 2000ms, swallow the pop request
-        if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
-          debugPrint('[OutwardScreen] Swallowed pop attempt from scanner keys');
-          return;
+        final canPop = await _handleWillPop();
+        if (canPop) {
+          if (!mounted) return;
+          Navigator.of(context).pop();
         }
-        Navigator.pop(context);
       },
       child: Scaffold(
         backgroundColor: const Color(0xFFF8FAFC),
@@ -2579,7 +2633,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
             child: IconButton(
               focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               icon: const Icon(Icons.arrow_back),
-              onPressed: () => Navigator.pop(context),
+              onPressed: () async {
+                final canPop = await _handleWillPop();
+                if (canPop) {
+                  if (!mounted) return;
+                  Navigator.of(context).pop();
+                }
+              },
             ),
           ),
           actions: [
@@ -3101,6 +3161,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         borderRadius: BorderRadius.circular(14),
                         child: InkWell(
                           onTap: () {
+                            FocusScope.of(context).unfocus();
                             setState(() {
                               _selectedProduct = p;
                               _currentStep = 3;
@@ -3461,13 +3522,22 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     ),
                   ],
                   const Spacer(),
-                  Text(
-                    '${_scannedItems.length} Serials',
-                    style: TextStyle(
-                      fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF0F172A),
-                    ),
+                  Builder(
+                    builder: (context) {
+                      final dualIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
+                      final dualOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
+                      final hasDual = dualIn > 0 || dualOut > 0 || _selectedProduct?.hasDualSerial == true;
+                      return Text(
+                        hasDual
+                            ? '${_scannedItems.length} Serials (Indoor: $dualIn, Outdoor: $dualOut)'
+                            : '${_scannedItems.length} Serials',
+                        style: TextStyle(
+                          fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF0F172A),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -3523,6 +3593,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   // Individual Model Chips
                   ...modelList.map((prod) {
                     final count = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id).length;
+                    final mIn = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id && e.unitType?.toLowerCase() == 'indoor').length;
+                    final mOut = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id && e.unitType?.toLowerCase() == 'outdoor').length;
+                    final showDual = prod.hasDualSerial || mIn > 0 || mOut > 0;
                     final isSelected = _activeFilterModelId == prod.id;
                     final isCurrentActive = prod.id == _selectedProduct?.id;
 
@@ -3534,7 +3607,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         avatar: isCurrentActive
                             ? Icon(Icons.bolt, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 13), color: isSelected ? Colors.amber : const Color(0xFF4F46E5))
                             : null,
-                        label: Text('${prod.model} ($count)'),
+                        label: Text(showDual ? '${prod.model} ($count [In: $mIn, Out: $mOut])' : '${prod.model} ($count)'),
                         selected: isSelected,
                         selectedColor: const Color(0xFF4F46E5),
                         labelStyle: TextStyle(

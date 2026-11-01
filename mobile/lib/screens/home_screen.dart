@@ -113,6 +113,7 @@ class _HomeScreenState extends State<HomeScreen> {
           MaterialPageRoute(builder: (_) => const InwardScreen()),
         );
         _refreshQueueCount();
+        await SessionRecoveryService().checkActiveDraft();
       },
     );
 
@@ -129,6 +130,7 @@ class _HomeScreenState extends State<HomeScreen> {
           MaterialPageRoute(builder: (_) => const OutwardScreen()),
         );
         _refreshQueueCount();
+        await SessionRecoveryService().checkActiveDraft();
       },
     );
 
@@ -145,6 +147,7 @@ class _HomeScreenState extends State<HomeScreen> {
           MaterialPageRoute(builder: (_) => const QuickDispatchScreen()),
         );
         _refreshQueueCount();
+        await SessionRecoveryService().checkActiveDraft();
       },
     );
 

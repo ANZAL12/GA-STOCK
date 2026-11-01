@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Date, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +44,7 @@ class InwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
     __table_args__ = (
         # Belt-and-suspenders: same serial cannot appear twice in one batch.
         UniqueConstraint("batch_id", "serial_number_id", name="uq_inward_lines_batch_serial"),
+        Index("ix_inward_lines_created_at", text("created_at DESC")),
     )
 
     batch_id:         Mapped[uuid.UUID] = mapped_column(

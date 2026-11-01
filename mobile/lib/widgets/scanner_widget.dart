@@ -326,12 +326,12 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     final int countAfter = widget.itemCountProvider?.call() ?? _scannedCount;
     final bool isSuccess = (result is bool)
         ? result
-        : (widget.itemCountProvider != null ? (countAfter > countBefore) : true);
+        : (result != false);
 
     if (isSuccess) {
       setState(() {
         _lastScannedValue = cleanVal;
-        _scannedCount = widget.itemCountProvider != null ? countAfter : (_scannedCount + 1);
+        _scannedCount = (countAfter > countBefore) ? countAfter : (_scannedCount + 1);
       });
     } else {
       _sessionScannedSerials.remove(cleanVal);

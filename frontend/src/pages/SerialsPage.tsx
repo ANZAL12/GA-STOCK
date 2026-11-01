@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
@@ -11,11 +11,14 @@ import {
   Building2, 
   AlertCircle, 
   Clock, 
-  Wrench,
+  Wrench, 
   Search,
   ArrowDownLeft,
   ArrowUpRight,
+  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Layers,
   FileDown,
   Printer,
@@ -28,7 +31,15 @@ export const SerialsPage: React.FC = () => {
   const [serials, setSerials] = useState<SerialListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [flowFilter, setFlowFilter] = useState<"all" | "inward" | "outward" | "damaged">("all");
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [jumpPageInput, setJumpPageInput] = useState<string>("");
+  const pageSize = 100;
+
+  // Table Top Anchor & Page Change Scroll Tracking
+  const tableTopRef = useRef<HTMLDivElement>(null);
+  const isPageChangingRef = useRef(false);
 
   // Selected Serial Lifecycle Detail Modal
   const [selectedSerial, setSelectedSerial] = useState<SerialDetail | null>(null);
@@ -43,10 +54,30 @@ export const SerialsPage: React.FC = () => {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
 
-  const fetchSerials = async () => {
+  const [totalCounts, setTotalCounts] = useState({
+    total: 0,
+    inward: 0,
+    outward: 0,
+    damaged: 0,
+  });
+
+  const fetchSerials = async (flow = flowFilter, query = searchQuery, page = currentPage) => {
     try {
-      const res = await apiRequest<SerialListResponse>("/serials?limit=500");
+      setLoading(true);
+      const params = new URLSearchParams();
+      params.append("limit", String(pageSize));
+      params.append("offset", String((page - 1) * pageSize));
+      if (flow && flow !== "all") params.append("flow", flow);
+      if (query.trim()) params.append("q", query.trim());
+
+      const res = await apiRequest<SerialListResponse>(`/serials?${params.toString()}`);
       setSerials(res.items);
+      setTotalCounts({
+        total: res.total || 0,
+        inward: res.total_inward ?? res.items.filter((s) => s.flow_type === "inward").length,
+        outward: res.total_outward ?? res.items.filter((s) => s.flow_type === "outward").length,
+        damaged: res.total_damaged ?? 0,
+      });
     } catch (err) {
       console.error(err);
     } finally {
@@ -54,9 +85,28 @@ export const SerialsPage: React.FC = () => {
     }
   };
 
+  // Debounce search input keystrokes (250ms)
   useEffect(() => {
-    fetchSerials();
-  }, []);
+    const handler = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [searchQuery]);
+
+  // Fetch immediately whenever flowFilter, debouncedSearch, or currentPage changes
+  useEffect(() => {
+    fetchSerials(flowFilter, debouncedSearch, currentPage);
+  }, [flowFilter, debouncedSearch, currentPage]);
+
+  // Keep scroll aligned with the top of the table after new page data renders
+  useEffect(() => {
+    if (isPageChangingRef.current) {
+      isPageChangingRef.current = false;
+      requestAnimationFrame(() => {
+        scrollToTableTop("smooth");
+      });
+    }
+  }, [serials]);
 
   useWebSocket((event) => {
     if (
@@ -65,7 +115,7 @@ export const SerialsPage: React.FC = () => {
       event === "product_updated" ||
       event === "product_deleted"
     ) {
-      fetchSerials();
+      fetchSerials(flowFilter, debouncedSearch, currentPage);
     }
   });
 
@@ -114,48 +164,85 @@ export const SerialsPage: React.FC = () => {
     }
   };
 
-  // Filtered Serials
-  const filteredSerials = serials
-    .filter((s) => {
-      if (flowFilter === "inward") return s.flow_type === "inward";
-      if (flowFilter === "outward") return s.flow_type === "outward";
-      if (flowFilter === "damaged") {
-        return (
-          s.is_damaged ||
-          s.is_dispatched_damaged ||
-          ["damaged", "under_repair", "lost"].includes(s.status) ||
-          Boolean(s.flag_reason?.toLowerCase().includes("damage"))
-        );
-      }
-      return true;
-    })
-    .filter((s) => {
-      if (!searchQuery.trim()) return true;
-      const q = searchQuery.toLowerCase().trim();
-      return (
-        s.serial_number.toLowerCase().includes(q) ||
-        (s.unit_type && s.unit_type.toLowerCase().includes(q)) ||
-        s.model.toLowerCase().includes(q) ||
-        s.brand.toLowerCase().includes(q) ||
-        (s.category_name && s.category_name.toLowerCase().includes(q)) ||
-        s.product_name.toLowerCase().includes(q) ||
-        (s.shop_name && s.shop_name.toLowerCase().includes(q)) ||
-        (s.shop_city && s.shop_city.toLowerCase().includes(q)) ||
-        (s.reference && s.reference.toLowerCase().includes(q)) ||
-        (s.bill_number && s.bill_number.toLowerCase().includes(q)) ||
-        (s.delivery_reference && s.delivery_reference.toLowerCase().includes(q))
-      );
-    });
+  // Paginated Serials list for current page
+  const filteredSerials = serials;
 
-  const inwardCount = serials.filter((s) => s.flow_type === "inward").length;
-  const outwardCount = serials.filter((s) => s.flow_type === "outward").length;
-  const attentionCount = serials.filter(
+  const inwardCount = totalCounts.inward || serials.filter((s) => s.flow_type === "inward").length;
+  const outwardCount = totalCounts.outward || serials.filter((s) => s.flow_type === "outward").length;
+  const attentionCount = totalCounts.damaged || serials.filter(
     (s) =>
       s.is_damaged ||
       s.is_dispatched_damaged ||
       ["damaged", "under_repair", "lost"].includes(s.status) ||
       Boolean(s.flag_reason?.toLowerCase().includes("damage"))
   ).length;
+
+  const getActiveTotal = () => {
+    if (searchQuery.trim()) {
+      return totalCounts.total;
+    }
+    if (flowFilter === "inward") return inwardCount;
+    if (flowFilter === "outward") return outwardCount;
+    if (flowFilter === "damaged") return attentionCount;
+    return totalCounts.total;
+  };
+
+  const activeTotal = getActiveTotal();
+  const totalPages = Math.max(1, Math.ceil(activeTotal / pageSize));
+
+  const handleFlowFilterChange = (flow: "all" | "inward" | "outward" | "damaged") => {
+    setFlowFilter(flow);
+    setCurrentPage(1);
+  };
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    setCurrentPage(1);
+  };
+
+  // Scroll to table top with compensation for sticky navbar
+  const scrollToTableTop = (behavior: ScrollBehavior = "smooth") => {
+    if (tableTopRef.current) {
+      tableTopRef.current.scrollIntoView({ behavior, block: "start" });
+    } else {
+      window.scrollTo({ top: 0, behavior });
+    }
+  };
+
+  const handlePageChange = (newPage: number) => {
+    const target = Math.max(1, Math.min(newPage, totalPages));
+    if (target !== currentPage) {
+      isPageChangingRef.current = true;
+      setCurrentPage(target);
+      // Trigger smooth scroll immediately on click
+      scrollToTableTop("smooth");
+    }
+  };
+
+  const handleJumpSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = parseInt(jumpPageInput.trim(), 10);
+    if (!isNaN(p) && p >= 1 && p <= totalPages) {
+      handlePageChange(p);
+      setJumpPageInput("");
+    }
+  };
+
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      if (currentPage <= 4) {
+        pages.push(1, 2, 3, 4, 5, "...", totalPages);
+      } else if (currentPage >= totalPages - 3) {
+        pages.push(1, "...", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+      } else {
+        pages.push(1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages);
+      }
+    }
+    return pages;
+  };
 
   const getFilterLabel = () => {
     switch (flowFilter) {
@@ -189,7 +276,7 @@ export const SerialsPage: React.FC = () => {
             Serial Number Registry
           </h1>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Complete inventory log of inward and outward appliance serials • Live godown trace
+            Complete inventory log of inward and outward appliance serials • {(totalCounts.total || serials.length).toLocaleString()} total registered serials
           </p>
         </div>
 
@@ -231,12 +318,12 @@ export const SerialsPage: React.FC = () => {
           <div className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs shadow-sm flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
             <span className="text-slate-500 font-medium">In Stock:</span>
-            <span className="font-bold text-slate-900">{inwardCount}</span>
+            <span className="font-bold text-slate-900">{inwardCount.toLocaleString()}</span>
           </div>
           <div className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs shadow-sm flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-[#3C3489]" />
             <span className="text-slate-500 font-medium">Dispatched:</span>
-            <span className="font-bold text-slate-900">{outwardCount}</span>
+            <span className="font-bold text-slate-900">{outwardCount.toLocaleString()}</span>
           </div>
         </div>
       </div>
@@ -246,17 +333,17 @@ export const SerialsPage: React.FC = () => {
         {/* Flow Tabs */}
         <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl w-fit text-xs font-medium">
           <button
-            onClick={() => setFlowFilter("all")}
+            onClick={() => handleFlowFilterChange("all")}
             className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
               flowFilter === "all"
                 ? "bg-white text-slate-900 font-semibold shadow-sm"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
-            All Serials ({serials.length})
+            All Serials ({(totalCounts.total || serials.length).toLocaleString()})
           </button>
           <button
-            onClick={() => setFlowFilter("inward")}
+            onClick={() => handleFlowFilterChange("inward")}
             className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
               flowFilter === "inward"
                 ? "bg-white text-emerald-700 font-semibold shadow-sm"
@@ -264,10 +351,10 @@ export const SerialsPage: React.FC = () => {
             }`}
           >
             <ArrowDownLeft size={13} className="text-emerald-600" />
-            <span>Inward / In Stock ({inwardCount})</span>
+            <span>Inward / In Stock ({inwardCount.toLocaleString()})</span>
           </button>
           <button
-            onClick={() => setFlowFilter("outward")}
+            onClick={() => handleFlowFilterChange("outward")}
             className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
               flowFilter === "outward"
                 ? "bg-white text-[#3C3489] font-semibold shadow-sm"
@@ -275,11 +362,11 @@ export const SerialsPage: React.FC = () => {
             }`}
           >
             <ArrowUpRight size={13} className="text-[#3C3489]" />
-            <span>Outward / Dispatched ({outwardCount})</span>
+            <span>Outward / Dispatched ({outwardCount.toLocaleString()})</span>
           </button>
           {attentionCount > 0 && (
             <button
-              onClick={() => setFlowFilter("damaged")}
+              onClick={() => handleFlowFilterChange("damaged")}
               className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
                 flowFilter === "damaged"
                   ? "bg-white text-rose-700 font-semibold shadow-sm"
@@ -287,7 +374,7 @@ export const SerialsPage: React.FC = () => {
               }`}
             >
               <AlertCircle size={13} className="text-rose-600" />
-              <span>Attention ({attentionCount})</span>
+              <span>Attention ({attentionCount.toLocaleString()})</span>
             </button>
           )}
         </div>
@@ -298,16 +385,19 @@ export const SerialsPage: React.FC = () => {
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
             placeholder="Search serial, model, brand, shop, ref..."
             className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] text-slate-800 placeholder-slate-400 shadow-sm"
           />
         </div>
       </div>
 
+      {/* Anchor for smooth pagination scroll-to-top */}
+      <div ref={tableTopRef} id="serials-table-top" className="scroll-mt-24" />
+
       {/* Serials Table */}
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-        {loading ? (
+        {loading && serials.length === 0 ? (
           <div className="py-20 text-center text-xs text-slate-400">
             <div className="w-6 h-6 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
             Loading serial records...
@@ -317,7 +407,51 @@ export const SerialsPage: React.FC = () => {
             No serials match the current filter or search criteria.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="relative">
+            {/* Top Table Pagination & Quick Switcher */}
+            <div className="px-5 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs text-slate-500 select-none">
+              <div className="flex items-center gap-2">
+                <span>
+                  Showing <span className="font-semibold text-slate-800">{activeTotal === 0 ? 0 : ((currentPage - 1) * pageSize + 1).toLocaleString()} – {Math.min(currentPage * pageSize, activeTotal).toLocaleString()}</span> of <span className="font-bold text-slate-900">{activeTotal.toLocaleString()}</span>
+                </span>
+                <span className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-[#3C3489] border border-indigo-100">
+                  Page {currentPage} of {totalPages}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1 || loading}
+                  className="p-1 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  title="Previous Page"
+                >
+                  <ChevronLeft size={13} />
+                </button>
+                <span className="text-xs font-semibold px-1 text-slate-700 min-w-[45px] text-center">
+                  {currentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage >= totalPages || loading}
+                  className="p-1 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  title="Next Page"
+                >
+                  <ChevronRight size={13} />
+                </button>
+              </div>
+            </div>
+
+            {loading && (
+              <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center">
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white shadow-md border border-slate-200 text-xs font-semibold text-slate-700">
+                  <div className="w-4 h-4 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin" />
+                  <span>Loading page {currentPage}...</span>
+                </div>
+              </div>
+            )}
+            <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wider">
                 <tr>
@@ -472,8 +606,124 @@ export const SerialsPage: React.FC = () => {
               </tbody>
             </table>
           </div>
-        )}
-      </div>
+
+          {/* Pagination Footer Bar */}
+          <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-col md:flex-row items-center justify-between gap-4 select-none">
+            
+            {/* Left: Range and Total Counts */}
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="font-semibold text-slate-700">
+                Showing {activeTotal === 0 ? 0 : ((currentPage - 1) * pageSize + 1).toLocaleString()} – {Math.min(currentPage * pageSize, activeTotal).toLocaleString()}
+              </span>
+              <span>of</span>
+              <span className="font-bold text-slate-900">{activeTotal.toLocaleString()}</span>
+              <span>records</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-50 text-[#3C3489] border border-indigo-100 ml-1">
+                100 per page
+              </span>
+            </div>
+
+            {/* Center: Pagination Buttons */}
+            <div className="flex items-center gap-1">
+              {/* First Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage === 1 || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="First Page"
+              >
+                <ChevronsLeft size={15} />
+              </button>
+
+              {/* Prev Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 1 || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Previous Page"
+              >
+                <ChevronLeft size={15} />
+              </button>
+
+              {/* Numbered Page Buttons */}
+              <div className="flex items-center gap-1 mx-1">
+                {getPageNumbers().map((pg, idx) => {
+                  if (pg === "...") {
+                    return (
+                      <span key={`dots-${idx}`} className="px-2 py-1 text-xs text-slate-400">
+                        ...
+                      </span>
+                    );
+                  }
+                  const pageNum = Number(pg);
+                  const isActive = pageNum === currentPage;
+                  return (
+                    <button
+                      key={`page-${pageNum}`}
+                      type="button"
+                      onClick={() => handlePageChange(pageNum)}
+                      disabled={loading}
+                      className={`min-w-[32px] h-8 px-2 text-xs font-semibold rounded-lg transition-all ${
+                        isActive
+                          ? "bg-[#3C3489] text-white shadow-sm"
+                          : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Next Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Next Page"
+              >
+                <ChevronRight size={15} />
+              </button>
+
+              {/* Last Page */}
+              <button
+                type="button"
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage >= totalPages || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Last Page"
+              >
+                <ChevronsRight size={15} />
+              </button>
+            </div>
+
+            {/* Right: Quick jump to page */}
+            <form onSubmit={handleJumpSubmit} className="flex items-center gap-1.5 text-xs">
+              <span className="text-slate-500">Go to:</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={jumpPageInput}
+                onChange={(e) => setJumpPageInput(e.target.value)}
+                placeholder={String(currentPage)}
+                className="w-14 px-2 py-1 text-center font-medium text-xs rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+              <button
+                type="submit"
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-all cursor-pointer shadow-xs"
+              >
+                Go
+              </button>
+            </form>
+
+          </div>
+        </div>
+      )}
+    </div>
 
       {/* Serial Detail / Lifecycle Modal */}
       <Modal

@@ -32,3 +32,8 @@ api_router.include_router(audit_router)
 api_router.include_router(websocket_router)
 api_router.include_router(sync_router)
 api_router.include_router(print_router)
+
+
+@api_router.get("/health", tags=["system"])
+async def v1_health() -> dict:
+    return {"status": "ok"}

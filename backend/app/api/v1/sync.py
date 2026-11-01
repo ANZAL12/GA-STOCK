@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
-from typing import Annotated, Any, Dict, List
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from datetime import date, datetime, timedelta, timezone
+from typing import Annotated, Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -21,12 +21,15 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 async def get_offline_snapshot(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    days_dispatched: int = Query(60, ge=1, le=365, description="Days of recent dispatched serials to include"),
+    full: bool = Query(False, description="Whether to include full historical dispatched archive"),
 ) -> Dict[str, Any]:
     """
-    Returns complete local snapshot for 100% offline-first operation on Android scanners:
+    Returns optimized snapshot for 100% offline-first operation on Android scanners:
     - Products catalog
     - Shops directory
-    - Full serials & inventory state mapping (available, damaged, dispatched, dual-serial unit types)
+    - Full active inventory serials (available, damaged, under repair, lost, returned)
+    - Recent dispatched serials (last 60 days by default) to prevent duplicate scans without bloating memory
     """
     # 1. Active Products
     prod_query = (
@@ -89,7 +92,9 @@ async def get_offline_snapshot(
         for s in shop_res.scalars().all()
     ]
 
-    # 3. Tracked inventory serial numbers
+    # 4. Tracked inventory serial numbers:
+    # Always include ALL active inventory in the warehouse (available, damaged, etc.).
+    # For dispatched units, limit to recent `days_dispatched` to avoid sending hundreds of thousands of historical rows.
     sn_query = (
         select(
             SerialNumber.serial_number,
@@ -104,6 +109,15 @@ async def get_offline_snapshot(
         .join(Product, SerialNumber.product_id == Product.id)
         .outerjoin(Shop, SerialNumber.last_shop_id == Shop.id)
     )
+    if not full:
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_dispatched)
+        sn_query = sn_query.where(
+            or_(
+                SerialNumber.status != SerialStatus.dispatched,
+                SerialNumber.updated_at >= cutoff_dt,
+            )
+        )
+
     sn_rows = (await db.execute(sn_query)).all()
 
     serials_map: Dict[str, Dict[str, Any]] = {}
@@ -121,8 +135,9 @@ async def get_offline_snapshot(
             "sc": s_city,
         }
 
-    # 4. Previously dispatched outward lines (ensures old pre-go-live dispatched serials are blocked offline too)
-    outward_disp_res = await db.execute(
+    # 5. Previously dispatched outward lines (unmatched old stock dispatches):
+    # Only include recent `days_dispatched` days to keep the payload lightweight and lightning fast.
+    outward_query = (
         select(
             OutwardLine.serial_text,
             OutwardLine.product_id,
@@ -134,8 +149,12 @@ async def get_offline_snapshot(
         )
         .outerjoin(Shop, OutwardLine.shop_id == Shop.id)
         .outerjoin(Product, OutwardLine.product_id == Product.id)
-        .distinct()
     )
+    if not full:
+        cutoff_date = date.today() - timedelta(days=days_dispatched)
+        outward_query = outward_query.where(OutwardLine.transaction_date >= cutoff_date)
+
+    outward_disp_res = await db.execute(outward_query.distinct())
     for disp_text, disp_prod_id, disp_unit_type, disp_s_name, disp_s_city, disp_p_model, disp_p_brand in outward_disp_res.all():
         clean_disp = disp_text.strip().upper()
         disp_model_name = f"{disp_p_brand or ''} {disp_p_model or ''}".strip() or "Previously Dispatched"
@@ -151,7 +170,6 @@ async def get_offline_snapshot(
                 "sc": disp_s_city,
             }
         else:
-            # If line is recorded dispatched in outward lines, ensure dispatched flag is true
             if serials_map[clean_disp]["st"] == "dispatched":
                 serials_map[clean_disp]["d"] = True
                 if not serials_map[clean_disp].get("sn") and disp_s_name:
@@ -165,4 +183,5 @@ async def get_offline_snapshot(
         "shops": shops_list,
         "serials": serials_map,
         "total_serials_cached": len(serials_map),
+        "days_window": days_dispatched if not full else "all",
     }

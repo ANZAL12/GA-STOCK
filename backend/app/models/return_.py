@@ -1,4 +1,4 @@
-﻿import uuid
+import uuid
 from datetime import date, datetime
 from typing import Optional
 
@@ -42,7 +42,7 @@ class Return(Base, PrimaryKeyMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("shops.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     product_id:        Mapped[uuid.UUID]              = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
     return_date:       Mapped[date]                   = mapped_column(Date, nullable=False, index=True)
     reason:            Mapped[str]                    = mapped_column(Text, nullable=False)
