@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, Clipboard, ClipboardData;
 import 'package:pdf/pdf.dart';
@@ -576,23 +577,23 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       logoImage = pw.MemoryImage(bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
     } catch (_) {}
 
-    doc.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(12 * PdfPageFormat.mm),
-        footer: (ctx) => _pdfFooter(ctx, bill),
-        build: (ctx) => [
-          _pdfHeader(bill, logoImage),
-          pw.SizedBox(height: 4 * PdfPageFormat.mm),
-          _pdfModelsTable(bill),
-          pw.SizedBox(height: 6 * PdfPageFormat.mm),
-          _pdfSerialsTable(bill),
-          pw.SizedBox(height: 6 * PdfPageFormat.mm),
-          _pdfSignatureBlock(),
-        ],
-      ),
-    );
-    return doc;
+      doc.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(12 * PdfPageFormat.mm),
+          footer: (ctx) => _pdfFooter(ctx, bill),
+          build: (ctx) => [
+            _pdfHeader(bill, logoImage),
+            pw.SizedBox(height: 4 * PdfPageFormat.mm),
+            _pdfModelsTable(bill),
+            pw.SizedBox(height: 5 * PdfPageFormat.mm),
+            ..._pdfSerialsWidgets(bill),
+            pw.SizedBox(height: 5 * PdfPageFormat.mm),
+            _pdfSignatureBlock(),
+          ],
+        ),
+      );
+      return doc;
   }
 
   // ── PDF widgets ─────────────────────────────────────────────────────────
@@ -896,11 +897,58 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  pw.Widget _pdfSerialsTable(BillDetail bill) {
+  List<pw.Widget> _pdfSerialsWidgets(BillDetail bill) {
     const headerBg = PdfColor.fromInt(0xFFF2F2F2);
     const black = PdfColors.black;
 
-    final batchWidgets = <pw.Widget>[];
+    final widgets = <pw.Widget>[
+      pw.Text(
+        '2. Serial Number Register',
+        style: pw.TextStyle(
+          fontSize: 9,
+          fontWeight: pw.FontWeight.bold,
+          color: black,
+        ),
+      ),
+      pw.SizedBox(height: 2 * PdfPageFormat.mm),
+      pw.Table(
+        border: const pw.TableBorder(
+          top: pw.BorderSide(color: black, width: 0.25),
+          bottom: pw.BorderSide(color: black, width: 0.25),
+          left: pw.BorderSide(color: black, width: 0.25),
+          right: pw.BorderSide(color: black, width: 0.25),
+          verticalInside: pw.BorderSide(color: black, width: 0.25),
+        ),
+        columnWidths: const {
+          0: pw.FlexColumnWidth(156),
+          1: pw.FlexColumnWidth(30),
+        },
+        children: [
+          pw.TableRow(
+            decoration: const pw.BoxDecoration(color: headerBg),
+            children: [
+              pw.Padding(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
+                child: pw.Text(
+                  'Model Details & Serial Number Register',
+                  style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                ),
+              ),
+              pw.Padding(
+                padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
+                child: pw.Align(
+                  alignment: pw.Alignment.centerRight,
+                  child: pw.Text(
+                    'Quantity',
+                    style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ];
 
     for (int i = 0; i < bill.batches.length; i++) {
       final b = bill.batches[i];
@@ -943,105 +991,8 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         }
       }
 
-      batchWidgets.add(
-        pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-          children: [
-            // Model title row with complete borders and vertical divider
-            pw.Table(
-              border: const pw.TableBorder(
-                top: pw.BorderSide(color: black, width: 0.25),
-                bottom: pw.BorderSide(color: black, width: 0.25),
-                left: pw.BorderSide(color: black, width: 0.25),
-                right: pw.BorderSide(color: black, width: 0.25),
-                verticalInside: pw.BorderSide(color: black, width: 0.25),
-              ),
-              columnWidths: const {
-                0: pw.FlexColumnWidth(156),
-                1: pw.FlexColumnWidth(30),
-              },
-              children: [
-                pw.TableRow(
-                  decoration: const pw.BoxDecoration(color: headerBg),
-                  children: [
-                    pw.Padding(
-                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
-                      child: pw.Text(
-                        '${i + 1}.  ${b.brand} - ${b.model}$descText',
-                        style: pw.TextStyle(
-                          fontSize: 8.5,
-                          fontWeight: pw.FontWeight.bold,
-                          color: black,
-                        ),
-                      ),
-                    ),
-                    pw.Padding(
-                      padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
-                      child: pw.Align(
-                        alignment: pw.Alignment.centerRight,
-                        child: pw.Text(
-                          '${b.quantity} ${b.quantity == 1 ? "Unit" : "Units"}',
-                          style: pw.TextStyle(
-                            fontSize: 8.5,
-                            fontWeight: pw.FontWeight.bold,
-                            color: black,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            // Complete serial numbers box
-            pw.Container(
-              width: double.infinity,
-              decoration: const pw.BoxDecoration(
-                color: PdfColors.white,
-                border: pw.Border(
-                  left: pw.BorderSide(color: black, width: 0.25),
-                  right: pw.BorderSide(color: black, width: 0.25),
-                  bottom: pw.BorderSide(color: black, width: 0.25),
-                ),
-              ),
-              padding: const pw.EdgeInsets.fromLTRB(8, 4, 8, 5),
-              child: lines.isNotEmpty
-                  ? pw.Text(
-                      lines.join('\n'),
-                      style: pw.TextStyle(
-                        font: pw.Font.courier(),
-                        fontSize: 8,
-                        color: black,
-                        lineSpacing: 3,
-                      ),
-                    )
-                  : pw.Text(
-                      '   No scanned serial numbers recorded for this batch',
-                      style: const pw.TextStyle(
-                        fontSize: 7.5,
-                        color: PdfColor.fromInt(0xFF505050),
-                        fontStyle: pw.FontStyle.italic,
-                      ),
-                    ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Text(
-          '2.Serial Number Register',
-          style: pw.TextStyle(
-            fontSize: 9,
-            fontWeight: pw.FontWeight.bold,
-            color: black,
-          ),
-        ),
-        pw.SizedBox(height: 2 * PdfPageFormat.mm),
-        // Complete Header Table
+      // 1. Model title row
+      widgets.add(
         pw.Table(
           border: const pw.TableBorder(
             top: pw.BorderSide(color: black, width: 0.25),
@@ -1061,8 +1012,12 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                 pw.Padding(
                   padding: const pw.EdgeInsets.symmetric(horizontal: 6, vertical: 3.5),
                   child: pw.Text(
-                    'Model Details & Serial Number Register',
-                    style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                    '${i + 1}.  ${b.brand} - ${b.model}$descText',
+                    style: pw.TextStyle(
+                      fontSize: 8.5,
+                      fontWeight: pw.FontWeight.bold,
+                      color: black,
+                    ),
                   ),
                 ),
                 pw.Padding(
@@ -1070,8 +1025,12 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                   child: pw.Align(
                     alignment: pw.Alignment.centerRight,
                     child: pw.Text(
-                      'Quantity',
-                      style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold, color: black),
+                      '${b.quantity} ${b.quantity == 1 ? "Unit" : "Units"}',
+                      style: pw.TextStyle(
+                        fontSize: 8.5,
+                        fontWeight: pw.FontWeight.bold,
+                        color: black,
+                      ),
                     ),
                   ),
                 ),
@@ -1079,9 +1038,69 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             ),
           ],
         ),
-        ...batchWidgets,
-      ],
-    );
+      );
+
+      // 2. Page-splittable Table for serial numbers (splits across pages effortlessly row-by-row!)
+      if (lines.isNotEmpty) {
+        final serialTableRows = <pw.TableRow>[];
+        for (final line in lines) {
+          serialTableRows.add(
+            pw.TableRow(
+              children: [
+                pw.Padding(
+                  padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 1.5),
+                  child: pw.Text(
+                    line,
+                    style: pw.TextStyle(
+                      font: pw.Font.courier(),
+                      fontSize: 7.5,
+                      color: black,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        widgets.add(
+          pw.Table(
+            border: const pw.TableBorder(
+              left: pw.BorderSide(color: black, width: 0.25),
+              right: pw.BorderSide(color: black, width: 0.25),
+              bottom: pw.BorderSide(color: black, width: 0.25),
+            ),
+            children: serialTableRows,
+          ),
+        );
+      } else {
+        widgets.add(
+          pw.Container(
+            width: double.infinity,
+            decoration: const pw.BoxDecoration(
+              color: PdfColors.white,
+              border: pw.Border(
+                left: pw.BorderSide(color: black, width: 0.25),
+                right: pw.BorderSide(color: black, width: 0.25),
+                bottom: pw.BorderSide(color: black, width: 0.25),
+              ),
+            ),
+            padding: const pw.EdgeInsets.fromLTRB(8, 4, 8, 5),
+            child: pw.Text(
+              '   No scanned serial numbers recorded for this batch',
+              style: const pw.TextStyle(
+                fontSize: 7.5,
+                color: PdfColor.fromInt(0xFF505050),
+                fontStyle: pw.FontStyle.italic,
+              ),
+            ),
+          ),
+        );
+      }
+
+      widgets.add(pw.SizedBox(height: 2 * PdfPageFormat.mm));
+    }
+
+    return widgets;
   }
 
   pw.Widget _pdfSignatureBlock() {
@@ -1178,11 +1197,34 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   bool _isGeneratingPdf = false;
 
   Future<void> _openPdfPreview() async {
-    if (_detail == null) return;
-    await Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => BillPdfViewerScreen(bill: _detail!, onBuildPdf: _buildPdf)),
-    );
+    if (_detail == null || _isGeneratingPdf) return;
+    setState(() => _isGeneratingPdf = true);
+    try {
+      final doc = await _buildPdf(_detail!);
+      final bytes = await doc.save();
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => BillPdfViewerScreen(
+            bill: _detail!,
+            prebuiltPdfBytes: bytes,
+            onBuildPdf: _buildPdf,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: 'Preview error: $e',
+          backgroundColor: const Color(0xFFE11D48),
+          icon: Icons.error_outline_rounded,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isGeneratingPdf = false);
+    }
   }
 
   Future<void> _sharePdf() async {
@@ -2205,15 +2247,30 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 //  BillPdfViewerScreen – Interactive PDF Preview with Print & Share actions
 // ─────────────────────────────────────────────────────────────────────────────
 
-class BillPdfViewerScreen extends StatelessWidget {
+class BillPdfViewerScreen extends StatefulWidget {
   final BillDetail bill;
+  final Uint8List? prebuiltPdfBytes;
   final Future<pw.Document> Function(BillDetail) onBuildPdf;
 
   const BillPdfViewerScreen({
     super.key,
     required this.bill,
+    this.prebuiltPdfBytes,
     required this.onBuildPdf,
   });
+
+  @override
+  State<BillPdfViewerScreen> createState() => _BillPdfViewerScreenState();
+}
+
+class _BillPdfViewerScreenState extends State<BillPdfViewerScreen> {
+  Uint8List? _cachedBytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _cachedBytes = widget.prebuiltPdfBytes;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2221,7 +2278,7 @@ class BillPdfViewerScreen extends StatelessWidget {
       backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
         title: Text(
-          'Challan: ${bill.billNumber}',
+          'Challan: ${widget.bill.billNumber}',
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
         ),
         backgroundColor: Colors.white,
@@ -2236,8 +2293,8 @@ class BillPdfViewerScreen extends StatelessWidget {
               final confirmed = await confirmOfficePcPrint(
                 context,
                 title: 'Print Challan on Office PC',
-                message: 'Are you sure you want to send Challan #${bill.billNumber} to the Office PC printer?',
-                documentName: 'Challan #${bill.billNumber}',
+                message: 'Are you sure you want to send Challan #${widget.bill.billNumber} to the Office PC printer?',
+                documentName: 'Challan #${widget.bill.billNumber}',
               );
               if (!confirmed || !context.mounted) return;
 
@@ -2248,11 +2305,10 @@ class BillPdfViewerScreen extends StatelessWidget {
                     duration: Duration(seconds: 2),
                   ),
                 );
-                final doc = await onBuildPdf(bill);
-                final bytes = await doc.save();
+                final bytes = _cachedBytes ?? await (await widget.onBuildPdf(widget.bill)).save();
                 final res = await ApiService().printRawPdf(
                   pdfBytes: bytes,
-                  jobName: 'Challan ${bill.billNumber}',
+                  jobName: 'Challan ${widget.bill.billNumber}',
                 );
                 if (context.mounted) {
                   TopToast.show(context, message: res['message'] ?? 'Printed to Office PC!');
@@ -2274,10 +2330,15 @@ class BillPdfViewerScreen extends StatelessWidget {
       ),
       body: PdfPreview(
         build: (format) async {
-          final doc = await onBuildPdf(bill);
-          return doc.save();
+          if (_cachedBytes != null) return _cachedBytes!;
+          final doc = await widget.onBuildPdf(widget.bill);
+          _cachedBytes = await doc.save();
+          return _cachedBytes!;
         },
-        pdfFileName: 'Bill_${bill.billNumber}.pdf',
+        maxPageWidth: 700,
+        dpi: 144,
+        dynamicLayout: false,
+        pdfFileName: 'Bill_${widget.bill.billNumber}.pdf',
         canChangeOrientation: false,
         canChangePageFormat: false,
         canDebug: false,

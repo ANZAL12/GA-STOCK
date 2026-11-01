@@ -87,9 +87,6 @@ class _AddProductDialogState extends State<AddProductDialog> {
       if (mounted) {
         setState(() {
           _categories = list;
-          if (list.isNotEmpty) {
-            _selectedCategory = list.first;
-          }
           _loadingCategories = false;
         });
       }
@@ -549,7 +546,7 @@ class _AddProductDialogState extends State<AddProductDialog> {
                                   child: DropdownButton<Category>(
                                     value: _selectedCategory,
                                     isExpanded: true,
-                                    hint: const Text('Select Category', style: TextStyle(fontSize: 13)),
+                                    hint: const Text('Select Category', style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
                                     items: _categories.map((c) {
                                       return DropdownMenuItem<Category>(
                                         value: c,

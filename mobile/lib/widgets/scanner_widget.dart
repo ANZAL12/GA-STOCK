@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/sound_service.dart';
 import '../services/hardware_scanner_service.dart';
 import 'uppercase_formatter.dart';
+import 'flush_lag_button.dart';
 
 class BarcodeScannerWidget extends StatefulWidget {
   final String title;
@@ -459,6 +460,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             ),
           ),
         actions: [
+          const FlushLagButton(compact: true, color: Colors.amberAccent),
           Focus(
             canRequestFocus: false,
             descendantsAreFocusable: false,

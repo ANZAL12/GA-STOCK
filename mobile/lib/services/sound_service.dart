@@ -76,8 +76,8 @@ class SoundService {
 
   void playScannerBeep() {
     final now = DateTime.now().millisecondsSinceEpoch;
-    // 80ms audio throttle window prevents Android native AudioTrack buffer exhaustion during burst scans
-    if (now - _lastBeepMs < 80) return;
+    // 70ms audio throttle window prevents Android native AudioTrack buffer exhaustion during burst scans
+    if (now - _lastBeepMs < 70) return;
     _lastBeepMs = now;
 
     // 1. Immediate hardware system click (0ms response guarantee)
@@ -101,7 +101,7 @@ class SoundService {
 
   void playErrorSound() {
     final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastErrorMs < 80) return;
+    if (now - _lastErrorMs < 70) return;
     _lastErrorMs = now;
 
     try {
@@ -119,5 +119,40 @@ class SoundService {
     } catch (e) {
       debugPrint('[SoundService] playErrorSound error: $e');
     }
+  }
+
+  /// Purges all active audio tracks, stops pending buffers, and completely resets
+  /// the sound subsystem to eliminate audio delays caused by Android AudioTrack exhaustion.
+  Future<void> flush() async {
+    _lastBeepMs = 0;
+    _lastErrorMs = 0;
+
+    try {
+      await _pool?.dispose();
+    } catch (_) {}
+    _pool = null;
+
+    try {
+      await _fallbackPlayer?.stop();
+      await _fallbackPlayer?.release();
+      await _fallbackPlayer?.dispose();
+    } catch (_) {}
+    _fallbackPlayer = null;
+
+    try {
+      await _errorPool?.dispose();
+    } catch (_) {}
+    _errorPool = null;
+
+    try {
+      await _fallbackErrorPlayer?.stop();
+      await _fallbackErrorPlayer?.release();
+      await _fallbackErrorPlayer?.dispose();
+    } catch (_) {}
+    _fallbackErrorPlayer = null;
+
+    _initialized = false;
+    await init();
+    debugPrint('[SoundService] Sound subsystem flushed and cleanly re-initialized.');
   }
 }

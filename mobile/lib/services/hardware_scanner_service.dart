@@ -79,6 +79,18 @@ class HardwareScannerService {
     } catch (_) {}
   }
 
+  /// Comprehensively flushes and cancels any pending keystroke buffer,
+  /// clears the FIFO scan queue, terminates in-progress queue loops,
+  /// resets duplicate debounce records, and purges the audio subsystem.
+  void flushAll() {
+    clearBuffer();
+    _scanQueue.clear();
+    _isProcessingQueue = false;
+    _recentScanTimes.clear();
+    SoundService().flush();
+    debugPrint('[HardwareScannerService] flushAll completed - all queues, keystroke buffers, and audio reset.');
+  }
+
   /// Register a listener on the stack. The top-most active screen or widget
   /// receives the scanned barcode.
   /// Returns a function to unregister this listener when the screen is disposed.

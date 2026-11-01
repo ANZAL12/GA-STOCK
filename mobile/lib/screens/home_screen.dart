@@ -17,6 +17,7 @@ import 'offline_queue_screen.dart';
 import 'print_bill_screen.dart';
 import 'quick_dispatch_screen.dart';
 import 'godown_report_print_screen.dart';
+import '../widgets/flush_lag_button.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -295,6 +296,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         actions: [
+          const FlushLagButton(),
           if (_pendingQueueCount > 0)
             Focus(
               canRequestFocus: false,

@@ -16,6 +16,7 @@ import '../widgets/add_product_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 import '../services/session_recovery_service.dart';
+import '../widgets/flush_lag_button.dart';
 
 enum InwardStage {
   selectCase,   // Step 1: Pick Stock In, Returned Product, or Damaged Product
@@ -282,6 +283,14 @@ class _InwardScreenState extends State<InwardScreen> {
         }
       }
     });
+  }
+
+  void _flushScreenLag() {
+    _dismissWarningDialog();
+    _scanQueue.clear();
+    _inFlightSerials.clear();
+    _isProcessingQueue = false;
+    setState(() {});
   }
 
   @override
@@ -1879,6 +1888,7 @@ class _InwardScreenState extends State<InwardScreen> {
           ),
           title: Text(_getAppBarTitle(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
           actions: [
+            FlushLagButton(onCustomFlush: _flushScreenLag),
             if (_stage == InwardStage.scanning) ...[
               if (_inwardType == 'stock_in')
                 Focus(

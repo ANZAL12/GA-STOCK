@@ -14,6 +14,7 @@ import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
 import '../services/session_recovery_service.dart';
+import '../widgets/flush_lag_button.dart';
 
 class QuickScanItem {
   int sequenceNumber;
@@ -279,6 +280,11 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         }
       }
     });
+  }
+
+  void _flushScreenLag() {
+    _inFlightSerials.clear();
+    setState(() {});
   }
 
   @override
@@ -1490,6 +1496,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
             ),
           ),
           actions: [
+            FlushLagButton(onCustomFlush: _flushScreenLag),
             if (_selectedShop != null || _scannedItems.isNotEmpty)
               Focus(
                 canRequestFocus: false,

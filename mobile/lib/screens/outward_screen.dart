@@ -18,6 +18,7 @@ import '../widgets/office_pc_confirm_dialog.dart';
 import '../services/sound_service.dart';
 import '../services/session_recovery_service.dart';
 import 'print_bill_screen.dart';
+import '../widgets/flush_lag_button.dart';
 
 class OutwardScreen extends StatefulWidget {
   final SessionDraft? restoredDraft;
@@ -337,6 +338,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
         }
       }
     });
+  }
+
+  void _flushScreenLag() {
+    _dismissSimpleAlert();
+    _scanQueue.clear();
+    _inFlightSerials.clear();
+    _isProcessingQueue = false;
+    setState(() {});
   }
 
   @override
@@ -2643,6 +2652,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
           ),
           actions: [
+            FlushLagButton(onCustomFlush: _flushScreenLag),
             if (_currentStep > 1)
               Focus(
                 canRequestFocus: false,
