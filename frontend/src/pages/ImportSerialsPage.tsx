@@ -97,9 +97,9 @@ export const ImportSerialsPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Fetch products & categories on load
-  const loadInitialData = async () => {
+  const loadInitialData = async (silent = false) => {
     try {
-      setIsLoadingCatalog(true);
+      if (!silent) setIsLoadingCatalog(true);
       const [prodRes, catRes] = await Promise.all([
         apiRequest<Product[]>("/products?active_only=true"),
         apiRequest<Category[]>("/categories?active_only=true"),
@@ -109,7 +109,7 @@ export const ImportSerialsPage: React.FC = () => {
     } catch (err) {
       console.error("Failed to load initial inventory catalog:", err);
     } finally {
-      setIsLoadingCatalog(false);
+      if (!silent) setIsLoadingCatalog(false);
     }
   };
 
@@ -118,8 +118,8 @@ export const ImportSerialsPage: React.FC = () => {
   }, []);
 
   useWebSocket((event) => {
-    if (event === "product_created" || event === "product_updated" || event === "stock_updated") {
-      loadInitialData();
+    if (event === "product_created" || event === "product_updated") {
+      loadInitialData(true);
     }
   });
 
@@ -277,8 +277,8 @@ export const ImportSerialsPage: React.FC = () => {
     }
   };
 
-  // Parse all rows based on chosen column
-  const allParsedRows: ParsedRow[] = useMemo(() => {
+  // Parse base rows from spreadsheet (ONLY depends on Excel data & column mappings)
+  const baseParsedRows = useMemo(() => {
     if (!serialColumn || rawRows.length <= headerRowIndex + 1) {
       return [];
     }
@@ -290,7 +290,7 @@ export const ImportSerialsPage: React.FC = () => {
     const unitColIdx = unitTypeColumn ? columns.indexOf(unitTypeColumn) : -1;
 
     const seenSerials = new Set<string>();
-    const results: ParsedRow[] = [];
+    const results: Omit<ParsedRow, "dbStatus">[] = [];
 
     let dualSerialCounter = 0;
 
@@ -363,9 +363,6 @@ export const ImportSerialsPage: React.FC = () => {
         }
       }
 
-      // Check DB Status from cache
-      const dbInfo = dbCheckMap[upperSerial];
-
       let isValid = true;
       let invalidReason: string | undefined;
 
@@ -378,14 +375,13 @@ export const ImportSerialsPage: React.FC = () => {
       }
 
       results.push({
-        id: `row-${r + 1}-${upperSerial}-${results.length}`,
+        id: `row-${r + 1}-${upperSerial}`,
         rowIndex: r + 1,
         serialNumber: upperSerial,
         rawSerial: rawSerialStr,
         extractedModel,
         extractedUnitType: extractedUnit,
         matchedProduct: matchedProd,
-        dbStatus: dbInfo,
         isInFileDuplicate: isDuplicate,
         isValid,
         invalidReason,
@@ -405,8 +401,15 @@ export const ImportSerialsPage: React.FC = () => {
     modelLookupMap,
     unitTypeMode,
     selectedProductId,
-    dbCheckMap,
   ]);
+
+  // Combine base parsed rows with DB verification status without re-parsing base rows
+  const allParsedRows: ParsedRow[] = useMemo(() => {
+    return baseParsedRows.map((r) => ({
+      ...r,
+      dbStatus: dbCheckMap[r.serialNumber],
+    }));
+  }, [baseParsedRows, dbCheckMap]);
 
   // Active parsed rows excluding user-deleted ones
   const parsedRows: ParsedRow[] = useMemo(() => {
@@ -414,20 +417,19 @@ export const ImportSerialsPage: React.FC = () => {
     return allParsedRows.filter((r) => !deletedRowIds.has(r.id));
   }, [allParsedRows, deletedRowIds]);
 
-  // Bulk check serials in database whenever parsed rows change
+  // Debounced bulk check serials in database whenever base parsed rows change
   useEffect(() => {
-    if (allParsedRows.length === 0) return;
+    if (baseParsedRows.length === 0 || isImporting) return;
 
-    const uniqueSerials = Array.from(new Set(allParsedRows.map((r) => r.serialNumber)));
+    const uniqueSerials = Array.from(new Set(baseParsedRows.map((r) => r.serialNumber)));
     // Filter out serials already present in dbCheckMap
     const toCheck = uniqueSerials.filter((s) => dbCheckMap[s] === undefined);
 
     if (toCheck.length === 0) return;
 
     let isMounted = true;
-    setCheckingDb(true);
-
-    const runCheck = async () => {
+    const timer = setTimeout(async () => {
+      setCheckingDb(true);
       try {
         const res = await apiRequest<BulkSerialCheckResponse>("/serials/check-bulk", {
           method: "POST",
@@ -456,14 +458,13 @@ export const ImportSerialsPage: React.FC = () => {
       } finally {
         if (isMounted) setCheckingDb(false);
       }
-    };
-
-    runCheck();
+    }, 250);
 
     return () => {
       isMounted = false;
+      clearTimeout(timer);
     };
-  }, [allParsedRows]);
+  }, [baseParsedRows, isImporting]);
 
   // Delete single row from preview
   const handleDeleteRow = (rowId: string) => {
@@ -686,6 +687,22 @@ export const ImportSerialsPage: React.FC = () => {
       const result = await apiRequest<ExcelSerialImportResponse>("/serials/import-bulk", {
         method: "POST",
         body: JSON.stringify(payload),
+      });
+
+      // Update dbCheckMap immediately with imported serials so no redundant check-bulk runs
+      setDbCheckMap((prev) => {
+        const next = { ...prev };
+        for (const item of itemsToImport) {
+          next[item.serial_number] = {
+            serial_number: item.serial_number,
+            exists: true,
+            status: "IN_STOCK",
+            status_label: "In Stock",
+            brand: currentProduct?.brand,
+            model: currentProduct?.model,
+          };
+        }
+        return next;
       });
 
       setImportResult(result);
@@ -1170,8 +1187,10 @@ export const ImportSerialsPage: React.FC = () => {
 
             <div className="bg-white p-4 rounded-2xl border border-indigo-200/90 shadow-sm bg-indigo-50/20">
               <span className="text-[10px] font-bold text-[#3C3489] uppercase tracking-wider block flex items-center justify-between">
-                Already in DB (Any Model)
-                {checkingDb && <span className="animate-spin text-xs">🌀</span>}
+                <span>Already in DB (Any Model)</span>
+                <span className="w-4 h-4 flex items-center justify-center text-xs">
+                  {checkingDb && <span className="animate-spin">🌀</span>}
+                </span>
               </span>
               <div className="text-2xl font-extrabold text-[#3C3489] mt-1">
                 {metrics.alreadyInDb}
@@ -1529,7 +1548,7 @@ export const ImportSerialsPage: React.FC = () => {
               <button
                 disabled={metrics.readyToImport === 0 || isImporting || (mappingMode === "single" && !selectedProductId)}
                 onClick={handleExecuteImport}
-                className="flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-[#3C3489] text-white font-bold text-xs hover:bg-[#322B73] transition-all shadow-md shadow-[#3C3489]/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center justify-center gap-2 min-w-[210px] px-6 py-2.5 rounded-xl bg-[#3C3489] text-white font-bold text-xs hover:bg-[#322B73] transition-colors shadow-md shadow-[#3C3489]/20 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isImporting ? (
                   <>

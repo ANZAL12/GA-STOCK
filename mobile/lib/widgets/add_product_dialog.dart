@@ -228,16 +228,20 @@ class _AddProductDialogState extends State<AddProductDialog> {
   Widget build(BuildContext context) {
     final isTablet = context.isTablet;
 
+    final mediaQuery = MediaQuery.of(context);
+    final availableHeight = mediaQuery.size.height - mediaQuery.viewInsets.bottom - (isTablet ? 48 : 24);
+
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: EdgeInsets.symmetric(
         horizontal: isTablet ? 80 : 18,
-        vertical: 20,
+        vertical: isTablet ? 24 : 12,
       ),
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(
             maxWidth: isTablet ? 560 : 440,
+            maxHeight: availableHeight > 260 ? availableHeight : 260,
           ),
           child: Container(
             decoration: BoxDecoration(
@@ -253,12 +257,11 @@ class _AddProductDialogState extends State<AddProductDialog> {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(isTablet ? 24 : 18),
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Header Banner
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Header Banner (Fixed)
                     Container(
                       padding: const EdgeInsets.fromLTRB(20, 18, 16, 18),
                       decoration: const BoxDecoration(
@@ -314,13 +317,15 @@ class _AddProductDialogState extends State<AddProductDialog> {
                       ),
                     ),
 
-                    // Body
-                    Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Form(
-                        key: _formKey,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                    // Scrollable Form Body
+                    Flexible(
+                      child: SingleChildScrollView(
+                        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                        padding: const EdgeInsets.all(20),
+                        child: Form(
+                          key: _formKey,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             // Single Model Mode Badge
                             Row(
@@ -411,7 +416,7 @@ class _AddProductDialogState extends State<AddProductDialog> {
                               inputFormatters: const [UpperCaseTextFormatter()],
                               style: const TextStyle(fontSize: 13),
                               decoration: InputDecoration(
-                                hintText: 'e.g. SAMSUNG, LG, IFB',
+                                hintText: 'e.g. VOLTAS, LG, SAMSUNG, DAIKIN',
                                 hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
                                 filled: true,
                                 fillColor: const Color(0xFFF8FAFC),
@@ -580,7 +585,7 @@ class _AddProductDialogState extends State<AddProductDialog> {
                               inputFormatters: const [UpperCaseTextFormatter()],
                               style: const TextStyle(fontSize: 13),
                               decoration: InputDecoration(
-                                hintText: 'e.g. UA43T5350',
+                                hintText: 'e.g. GXI 360, SPLIT 1.5T',
                                 hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
                                 filled: true,
                                 fillColor: const Color(0xFFF8FAFC),
@@ -678,51 +683,57 @@ class _AddProductDialogState extends State<AddProductDialog> {
                                 ),
                               ),
                             ),
-
-                            const SizedBox(height: 22),
-
-                            // Action Buttons
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: OutlinedButton(
-                                    style: OutlinedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(vertical: 13),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                      side: const BorderSide(color: Color(0xFFCBD5E1)),
-                                    ),
-                                    onPressed: _isSubmitting ? null : () => Navigator.pop(context),
-                                    child: const Text('Cancel', style: TextStyle(color: Color(0xFF475569), fontWeight: FontWeight.w600)),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(vertical: 13),
-                                      backgroundColor: const Color(0xFF3C3489),
-                                      foregroundColor: Colors.white,
-                                      elevation: 0,
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                    ),
-                                    onPressed: _isSubmitting ? null : _submit,
-                                    child: _isSubmitting
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                          )
-                                        : const Text('Save Product', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                                  ),
-                                ),
-                              ],
-                            ),
                           ],
                         ),
                       ),
                     ),
-                  ],
-                ),
+                  ),
+
+                  // Action Buttons Footer (Pinned at bottom, ALWAYS VISIBLE ABOVE KEYBOARD!)
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      border: Border(top: BorderSide(color: Color(0xFFF1F5F9))),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 13),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              side: const BorderSide(color: Color(0xFFCBD5E1)),
+                            ),
+                            onPressed: _isSubmitting ? null : () => Navigator.pop(context),
+                            child: const Text('Cancel', style: TextStyle(color: Color(0xFF475569), fontWeight: FontWeight.w600)),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 13),
+                              backgroundColor: const Color(0xFF3C3489),
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            icon: _isSubmitting ? null : const Icon(Icons.add_circle_outline, size: 18),
+                            label: _isSubmitting
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                  )
+                                : const Text('Add Model', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                            onPressed: _isSubmitting ? null : _submit,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
