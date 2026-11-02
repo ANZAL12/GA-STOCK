@@ -80,16 +80,6 @@ export const BillsPage: React.FC = () => {
   const [isDeletingLine, setIsDeletingLine] = useState(false);
   const [deleteLineError, setDeleteLineError] = useState<string | null>(null);
 
-  // Line Serial Delete State (Admin Only)
-  const [lineToDelete, setLineToDelete] = useState<{
-    line_id: string;
-    serial_text: string;
-    is_matched: boolean;
-    model: string;
-  } | null>(null);
-  const [isDeletingLine, setIsDeletingLine] = useState(false);
-  const [deleteLineError, setDeleteLineError] = useState<string | null>(null);
-
   const fetchShops = async () => {
     try {
       const data = await apiRequest<Shop[]>("/shops?active_only=false");
@@ -292,31 +282,6 @@ export const BillsPage: React.FC = () => {
       setLineToDelete(null);
 
       // Refresh selected bill details
-      if (selectedBill) {
-        await openBillDetail(selectedBill.bill_number, selectedBill.is_cancelled);
-      }
-      await fetchBills();
-    } catch (err: any) {
-      setDeleteLineError(err.message || "Failed to delete serial number");
-    } finally {
-      setIsDeletingLine(false);
-    }
-  };
-
-  const handleExecuteDeleteLine = async () => {
-    if (!lineToDelete) return;
-    setIsDeletingLine(true);
-    setDeleteLineError(null);
-    try {
-      const res = await apiRequest<DeleteOutwardLineResponse>(
-        `/outward/lines/${lineToDelete.line_id}`,
-        { method: "DELETE" }
-      );
-      setModalNotice(res.message);
-      setActionSuccessNotice(res.message);
-      setLineToDelete(null);
-
-      // Refresh selected bill details to reflect deletion and updated totals
       if (selectedBill) {
         await openBillDetail(selectedBill.bill_number, selectedBill.is_cancelled);
       }
