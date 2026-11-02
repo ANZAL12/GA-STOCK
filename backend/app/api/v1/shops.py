@@ -44,6 +44,7 @@ async def list_shops(
     # Subquery for total items dispatched per shop
     dispatch_count_subq = (
         select(OutwardLine.shop_id, func.count(OutwardLine.id).label("dispatch_count"))
+        .where(OutwardLine.is_cancelled == False)
         .group_by(OutwardLine.shop_id)
         .subquery()
     )
@@ -88,7 +89,10 @@ async def get_shop(
     Get a single shop's details by ID.
     """
     count_res = await db.execute(
-        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
+        select(func.count(OutwardLine.id)).where(
+            OutwardLine.shop_id == shop_id,
+            OutwardLine.is_cancelled == False,
+        )
     )
     total_count = count_res.scalar() or 0
 
@@ -131,7 +135,10 @@ async def list_shop_dispatched_serials(
         )
         .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
         .join(Product, OutwardLine.product_id == Product.id)
-        .where(OutwardLine.shop_id == shop_id)
+        .where(
+            OutwardLine.shop_id == shop_id,
+            OutwardLine.is_cancelled == False,
+        )
         .order_by(OutwardLine.transaction_date.desc(), OutwardLine.created_at.desc())
     )
 
@@ -253,7 +260,10 @@ async def update_shop(
     await db.refresh(shop_obj)
 
     count_res = await db.execute(
-        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
+        select(func.count(OutwardLine.id)).where(
+            OutwardLine.shop_id == shop_id,
+            OutwardLine.is_cancelled == False,
+        )
     )
     resp = ShopResponse.model_validate(shop_obj)
     resp.total_dispatched_count = count_res.scalar() or 0
@@ -290,7 +300,10 @@ async def toggle_shop_active(
     await db.refresh(shop_obj)
 
     count_res = await db.execute(
-        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
+        select(func.count(OutwardLine.id)).where(
+            OutwardLine.shop_id == shop_id,
+            OutwardLine.is_cancelled == False,
+        )
     )
     resp = ShopResponse.model_validate(shop_obj)
     resp.total_dispatched_count = count_res.scalar() or 0
@@ -316,7 +329,10 @@ async def delete_shop(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
 
     count_res = await db.execute(
-        select(func.count(OutwardLine.id)).where(OutwardLine.shop_id == shop_id)
+        select(func.count(OutwardLine.id)).where(
+            OutwardLine.shop_id == shop_id,
+            OutwardLine.is_cancelled == False,
+        )
     )
     disp_count = count_res.scalar() or 0
 
@@ -379,7 +395,7 @@ async def cleanup_unused_deactivated_shops(
     Cleans up test or dummy shops in one click.
     """
     # Subquery for shops with outward dispatches
-    disp_subq = select(OutwardLine.shop_id).distinct()
+    disp_subq = select(OutwardLine.shop_id).where(OutwardLine.is_cancelled == False).distinct()
     return_subq = select(Return.shop_id).distinct()
 
     query = select(Shop).where(

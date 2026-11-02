@@ -326,6 +326,10 @@ class BillListItem {
   final String? remarks;
   final int totalUnits;
   final int totalBatches;
+  final bool isCancelled;
+  final String? cancelledAt;
+  final String? cancelledByName;
+  final String? cancelReason;
   final List<String> modelsSummary;
 
   BillListItem({
@@ -340,6 +344,10 @@ class BillListItem {
     this.remarks,
     required this.totalUnits,
     required this.totalBatches,
+    this.isCancelled = false,
+    this.cancelledAt,
+    this.cancelledByName,
+    this.cancelReason,
     required this.modelsSummary,
   });
 
@@ -356,6 +364,10 @@ class BillListItem {
       remarks: json['remarks'],
       totalUnits: json['total_units'] ?? 0,
       totalBatches: json['total_batches'] ?? 0,
+      isCancelled: json['is_cancelled'] ?? false,
+      cancelledAt: json['cancelled_at'],
+      cancelledByName: json['cancelled_by_name'],
+      cancelReason: json['cancel_reason'],
       modelsSummary: List<String>.from(json['models_summary'] ?? []),
     );
   }
@@ -368,6 +380,7 @@ class BillLine {
   final bool isFlagged;
   final String? unitType;
   final String statusLabel;
+  final bool isCancelled;
 
   BillLine({
     required this.id,
@@ -376,6 +389,7 @@ class BillLine {
     required this.isFlagged,
     this.unitType,
     required this.statusLabel,
+    this.isCancelled = false,
   });
 
   factory BillLine.fromJson(Map<String, dynamic> json) {
@@ -386,6 +400,7 @@ class BillLine {
       isFlagged: json['is_flagged_for_review'] ?? false,
       unitType: json['unit_type'],
       statusLabel: json['status_label'] ?? 'Recorded only',
+      isCancelled: json['is_cancelled'] ?? false,
     );
   }
 }
@@ -400,6 +415,7 @@ class BillBatch {
   final int matchedCount;
   final int unmatchedCount;
   final int flaggedCount;
+  final bool isCancelled;
   final List<BillLine> lines;
 
   BillBatch({
@@ -412,6 +428,7 @@ class BillBatch {
     required this.matchedCount,
     required this.unmatchedCount,
     required this.flaggedCount,
+    this.isCancelled = false,
     required this.lines,
   });
 
@@ -426,6 +443,7 @@ class BillBatch {
       matchedCount: json['matched_count'] ?? 0,
       unmatchedCount: json['unmatched_count'] ?? 0,
       flaggedCount: json['flagged_count'] ?? 0,
+      isCancelled: json['is_cancelled'] ?? false,
       lines: (json['lines'] as List<dynamic>? ?? [])
           .map((l) => BillLine.fromJson(l as Map<String, dynamic>))
           .toList(),
@@ -445,6 +463,10 @@ class BillDetail {
   final String? remarks;
   final int totalUnits;
   final int totalBatches;
+  final bool isCancelled;
+  final String? cancelledAt;
+  final String? cancelledByName;
+  final String? cancelReason;
   final List<BillBatch> batches;
 
   BillDetail({
@@ -459,6 +481,10 @@ class BillDetail {
     this.remarks,
     required this.totalUnits,
     required this.totalBatches,
+    this.isCancelled = false,
+    this.cancelledAt,
+    this.cancelledByName,
+    this.cancelReason,
     required this.batches,
   });
 
@@ -475,6 +501,10 @@ class BillDetail {
       remarks: json['remarks'],
       totalUnits: json['total_units'] ?? 0,
       totalBatches: json['total_batches'] ?? 0,
+      isCancelled: json['is_cancelled'] ?? false,
+      cancelledAt: json['cancelled_at'],
+      cancelledByName: json['cancelled_by_name'],
+      cancelReason: json['cancel_reason'],
       batches: (json['batches'] as List<dynamic>? ?? [])
           .map((b) => BillBatch.fromJson(b as Map<String, dynamic>))
           .toList(),

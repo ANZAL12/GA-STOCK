@@ -230,3 +230,31 @@ class CancelBillResponse(BaseModel):
     returned_serials: list[str] = []
     ignored_serials: list[str] = []
     restored_models: list[dict] = []
+
+
+class UpdateOutwardLineRequest(BaseModel):
+    new_serial_number: str = Field(..., min_length=1, max_length=100, description="New serial number text")
+
+
+class UpdateOutwardLineResponse(BaseModel):
+    success: bool = True
+    message: str
+    line: OutwardLineResponse
+    batch_id: uuid.UUID
+    matched_count: int
+    unmatched_count: int
+    flagged_count: int
+    product_id: uuid.UUID
+    current_stock_qty: int
+
+
+class DeleteOutwardLineResponse(BaseModel):
+    success: bool = True
+    message: str
+    deleted_serial: str
+    was_matched: bool
+    action_taken: str  # "returned_to_inward_stock" or "discarded_with_history"
+    batch_id: uuid.UUID
+    batch_remaining_quantity: int
+    product_id: uuid.UUID
+    current_stock_qty: int

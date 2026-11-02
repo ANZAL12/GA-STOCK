@@ -348,6 +348,30 @@ export interface CancelBillResponse {
   }>;
 }
 
+export interface UpdateOutwardLineResponse {
+  success: boolean;
+  message: string;
+  line: BillLineItem;
+  batch_id: string;
+  matched_count: number;
+  unmatched_count: number;
+  flagged_count: number;
+  product_id: string;
+  current_stock_qty: number;
+}
+
+export interface DeleteOutwardLineResponse {
+  success: boolean;
+  message: string;
+  deleted_serial: string;
+  was_matched: boolean;
+  action_taken: string;
+  batch_id: string;
+  batch_remaining_quantity: number;
+  product_id: string;
+  current_stock_qty: number;
+}
+
 export interface BulkSerialCheckItem {
   serial_number: string;
   exists: boolean;

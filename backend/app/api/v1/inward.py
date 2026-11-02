@@ -465,7 +465,10 @@ async def create_inward_batch(
     existing_outward_res = await db.execute(
         select(OutwardLine.serial_text, Shop.name.label("shop_name"))
         .join(Shop, OutwardLine.shop_id == Shop.id)
-        .where(OutwardLine.serial_text.in_(raw_serials))
+        .where(
+            OutwardLine.serial_text.in_(raw_serials),
+            OutwardLine.is_cancelled == False,
+        )
     )
     already_disp_lines = {row[0]: row[1] for row in existing_outward_res.all()}
 
@@ -811,7 +814,10 @@ async def create_inward_multi_batch(
     existing_outward_res = await db.execute(
         select(OutwardLine.serial_text, Shop.name.label("shop_name"))
         .join(Shop, OutwardLine.shop_id == Shop.id)
-        .where(OutwardLine.serial_text.in_(list(global_seen_serials)))
+        .where(
+            OutwardLine.serial_text.in_(list(global_seen_serials)),
+            OutwardLine.is_cancelled == False,
+        )
     )
     already_disp_lines = {row[0]: row[1] for row in existing_outward_res.all()}
 

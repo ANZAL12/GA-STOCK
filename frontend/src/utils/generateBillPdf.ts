@@ -374,8 +374,24 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
 
   // Page Numbers & Footer note
   const pageCount = (doc.internal as any).getNumberOfPages();
+  const pageHeight = doc.internal.pageSize.getHeight();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
+
+    // Watermark on every page if bill is cancelled
+    if (bill.is_cancelled) {
+      doc.saveGraphicsState();
+      doc.setGState(new (doc as any).GState({ opacity: 0.16 }));
+      doc.setTextColor(220, 38, 38);
+      doc.setFontSize(60);
+      doc.setFont("helvetica", "bold");
+      doc.text("CANCELLED", pageWidth / 2, pageHeight / 2, {
+        align: "center",
+        angle: 45,
+      });
+      doc.restoreGraphicsState();
+    }
+
     doc.setFontSize(7);
     doc.setTextColor(60, 60, 60);
     doc.text(

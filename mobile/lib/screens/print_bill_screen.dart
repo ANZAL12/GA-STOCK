@@ -104,11 +104,11 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
     // Navigate to detail screen which handles pdf preview
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => BillDetailScreen(billNumber: item.billNumber)),
+      MaterialPageRoute(builder: (_) => BillDetailScreen(billNumber: item.billNumber, isCancelled: item.isCancelled)),
     );
   }
 
-  Future<void> _printBillToOfficePc(String billNumber) async {
+  Future<void> _printBillToOfficePc(String billNumber, {bool isCancelled = false}) async {
     final cd = _printCooldowns[billNumber] ?? 0;
     if (cd > 0) {
       TopToast.show(
@@ -122,9 +122,11 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
 
     final confirmed = await confirmOfficePcPrint(
       context,
-      title: 'Print on Office PC',
-      message: 'Are you sure you want to send Bill #$billNumber to the Office PC printer?',
-      documentName: 'Bill #$billNumber',
+      title: isCancelled ? 'Print CANCELLED Bill on Office PC' : 'Print on Office PC',
+      message: isCancelled
+          ? 'Notice: Bill #$billNumber was CANCELLED and all its serials returned to inventory.\n\nAre you sure you want to send this CANCELLED voucher to the Office PC printer?'
+          : 'Are you sure you want to send Bill #$billNumber to the Office PC printer?',
+      documentName: 'Bill #$billNumber${isCancelled ? ' (CANCELLED)' : ''}',
     );
     if (!confirmed || !mounted) return;
 
@@ -137,7 +139,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
       icon: Icons.print_rounded,
     );
     try {
-      final res = await _api.printBill(billNumber: billNumber);
+      final res = await _api.printBill(billNumber: billNumber, isCancelled: isCancelled);
       if (mounted) {
         TopToast.show(
           context,
@@ -270,7 +272,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
       );
     }
     return RefreshIndicator(
-      onRefresh: () => _loadBills(search: _searchCtrl.text.trim().isEmpty ? null : _searchCtrl.text.trim()),
+      onRefresh: () => _loadBills(search: _searchCtrl.text.trim().isEmpty ? null : _searchCtrl.text.trim(), forceRefresh: true),
       child: ListView.builder(
         padding: EdgeInsets.symmetric(
           horizontal: context.isTablet ? 24 : 16,
@@ -291,7 +293,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(context.isTablet ? 16 : 14),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
+          border: Border.all(color: bill.isCancelled ? const Color(0xFFFECACA) : const Color(0xFFE2E8F0)),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.03),
@@ -306,23 +308,54 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
               width: context.isTablet ? 54 : 44,
               height: context.isTablet ? 54 : 44,
               decoration: BoxDecoration(
-                color: const Color(0xFFEEF2FF),
+                color: bill.isCancelled ? const Color(0xFFFEF2F2) : const Color(0xFFEEF2FF),
                 borderRadius: BorderRadius.circular(context.isTablet ? 14 : 12),
               ),
-              child: Icon(Icons.receipt_long, color: const Color(0xFF3C3489), size: context.isTablet ? 26 : 22),
+              child: Icon(
+                bill.isCancelled ? Icons.block_rounded : Icons.receipt_long,
+                color: bill.isCancelled ? const Color(0xFFDC2626) : const Color(0xFF3C3489),
+                size: context.isTablet ? 26 : 22,
+              ),
             ),
             SizedBox(width: context.isTablet ? 16 : 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    bill.billNumber,
-                    style: TextStyle(
-                      fontSize: context.isTablet ? 17 : 14,
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF0F172A),
-                    ),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          bill.billNumber,
+                          style: TextStyle(
+                            fontSize: context.isTablet ? 17 : 14,
+                            fontWeight: FontWeight.bold,
+                            color: bill.isCancelled ? const Color(0xFF991B1B) : const Color(0xFF0F172A),
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (bill.isCancelled) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEE2E2),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: const Color(0xFFFCA5A5)),
+                          ),
+                          child: const Text(
+                            'CANCELLED',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFFDC2626),
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -336,6 +369,10 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                   SizedBox(height: context.isTablet ? 6 : 4),
                   Row(
                     children: [
+                      if (bill.isCancelled) ...[
+                        _chip('CANCELLED', const Color(0xFFDC2626), const Color(0xFFFEE2E2)),
+                        const SizedBox(width: 6),
+                      ],
                       _chip('${bill.totalUnits} units', const Color(0xFF059669), const Color(0xFFECFDF5)),
                       const SizedBox(width: 6),
                       _chip(bill.transactionDate, const Color(0xFF3C3489), const Color(0xFFEEF2FF)),
@@ -383,9 +420,13 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
               )
             else
               IconButton(
-                icon: Icon(Icons.print_rounded, color: const Color(0xFF3C3489), size: context.isTablet ? 26 : 22),
-                tooltip: 'Print to Office PC',
-                onPressed: () => _printBillToOfficePc(bill.billNumber),
+                icon: Icon(
+                  Icons.print_rounded,
+                  color: bill.isCancelled ? const Color(0xFF94A3B8) : const Color(0xFF3C3489),
+                  size: context.isTablet ? 26 : 22,
+                ),
+                tooltip: bill.isCancelled ? 'Print Cancelled Bill to Office PC' : 'Print to Office PC',
+                onPressed: () => _printBillToOfficePc(bill.billNumber, isCancelled: bill.isCancelled),
               ),
           ],
         ),
@@ -418,7 +459,8 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
 
 class BillDetailScreen extends StatefulWidget {
   final String billNumber;
-  const BillDetailScreen({super.key, required this.billNumber});
+  final bool? isCancelled;
+  const BillDetailScreen({super.key, required this.billNumber, this.isCancelled});
 
   @override
   State<BillDetailScreen> createState() => _BillDetailScreenState();
@@ -476,7 +518,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   Future<void> _load() async {
     setState(() { _loading = true; _error = null; });
     try {
-      final d = await _api.getBillDetail(widget.billNumber);
+      final d = await _api.getBillDetail(widget.billNumber, isCancelled: widget.isCancelled);
       if (mounted) setState(() { _detail = d; _loading = false; });
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _loading = false; });
@@ -509,11 +551,14 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       return;
     }
 
+    final isCancelled = _detail?.isCancelled ?? false;
     final confirmed = await confirmOfficePcPrint(
       context,
-      title: 'Print on Office PC',
-      message: 'Are you sure you want to print Challan #${widget.billNumber} on the Office PC printer?',
-      documentName: 'Challan #${widget.billNumber}',
+      title: isCancelled ? 'Print CANCELLED Challan on Office PC' : 'Print on Office PC',
+      message: isCancelled
+          ? 'Notice: Challan #${widget.billNumber} has been CANCELLED and all serials returned to inventory.\n\nAre you sure you want to send this CANCELLED voucher to the Office PC printer?'
+          : 'Are you sure you want to print Challan #${widget.billNumber} on the Office PC printer?',
+      documentName: 'Challan #${widget.billNumber}${isCancelled ? ' (CANCELLED)' : ''}',
       printerName: _selectedOfficePrinter ?? 'Default Office PC Printer',
     );
     if (!confirmed || !mounted) return;
@@ -540,6 +585,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         res = await _api.printBill(
           billNumber: widget.billNumber,
           printerName: _selectedOfficePrinter,
+          isCancelled: widget.isCancelled,
         );
       }
       if (mounted) {
@@ -579,8 +625,11 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
 
       doc.addPage(
         pw.MultiPage(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.all(12 * PdfPageFormat.mm),
+          pageTheme: pw.PageTheme(
+            pageFormat: PdfPageFormat.a4,
+            margin: const pw.EdgeInsets.all(12 * PdfPageFormat.mm),
+            buildBackground: (ctx) => bill.isCancelled ? _pdfWatermark() : pw.SizedBox(),
+          ),
           footer: (ctx) => _pdfFooter(ctx, bill),
           build: (ctx) => [
             _pdfHeader(bill, logoImage),
@@ -594,6 +643,36 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         ),
       );
       return doc;
+  }
+
+  pw.Widget _pdfWatermark() {
+    return pw.FullPage(
+      ignoreMargins: true,
+      child: pw.Center(
+        child: pw.Transform.rotate(
+          angle: -0.5236,
+          child: pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(
+                color: const PdfColor(0.86, 0.15, 0.15, 0.16),
+                width: 5,
+              ),
+              borderRadius: const pw.BorderRadius.all(pw.Radius.circular(12)),
+            ),
+            child: pw.Text(
+              'CANCELLED',
+              style: pw.TextStyle(
+                fontSize: 68,
+                fontWeight: pw.FontWeight.bold,
+                color: const PdfColor(0.86, 0.15, 0.15, 0.16),
+                letterSpacing: 8,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   // ── PDF widgets ─────────────────────────────────────────────────────────
@@ -618,19 +697,22 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             child: pw.Column(
               children: [
                 pw.Text(
-                  'DELIVERY CHALLAN',
+                  bill.isCancelled ? 'DELIVERY CHALLAN [CANCELLED]' : 'DELIVERY CHALLAN',
                   style: pw.TextStyle(
                     fontSize: 12,
                     fontWeight: pw.FontWeight.bold,
-                    color: black,
+                    color: bill.isCancelled ? PdfColors.red900 : black,
                   ),
                 ),
                 pw.SizedBox(height: 1.5),
                 pw.Text(
-                  '(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)',
-                  style: const pw.TextStyle(
+                  bill.isCancelled
+                      ? '(THIS BILL HAS BEEN CANCELLED - ALL SERIALS RETURNED TO INVENTORY)'
+                      : '(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)',
+                  style: pw.TextStyle(
                     fontSize: 7.5,
-                    color: black,
+                    fontWeight: bill.isCancelled ? pw.FontWeight.bold : pw.FontWeight.normal,
+                    color: bill.isCancelled ? PdfColors.red800 : black,
                   ),
                 ),
               ],
@@ -757,8 +839,14 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                       crossAxisAlignment: pw.CrossAxisAlignment.start,
                       children: [
                         _pdfMetaRow('Challan / Bill No.:', bill.billNumber, boldVal: true),
+                        if (bill.isCancelled)
+                          _pdfMetaRow('Voucher Status:', 'CANCELLED', boldVal: true, valColor: PdfColors.red900),
                         _pdfMetaRow('Dated:', bill.transactionDate, boldVal: true),
                         _pdfMetaRow('Dispatched By:', bill.dispatchedByName, boldVal: true),
+                        if (bill.isCancelled && bill.cancelledByName != null && bill.cancelledByName!.isNotEmpty)
+                          _pdfMetaRow('Cancelled By:', bill.cancelledByName!, boldVal: true, valColor: PdfColors.red900),
+                        if (bill.isCancelled && bill.cancelReason != null && bill.cancelReason!.isNotEmpty)
+                          _pdfMetaRow('Cancel Reason:', bill.cancelReason!, boldVal: false, valColor: PdfColors.red900),
                         _pdfMetaRow('Vehicle / Ref:', bill.deliveryReference ?? 'Direct / Local', boldVal: true),
                         _pdfMetaRow('Mode of Transport:', 'Road / Local Delivery', boldVal: false),
                         _pdfMetaRow('Destination:', destinationVal, boldVal: false),
@@ -774,7 +862,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
-  pw.Widget _pdfMetaRow(String label, String value, {bool boldVal = true}) {
+  pw.Widget _pdfMetaRow(String label, String value, {bool boldVal = true, PdfColor? valColor}) {
     return pw.Padding(
       padding: const pw.EdgeInsets.symmetric(vertical: 1.6),
       child: pw.Row(
@@ -793,7 +881,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               style: pw.TextStyle(
                 fontSize: 7.8,
                 fontWeight: boldVal ? pw.FontWeight.bold : pw.FontWeight.normal,
-                color: PdfColors.black,
+                color: valColor ?? PdfColors.black,
               ),
             ),
           ),
@@ -1259,13 +1347,41 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         toolbarHeight: context.isTablet ? 68 : 56,
         backgroundColor: Colors.white,
         elevation: 0,
-        title: Text(
-          'Bill: ${widget.billNumber}',
-          style: TextStyle(
-            color: const Color(0xFF0F172A),
-            fontSize: context.isTablet ? 18 : 15,
-            fontWeight: FontWeight.bold,
-          ),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                'Bill: ${widget.billNumber}',
+                style: TextStyle(
+                  color: const Color(0xFF0F172A),
+                  fontSize: context.isTablet ? 18 : 15,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (_detail?.isCancelled == true) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEE2E2),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                ),
+                child: const Text(
+                  'CANCELLED',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFDC2626),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
@@ -1390,7 +1506,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                                 ? 'Printing on Office PC...'
                                 : _printCooldownSeconds > 0
                                     ? 'Print on Office PC (${_printCooldownSeconds}s)'
-                                    : 'Print on Office PC',
+                                    : (_detail!.isCancelled ? 'Print Cancelled Challan' : 'Print on Office PC'),
                             style: TextStyle(
                               fontWeight: FontWeight.bold,
                               fontSize: context.isTablet ? 16 : 14,
@@ -1399,7 +1515,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                           style: ElevatedButton.styleFrom(
                             backgroundColor: _printCooldownSeconds > 0
                                 ? const Color(0xFF94A3B8)
-                                : const Color(0xFF059669),
+                                : (_detail!.isCancelled ? const Color(0xFFDC2626) : const Color(0xFF059669)),
                             foregroundColor: Colors.white,
                             disabledBackgroundColor: _printCooldownSeconds > 0
                                 ? const Color(0xFF94A3B8)
@@ -1500,12 +1616,117 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
     );
   }
 
+  Widget _buildCancellationBanner(BillDetail bill) {
+    return Container(
+      margin: EdgeInsets.only(bottom: context.isTablet ? 16 : 12),
+      padding: EdgeInsets.all(context.isTablet ? 16 : 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(context.isTablet ? 14 : 10),
+        border: Border.all(color: const Color(0xFFFCA5A5), width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDC2626),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(Icons.block_rounded, size: 18, color: Colors.white),
+              ),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'THIS BILL HAS BEEN CANCELLED',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF991B1B),
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'All matched serial numbers from this outward dispatch have been returned to warehouse inventory.',
+            style: TextStyle(fontSize: 12, color: Color(0xFF7F1D1D), height: 1.3),
+          ),
+          if ((bill.cancelledByName != null && bill.cancelledByName!.isNotEmpty) ||
+              (bill.cancelledAt != null && bill.cancelledAt!.isNotEmpty) ||
+              (bill.cancelReason != null && bill.cancelReason!.isNotEmpty)) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.7),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFFFECACA)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (bill.cancelledByName != null && bill.cancelledByName!.isNotEmpty)
+                    _cancelMetaRow('Cancelled By:', bill.cancelledByName!),
+                  if (bill.cancelledAt != null && bill.cancelledAt!.isNotEmpty)
+                    _cancelMetaRow('Cancelled At:', bill.cancelledAt!),
+                  if (bill.cancelReason != null && bill.cancelReason!.isNotEmpty)
+                    _cancelMetaRow('Reason:', bill.cancelReason!),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _cancelMetaRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1.5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF991B1B),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 11,
+                color: Color(0xFF450A0A),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDetail(BillDetail bill) {
     return SingleChildScrollView(
       padding: EdgeInsets.all(context.isTablet ? 26 : 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Cancellation warning banner
+          if (bill.isCancelled) _buildCancellationBanner(bill),
+
           // ── Office PC printer status
           _buildOfficePrinterBar(),
 
@@ -1540,7 +1761,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(context.isTablet ? 18 : 14),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: bill.isCancelled ? const Color(0xFFFECACA) : const Color(0xFFE2E8F0)),
         boxShadow: context.isTablet
             ? [
                 BoxShadow(
@@ -1561,7 +1782,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                 vertical: context.isTablet ? 5 : 3,
               ),
               decoration: BoxDecoration(
-                color: const Color(0xFF1E1B4B),
+                color: bill.isCancelled ? const Color(0xFF991B1B) : const Color(0xFF1E1B4B),
                 borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
               ),
               child: Text(
@@ -1573,6 +1794,28 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                 ),
               ),
             ),
+            if (bill.isCancelled) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: EdgeInsets.symmetric(
+                  horizontal: context.isTablet ? 10 : 7,
+                  vertical: context.isTablet ? 5 : 3,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEE2E2),
+                  borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                ),
+                child: Text(
+                  'CANCELLED',
+                  style: TextStyle(
+                    color: const Color(0xFFDC2626),
+                    fontSize: context.isTablet ? 12 : 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
             const Spacer(),
             Container(
               padding: EdgeInsets.symmetric(
@@ -1594,6 +1837,15 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             ),
           ]),
           SizedBox(height: context.isTablet ? 14 : 10),
+          if (bill.isCancelled) ...[
+            _infoRow(Icons.block_rounded, 'Status', 'CANCELLED'),
+            if (bill.cancelledByName != null && bill.cancelledByName!.isNotEmpty)
+              _infoRow(Icons.person_off_outlined, 'Cancelled By', bill.cancelledByName!),
+            if (bill.cancelledAt != null && bill.cancelledAt!.isNotEmpty)
+              _infoRow(Icons.access_time_outlined, 'Cancelled At', bill.cancelledAt!),
+            if (bill.cancelReason != null && bill.cancelReason!.isNotEmpty)
+              _infoRow(Icons.comment_outlined, 'Cancel Reason', bill.cancelReason!),
+          ],
           _infoRow(Icons.store_outlined, 'Shop', bill.shopCity.trim().isNotEmpty ? '${bill.shopName} – ${bill.shopCity.trim()}' : bill.shopName),
           _infoRow(Icons.calendar_today_outlined, 'Date', bill.transactionDate),
           _infoRow(Icons.person_outline, 'Dispatched By', bill.dispatchedByName),
@@ -1664,7 +1916,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(context.isTablet ? 14 : 10),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
+        border: Border.all(color: batch.isCancelled ? const Color(0xFFFECACA) : const Color(0xFFE2E8F0)),
       ),
       child: Row(
         children: [
@@ -1673,13 +1925,13 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             height: context.isTablet ? 42 : 32,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: const Color(0xFFEEF2FF),
+              color: batch.isCancelled ? const Color(0xFFFEE2E2) : const Color(0xFFEEF2FF),
               borderRadius: BorderRadius.circular(context.isTablet ? 10 : 8),
             ),
             child: Text(
               '$no',
               style: TextStyle(
-                color: const Color(0xFF3C3489),
+                color: batch.isCancelled ? const Color(0xFFDC2626) : const Color(0xFF3C3489),
                 fontWeight: FontWeight.bold,
                 fontSize: context.isTablet ? 16 : 13,
               ),
@@ -1690,13 +1942,39 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  '${batch.brand} ${batch.model}',
-                  style: TextStyle(
-                    fontSize: context.isTablet ? 15 : 13,
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF0F172A),
-                  ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        '${batch.brand} ${batch.model}',
+                        style: TextStyle(
+                          fontSize: context.isTablet ? 15 : 13,
+                          fontWeight: FontWeight.bold,
+                          color: batch.isCancelled ? const Color(0xFF991B1B) : const Color(0xFF0F172A),
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (batch.isCancelled) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEE2E2),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: const Color(0xFFFCA5A5)),
+                        ),
+                        child: const Text(
+                          'CANCELLED',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFFDC2626),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 Text(
                   batch.productName,
@@ -1714,13 +1992,13 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               vertical: context.isTablet ? 5 : 3,
             ),
             decoration: BoxDecoration(
-              color: const Color(0xFFECFDF5),
+              color: batch.isCancelled ? const Color(0xFFFEE2E2) : const Color(0xFFECFDF5),
               borderRadius: BorderRadius.circular(6),
             ),
             child: Text(
               '${batch.quantity} u',
               style: TextStyle(
-                color: const Color(0xFF059669),
+                color: batch.isCancelled ? const Color(0xFFDC2626) : const Color(0xFF059669),
                 fontWeight: FontWeight.bold,
                 fontSize: context.isTablet ? 14 : 12,
               ),
@@ -1868,6 +2146,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
         matchedCount: b.matchedCount,
         unmatchedCount: b.unmatchedCount,
         flaggedCount: b.flaggedCount,
+        isCancelled: b.isCancelled,
         lines: matchedLines,
       );
     }).toList();
@@ -2221,6 +2500,25 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               ),
             ),
           ],
+          if (line.isCancelled || (_detail?.isCancelled == true && line.isMatched)) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEE2E2),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: const Color(0xFFFCA5A5)),
+              ),
+              child: const Text(
+                'RETURNED',
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFDC2626),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(width: 4),
           InkWell(
             onTap: () {
@@ -2277,24 +2575,59 @@ class _BillPdfViewerScreenState extends State<BillPdfViewerScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF1F5F9),
       appBar: AppBar(
-        title: Text(
-          'Challan: ${widget.bill.billNumber}',
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                'Challan: ${widget.bill.billNumber}',
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (widget.bill.isCancelled) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEE2E2),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                ),
+                child: const Text(
+                  'CANCELLED',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFFDC2626),
+                  ),
+                ),
+              ),
+            ],
+          ],
         ),
         backgroundColor: Colors.white,
         elevation: 0,
         iconTheme: const IconThemeData(color: Color(0xFF0F172A)),
         actions: [
           TextButton.icon(
-            style: TextButton.styleFrom(foregroundColor: const Color(0xFF3C3489)),
+            style: TextButton.styleFrom(
+              foregroundColor: widget.bill.isCancelled ? const Color(0xFFDC2626) : const Color(0xFF3C3489),
+            ),
             icon: const Icon(Icons.print_outlined, size: 18),
-            label: const Text('Office PC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+            label: Text(
+              widget.bill.isCancelled ? 'Print Cancelled' : 'Office PC',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+            ),
             onPressed: () async {
+              final isCancelled = widget.bill.isCancelled;
               final confirmed = await confirmOfficePcPrint(
                 context,
-                title: 'Print Challan on Office PC',
-                message: 'Are you sure you want to send Challan #${widget.bill.billNumber} to the Office PC printer?',
-                documentName: 'Challan #${widget.bill.billNumber}',
+                title: isCancelled ? 'Print CANCELLED Challan on Office PC' : 'Print Challan on Office PC',
+                message: isCancelled
+                    ? 'Notice: Challan #${widget.bill.billNumber} was CANCELLED and serials returned to inventory.\n\nAre you sure you want to send this CANCELLED challan to the Office PC printer?'
+                    : 'Are you sure you want to send Challan #${widget.bill.billNumber} to the Office PC printer?',
+                documentName: 'Challan #${widget.bill.billNumber}${isCancelled ? ' (CANCELLED)' : ''}',
               );
               if (!confirmed || !context.mounted) return;
 

@@ -3,7 +3,7 @@ from typing import Annotated, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,9 @@ from app.schemas.outward import (
     OutwardMultiBatchCreate,
     OutwardMultiBatchResponse,
     OutwardProductBatchItem,
+    UpdateOutwardLineRequest,
+    UpdateOutwardLineResponse,
+    DeleteOutwardLineResponse,
 )
 
 router = APIRouter(prefix="/outward", tags=["outward"])
@@ -400,7 +403,10 @@ async def create_outward_batch(
         existing_outward_res = await db.execute(
             select(OutwardLine.serial_text, Shop.name.label("shop_name"))
             .join(Shop, OutwardLine.shop_id == Shop.id)
-            .where(OutwardLine.serial_text.in_(untracked_serials))
+            .where(
+                OutwardLine.serial_text.in_(untracked_serials),
+                OutwardLine.is_cancelled == False,
+            )
         )
         already_disp_lines = existing_outward_res.all()
         if already_disp_lines:
@@ -942,7 +948,10 @@ async def create_outward_multi_batch(
         existing_outward_res = await db.execute(
             select(OutwardLine.serial_text, Shop.name.label("shop_name"))
             .join(Shop, OutwardLine.shop_id == Shop.id)
-            .where(OutwardLine.serial_text.in_(untracked_serials))
+            .where(
+                OutwardLine.serial_text.in_(untracked_serials),
+                OutwardLine.is_cancelled == False,
+            )
         )
         already_disp_lines = existing_outward_res.all()
         if already_disp_lines:
@@ -1499,10 +1508,18 @@ async def list_outward_bills(
     result = await db.execute(query)
     rows = result.all()
 
-    # Group batches by bill_number (or by batch id if bill_number is missing)
+    # Group batches by bill_number and status (separate active vs cancelled)
     bills_map: dict[str, dict] = {}
     for b, p_name, p_brand, p_model, s_name, s_city, u_name, c_name in rows:
-        b_key = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
+        b_norm = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
+        if b.is_cancelled:
+            # Differentiate cancelled bills from active ones, and if the same bill number was cancelled multiple times,
+            # group by cancellation timestamp (or batch creation date if cancelled_at is null)
+            c_tag = b.cancelled_at.strftime("%Y%m%d%H%M%S") if b.cancelled_at else (b.created_at.strftime("%Y%m%d%H%M%S") if b.created_at else str(b.id)[:8])
+            b_key = f"{b_norm}::CANCELLED::{c_tag}"
+        else:
+            b_key = f"{b_norm}::ACTIVE"
+
         if b_key not in bills_map:
             bills_map[b_key] = {
                 "bill_number": b.bill_number or f"REF-{b.delivery_reference or str(b.id)[:8]}",
@@ -1547,9 +1564,12 @@ async def get_outward_bill_detail(
     bill_number: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    cancelled: Optional[bool] = Query(None, description="Filter by active (false) or cancelled (true) bill"),
+    status: Optional[str] = Query(None, description="Alternative filter: 'active' or 'cancelled'"),
 ) -> BillDetailResponse:
     """
     Get all batches and scanned serial lines associated with a specific Bill Number.
+    Supports filtering by active vs cancelled when a bill number was re-used.
     """
     clean_b_num = bill_number.strip()
     Canceller = aliased(User)
@@ -1578,6 +1598,36 @@ async def get_outward_bill_detail(
     rows = result.all()
     if not rows:
         raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
+
+    target_cancelled: Optional[bool] = None
+    if cancelled is not None:
+        target_cancelled = cancelled
+    elif status:
+        if status.lower() == "cancelled":
+            target_cancelled = True
+        elif status.lower() == "active":
+            target_cancelled = False
+
+    if target_cancelled is True:
+        rows = [r for r in rows if r[0].is_cancelled]
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Cancelled bill '{bill_number}' not found.")
+        latest_c_at = max((r[0].cancelled_at or r[0].created_at for r in rows), default=None)
+        if latest_c_at:
+            rows = [r for r in rows if (r[0].cancelled_at or r[0].created_at) == latest_c_at]
+    elif target_cancelled is False:
+        rows = [r for r in rows if not r[0].is_cancelled]
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"Active bill '{bill_number}' not found.")
+    else:
+        # Default: if active batches exist for this bill number, return active bill; otherwise return the latest cancelled bill
+        active_rows = [r for r in rows if not r[0].is_cancelled]
+        if active_rows:
+            rows = active_rows
+        else:
+            latest_c_at = max((r[0].cancelled_at or r[0].created_at for r in rows), default=None)
+            if latest_c_at:
+                rows = [r for r in rows if (r[0].cancelled_at or r[0].created_at) == latest_c_at]
 
     first_b, _, _, _, s_name, s_city, u_name, c_name = rows[0]
 
@@ -1688,15 +1738,16 @@ async def cancel_outward_bill(
     if not batches:
         raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
 
-    if all(b.is_cancelled for b in batches):
+    active_batches = [b for b in batches if not b.is_cancelled]
+    if not active_batches:
         raise HTTPException(
             status_code=400,
             detail=f"Bill '{clean_b_num}' has already been cancelled.",
         )
 
-    batch_ids = [b.id for b in batches]
+    batch_ids = [b.id for b in active_batches]
 
-    # 2. Fetch all lines for these batches
+    # 2. Fetch all lines for these active batches only
     lines_res = await db.execute(
         select(OutwardLine)
         .where(OutwardLine.batch_id.in_(batch_ids))
@@ -1704,18 +1755,11 @@ async def cancel_outward_bill(
     )
     lines = lines_res.scalars().all()
 
-    # 3. Categorize lines into matched vs unmatched
+    # 3. Fetch SerialNumber records for all lines (by serial_number_id AND serial_text)
     matched_lines = [l for l in lines if l.serial_number_id is not None]
     unmatched_lines = [l for l in lines if l.serial_number_id is None]
+    all_raw_texts = [l.serial_text.strip().upper() for l in lines]
 
-    # Unmatched serials: Ignored from stock return as instructed
-    ignored_serials = []
-    for l in unmatched_lines:
-        l.is_cancelled = True
-        ignored_serials.append(l.serial_text)
-
-    # 4. Matched serials: Return to 'available' status and clear shop
-    returned_serials = []
     sn_ids = [l.serial_number_id for l in matched_lines]
     sns_map: dict[uuid.UUID, SerialNumber] = {}
     if sn_ids:
@@ -1724,19 +1768,34 @@ async def cancel_outward_bill(
         )
         sns_map = {sn.id: sn for sn in sns_res.scalars().all()}
 
+    sn_by_text: dict[str, SerialNumber] = {}
+    if all_raw_texts:
+        sn_text_res = await db.execute(
+            select(SerialNumber).where(func.upper(SerialNumber.serial_number).in_(all_raw_texts)).with_for_update()
+        )
+        for sn_obj in sn_text_res.scalars().all():
+            sn_by_text[sn_obj.serial_number.upper()] = sn_obj
+
     now = datetime.now(timezone.utc)
     cancel_note = req.reason.strip() if req.reason else "Bill cancelled by admin"
 
-    for l in matched_lines:
+    returned_serials = []
+    ignored_serials = []  # Recorded only / unmatched serials unblocked for rebilling
+
+    for l in lines:
         l.is_cancelled = True
-        sn = sns_map.get(l.serial_number_id)
+        sn = sns_map.get(l.serial_number_id) if l.serial_number_id else sn_by_text.get(l.serial_text.strip().upper())
+
         if sn:
             old_status = sn.status
             if sn.status == SerialStatus.dispatched:
                 sn.status = SerialStatus.available
                 sn.last_shop_id = None
 
-            returned_serials.append(l.serial_text)
+            if l.is_matched:
+                returned_serials.append(l.serial_text)
+            else:
+                ignored_serials.append(l.serial_text)
 
             history = SerialHistory(
                 serial_number_id=sn.id,
@@ -1746,18 +1805,32 @@ async def cancel_outward_bill(
                 to_status=sn.status,
                 shop_id=l.shop_id,
                 outward_batch_id=l.batch_id,
-                is_matched=True,
+                is_matched=l.is_matched,
                 user_id=current_user.id,
-                remarks=f"Bill '{clean_b_num}' cancelled by admin {current_user.full_name}: {cancel_note}. Returned to inventory.",
+                remarks=f"Bill '{clean_b_num}' cancelled by admin {current_user.full_name}: {cancel_note}. Dispatched status removed; serial unblocked for rebilling.",
+            )
+            db.add(history)
+        else:
+            # Recorded serial without inward record:
+            # Cancel the outward line and record history clearing the dispatched status so it can be billed in another bill
+            ignored_serials.append(l.serial_text)
+            history = SerialHistory(
+                serial_number_id=None,
+                serial_text=l.serial_text,
+                action=HistoryAction.returned,
+                from_status=SerialStatus.dispatched,
+                to_status=None,
+                shop_id=l.shop_id,
+                outward_batch_id=l.batch_id,
+                is_matched=False,
+                user_id=current_user.id,
+                remarks=f"Bill '{clean_b_num}' cancelled by admin {current_user.full_name}: {cancel_note}. Dispatched status removed; serial unblocked for rebilling.",
             )
             db.add(history)
 
     # 5. Restore stock quantity on specific product models
     restored_models = []
-    for b in batches:
-        if b.is_cancelled:
-            continue
-
+    for b in active_batches:
         prod = await db.get(Product, b.product_id)
         if prod:
             cat = await db.get(Category, prod.category_id) if prod.category_id else None
@@ -1788,7 +1861,7 @@ async def cancel_outward_bill(
         details={
             "bill_number": clean_b_num,
             "reason": cancel_note,
-            "total_batches_cancelled": len(batches),
+            "total_batches_cancelled": len(active_batches),
             "matched_serials_returned": len(returned_serials),
             "unmatched_serials_ignored": len(ignored_serials),
             "restored_models": restored_models,
@@ -1811,7 +1884,7 @@ async def cancel_outward_bill(
     return CancelBillResponse(
         success=True,
         bill_number=clean_b_num,
-        message=f"Bill '{clean_b_num}' cancelled successfully. {len(returned_serials)} matched serial(s) returned to stock; {len(ignored_serials)} unmatched serial(s) ignored.",
+        message=f"Bill '{clean_b_num}' cancelled successfully. {len(returned_serials)} matched serial(s) returned to stock; {len(ignored_serials)} recorded serial(s) unblocked for rebilling.",
         cancelled_at=now,
         cancelled_by_name=current_user.full_name,
         returned_serials_count=len(returned_serials),
@@ -1819,4 +1892,459 @@ async def cancel_outward_bill(
         returned_serials=returned_serials,
         ignored_serials=ignored_serials,
         restored_models=restored_models,
+    )
+
+
+@router.put("/lines/{line_id}", response_model=UpdateOutwardLineResponse)
+@router.patch("/lines/{line_id}", response_model=UpdateOutwardLineResponse)
+async def update_outward_bill_line(
+    line_id: uuid.UUID,
+    req: UpdateOutwardLineRequest,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UpdateOutwardLineResponse:
+    """
+    Admin only: Edit a serial number on an outward dispatch bill line.
+    - If the new serial number matches an in-stock available serial for that model:
+        * Reduces product stock quantity and marks the serial as dispatched to that shop.
+    - If the new serial number is NOT in stock:
+        * Treats it as 'Recorded only'.
+    - If the previous serial on this line was matched from stock, it is returned to 'available' stock.
+    - Accurately reconciles batch matched/unmatched counters, logs SerialHistory, and broadcasts stock_updated.
+    """
+    clean_new_serial = req.new_serial_number.strip().upper()
+    if not clean_new_serial:
+        raise HTTPException(status_code=400, detail="Serial number cannot be blank.")
+
+    # 1. Fetch and lock OutwardLine
+    line_res = await db.execute(
+        select(OutwardLine).where(OutwardLine.id == line_id).with_for_update()
+    )
+    line = line_res.scalar_one_or_none()
+    if not line:
+        raise HTTPException(status_code=404, detail="Outward serial record not found.")
+
+    # 2. Fetch and lock OutwardBatch
+    batch_res = await db.execute(
+        select(OutwardBatch).where(OutwardBatch.id == line.batch_id).with_for_update()
+    )
+    batch = batch_res.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Associated outward batch not found.")
+
+    if batch.is_cancelled or line.is_cancelled:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot edit a serial number on a cancelled bill.",
+        )
+
+    clean_old_serial = line.serial_text.strip().upper()
+
+    # 3. Fetch Product & Category
+    prod_res = await db.execute(
+        select(Product).where(Product.id == batch.product_id).with_for_update()
+    )
+    product = prod_res.scalar_one_or_none()
+
+    # If new serial is unchanged, return current state
+    if clean_new_serial == clean_old_serial:
+        lbl = "Flagged" if line.is_flagged_for_review else ("Matched" if line.is_matched else "Recorded only")
+        return UpdateOutwardLineResponse(
+            success=True,
+            message=f"Serial '{clean_new_serial}' is unchanged.",
+            line=OutwardLineResponse(
+                id=line.id,
+                serial_text=line.serial_text,
+                serial_number_id=line.serial_number_id,
+                is_matched=line.is_matched,
+                is_flagged_for_review=line.is_flagged_for_review,
+                flag_reason=line.flag_reason,
+                unit_type=line.unit_type,
+                status_label=lbl,
+                is_cancelled=line.is_cancelled,
+            ),
+            batch_id=batch.id,
+            matched_count=batch.matched_count,
+            unmatched_count=batch.unmatched_count,
+            flagged_count=batch.flagged_count,
+            product_id=batch.product_id,
+            current_stock_qty=product.current_stock_qty if product else 0,
+        )
+
+    # 4. Check if new serial is already scanned in this active batch
+    dup_res = await db.execute(
+        select(OutwardLine).where(
+            OutwardLine.batch_id == batch.id,
+            OutwardLine.id != line.id,
+            func.upper(OutwardLine.serial_text) == clean_new_serial,
+            OutwardLine.is_cancelled == False,
+        )
+    )
+    if dup_res.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Serial '{clean_new_serial}' is already scanned in this bill batch.",
+        )
+
+    # 5. Check if new serial is currently dispatched to another active bill/shop
+    prev_disp = await db.execute(
+        select(OutwardLine, Shop.name.label("shop_name"))
+        .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(
+            func.upper(OutwardLine.serial_text) == clean_new_serial,
+            OutwardLine.id != line.id,
+            OutwardLine.is_cancelled == False,
+        )
+        .order_by(OutwardLine.transaction_date.desc())
+    )
+    disp_row = prev_disp.first()
+    if disp_row:
+        p_line, p_shop = disp_row
+        raise HTTPException(
+            status_code=400,
+            detail=f"Serial '{clean_new_serial}' was already dispatched to '{p_shop}' on {p_line.transaction_date}. Cannot assign a serial that is already dispatched.",
+        )
+
+    # 6. Release old serial if it was matched to an inventory record
+    was_matched = line.is_matched or (line.serial_number_id is not None)
+    old_sn = None
+    if line.serial_number_id:
+        old_sn = await db.get(SerialNumber, line.serial_number_id, with_for_update=True)
+    elif was_matched:
+        old_sn_res = await db.execute(
+            select(SerialNumber).where(
+                SerialNumber.product_id == batch.product_id,
+                func.upper(SerialNumber.serial_number) == clean_old_serial,
+            ).with_for_update()
+        )
+        old_sn = old_sn_res.scalars().first()
+
+    if old_sn:
+        old_sn.status = SerialStatus.available
+        old_sn.last_shop_id = None
+        hist_old = SerialHistory(
+            serial_number_id=old_sn.id,
+            serial_text=clean_old_serial,
+            action=HistoryAction.returned,
+            from_status=SerialStatus.dispatched,
+            to_status=SerialStatus.available,
+            shop_id=batch.shop_id,
+            outward_batch_id=batch.id,
+            is_matched=True,
+            user_id=admin.id,
+            remarks=f"Replaced by '{clean_new_serial}' in bill '{batch.bill_number or ''}' edit by admin {admin.full_name}. Returned to warehouse stock.",
+        )
+        db.add(hist_old)
+
+    # 7. Check if new serial matches in-stock serial for this model
+    new_sn_res = await db.execute(
+        select(SerialNumber).where(
+            SerialNumber.product_id == batch.product_id,
+            func.upper(SerialNumber.serial_number) == clean_new_serial,
+            SerialNumber.status == SerialStatus.available,
+        ).with_for_update()
+    )
+    new_sn = new_sn_res.scalars().first()
+
+    is_now_matched = new_sn is not None
+
+    if is_now_matched:
+        # Match found in stock!
+        new_sn.status = SerialStatus.dispatched
+        new_sn.last_shop_id = batch.shop_id
+
+        line.serial_text = clean_new_serial
+        line.serial_number_id = new_sn.id
+        line.is_matched = True
+        line.is_flagged_for_review = False
+        line.flag_reason = None
+        if new_sn.unit_type:
+            line.unit_type = new_sn.unit_type
+
+        hist_new = SerialHistory(
+            serial_number_id=new_sn.id,
+            serial_text=clean_new_serial,
+            action=HistoryAction.dispatched_matched,
+            from_status=SerialStatus.available,
+            to_status=SerialStatus.dispatched,
+            shop_id=batch.shop_id,
+            outward_batch_id=batch.id,
+            is_matched=True,
+            user_id=admin.id,
+            remarks=f"Assigned to bill '{batch.bill_number or ''}' during edit by admin {admin.full_name}. Matched to available inward stock.",
+        )
+        db.add(hist_new)
+
+        # Stock count adjustment:
+        # If previous was NOT matched and new IS matched -> stock must be reduced
+        if not was_matched:
+            batch.matched_count += 1
+            batch.unmatched_count = max(0, batch.unmatched_count - 1)
+            if product:
+                product.current_stock_qty = max(0, product.current_stock_qty - 1)
+        # If previous WAS matched and new IS matched -> old returned, new dispatched -> net stock count delta is 0
+    else:
+        # Not in available stock for this model -> Recorded only
+        line.serial_text = clean_new_serial
+        line.serial_number_id = None
+        line.is_matched = False
+        line.is_flagged_for_review = False
+        line.flag_reason = None
+
+        hist_rec = SerialHistory(
+            serial_number_id=None,
+            serial_text=clean_new_serial,
+            action=HistoryAction.dispatched_unmatched,
+            from_status=None,
+            to_status=SerialStatus.dispatched,
+            shop_id=batch.shop_id,
+            outward_batch_id=batch.id,
+            is_matched=False,
+            user_id=admin.id,
+            remarks=f"Recorded outward serial assigned to bill '{batch.bill_number or ''}' during edit by admin {admin.full_name} (not found in active stock).",
+        )
+        db.add(hist_rec)
+
+        # Stock count adjustment:
+        # If previous was matched and new is NOT matched -> old returned to stock (+1 stock)
+        if was_matched:
+            batch.matched_count = max(0, batch.matched_count - 1)
+            batch.unmatched_count += 1
+            if product:
+                product.current_stock_qty += 1
+        # If previous was NOT matched and new is NOT matched -> net stock delta is 0
+
+    # 8. Audit Log
+    audit = AuditLog(
+        user_id=admin.id,
+        action="BILL_SERIAL_EDITED",
+        entity_type="outward_line",
+        entity_id=str(line.id),
+        details={
+            "bill_number": batch.bill_number,
+            "batch_id": str(batch.id),
+            "line_id": str(line.id),
+            "product_id": str(batch.product_id),
+            "old_serial": clean_old_serial,
+            "new_serial": clean_new_serial,
+            "was_matched": was_matched,
+            "is_now_matched": is_now_matched,
+            "current_stock_qty": product.current_stock_qty if product else 0,
+        },
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(line)
+    await db.refresh(batch)
+    if product:
+        await db.refresh(product)
+
+    # 9. Real-time broadcast
+    await ws_manager.broadcast("stock_updated", {
+        "type": "bill_serial_edited",
+        "bill_number": batch.bill_number,
+        "line_id": str(line.id),
+        "product_id": str(batch.product_id),
+        "old_serial": clean_old_serial,
+        "new_serial": clean_new_serial,
+        "is_matched": is_now_matched,
+        "new_stock_qty": product.current_stock_qty if product else 0,
+    })
+
+    lbl = "Matched" if line.is_matched else "Recorded only"
+    msg = (
+        f"Serial '{clean_old_serial}' updated to '{clean_new_serial}'. "
+        + ("Matched to in-stock serial number (inventory stock updated)." if is_now_matched else "Not found in warehouse stock; marked as Recorded only.")
+    )
+
+    return UpdateOutwardLineResponse(
+        success=True,
+        message=msg,
+        line=OutwardLineResponse(
+            id=line.id,
+            serial_text=line.serial_text,
+            serial_number_id=line.serial_number_id,
+            is_matched=line.is_matched,
+            is_flagged_for_review=line.is_flagged_for_review,
+            flag_reason=line.flag_reason,
+            unit_type=line.unit_type,
+            status_label=lbl,
+            is_cancelled=line.is_cancelled,
+        ),
+        batch_id=batch.id,
+        matched_count=batch.matched_count,
+        unmatched_count=batch.unmatched_count,
+        flagged_count=batch.flagged_count,
+        product_id=batch.product_id,
+        current_stock_qty=product.current_stock_qty if product else 0,
+    )
+
+
+@router.delete("/lines/{line_id}", response_model=DeleteOutwardLineResponse)
+async def delete_outward_bill_line(
+    line_id: uuid.UUID,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DeleteOutwardLineResponse:
+    """
+    Admin only: Delete a serial number line from an outward bill.
+    - If the serial was MATCHED:
+        * Returns it to available inventory ('status' = available, 'last_shop_id' = None).
+        * Restores product stock quantity (+1 unit).
+        * Records 'returned' action in SerialHistory.
+    - If the serial was RECORDED ONLY (unmatched):
+        * Discards the serial line and deletes all its SerialHistory records.
+        * Stock count is unchanged.
+    - Updates/reconciles OutwardBatch quantity, matched/unmatched counters.
+    - Broadcasts stock_updated via WebSocket.
+    """
+    # 1. Fetch and lock OutwardLine
+    line_res = await db.execute(
+        select(OutwardLine).where(OutwardLine.id == line_id).with_for_update()
+    )
+    line = line_res.scalar_one_or_none()
+    if not line:
+        raise HTTPException(status_code=404, detail="Outward serial record not found.")
+
+    # 2. Fetch and lock OutwardBatch
+    batch_res = await db.execute(
+        select(OutwardBatch).where(OutwardBatch.id == line.batch_id).with_for_update()
+    )
+    batch = batch_res.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Associated outward batch not found.")
+
+    if batch.is_cancelled or line.is_cancelled:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete a serial number from an already cancelled bill.",
+        )
+
+    clean_serial = line.serial_text.strip().upper()
+    was_matched = line.is_matched or (line.serial_number_id is not None)
+
+    # 3. Fetch Product & Category
+    prod_res = await db.execute(
+        select(Product).where(Product.id == batch.product_id).with_for_update()
+    )
+    product = prod_res.scalar_one_or_none()
+
+    action_taken = ""
+    msg = ""
+
+    if was_matched:
+        # Match from stock: return to inward available inventory
+        sn = None
+        if line.serial_number_id:
+            sn = await db.get(SerialNumber, line.serial_number_id, with_for_update=True)
+        if not sn:
+            sn_res = await db.execute(
+                select(SerialNumber).where(
+                    SerialNumber.product_id == batch.product_id,
+                    func.upper(SerialNumber.serial_number) == clean_serial,
+                ).with_for_update()
+            )
+            sn = sn_res.scalars().first()
+
+        if sn:
+            sn.status = SerialStatus.available
+            sn.last_shop_id = None
+
+            hist_ret = SerialHistory(
+                serial_number_id=sn.id,
+                serial_text=clean_serial,
+                action=HistoryAction.returned,
+                from_status=SerialStatus.dispatched,
+                to_status=SerialStatus.available,
+                shop_id=batch.shop_id,
+                outward_batch_id=batch.id,
+                is_matched=True,
+                user_id=admin.id,
+                remarks=f"Serial '{clean_serial}' removed from bill '{batch.bill_number or ''}' by admin {admin.full_name} and returned to inward stock.",
+            )
+            db.add(hist_ret)
+
+        if product:
+            product.current_stock_qty += 1
+
+        action_taken = "returned_to_inward_stock"
+        msg = f"Matched serial '{clean_serial}' deleted from bill and returned to warehouse inward stock."
+    else:
+        # Recorded only: discard it and all its history
+        await db.execute(
+            delete(SerialHistory).where(
+                func.upper(SerialHistory.serial_text) == clean_serial,
+                (SerialHistory.outward_batch_id == batch.id) | (SerialHistory.serial_number_id.is_(None)),
+            )
+        )
+        action_taken = "discarded_with_history"
+        msg = f"Recorded serial '{clean_serial}' discarded along with all its dispatch history."
+
+    # 4. Delete the OutwardLine
+    await db.delete(line)
+    await db.flush()
+
+    # 5. Fetch remaining lines in this batch to update counts
+    rem_lines_res = await db.execute(
+        select(OutwardLine).where(OutwardLine.batch_id == batch.id)
+    )
+    rem_lines = rem_lines_res.scalars().all()
+
+    if not rem_lines:
+        batch_rem_qty = 0
+        batch_id = batch.id
+        await db.delete(batch)
+    else:
+        batch.quantity = len(rem_lines)
+        batch.matched_count = sum(1 for l in rem_lines if l.is_matched)
+        batch.unmatched_count = sum(1 for l in rem_lines if not l.is_matched and not l.is_flagged_for_review)
+        batch.flagged_count = sum(1 for l in rem_lines if l.is_flagged_for_review)
+        batch_rem_qty = batch.quantity
+        batch_id = batch.id
+
+    # 6. Audit log
+    audit = AuditLog(
+        user_id=admin.id,
+        action="BILL_SERIAL_DELETED",
+        entity_type="outward_line",
+        entity_id=str(line_id),
+        details={
+            "bill_number": batch.bill_number,
+            "batch_id": str(batch_id),
+            "serial": clean_serial,
+            "was_matched": was_matched,
+            "action_taken": action_taken,
+            "remaining_batch_qty": batch_rem_qty,
+            "new_stock_qty": product.current_stock_qty if product else 0,
+        },
+    )
+    db.add(audit)
+
+    await db.commit()
+    if product:
+        await db.refresh(product)
+
+    # 7. WebSocket notification
+    await ws_manager.broadcast("stock_updated", {
+        "type": "bill_serial_deleted",
+        "bill_number": batch.bill_number,
+        "line_id": str(line_id),
+        "product_id": str(batch.product_id),
+        "serial": clean_serial,
+        "was_matched": was_matched,
+        "action_taken": action_taken,
+        "new_stock_qty": product.current_stock_qty if product else 0,
+    })
+
+    return DeleteOutwardLineResponse(
+        success=True,
+        message=msg,
+        deleted_serial=clean_serial,
+        was_matched=was_matched,
+        action_taken=action_taken,
+        batch_id=batch_id,
+        batch_remaining_quantity=batch_rem_qty,
+        product_id=batch.product_id,
+        current_stock_qty=product.current_stock_qty if product else 0,
     )

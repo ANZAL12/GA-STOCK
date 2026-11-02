@@ -47,13 +47,23 @@ function buildBillPdf(bill) {
   // Title Banner
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12);
-  doc.text('DELIVERY CHALLAN', pageWidth / 2, startY + 5.5, { align: 'center' });
+  const titleText = bill.is_cancelled ? 'DELIVERY CHALLAN [CANCELLED]' : 'DELIVERY CHALLAN';
+  if (bill.is_cancelled) {
+    doc.setTextColor(220, 38, 38);
+  } else {
+    doc.setTextColor(0, 0, 0);
+  }
+  doc.text(titleText, pageWidth / 2, startY + 5.5, { align: 'center' });
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
-  doc.text('(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)', pageWidth / 2, startY + 9.5, {
+  const subText = bill.is_cancelled
+    ? '(THIS BILL HAS BEEN CANCELLED - ALL SERIALS RETURNED TO INVENTORY)'
+    : '(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)';
+  doc.text(subText, pageWidth / 2, startY + 9.5, {
     align: 'center',
   });
+  doc.setTextColor(0, 0, 0);
 
   // Divider line under title
   doc.line(margin, startY + 11.5, pageWidth - margin, startY + 11.5);
@@ -129,8 +139,14 @@ function buildBillPdf(bill) {
   };
 
   addRightRow('Challan / Bill No.:', bill.bill_number, true);
+  if (bill.is_cancelled) {
+    addRightRow('Voucher Status:', 'CANCELLED', true);
+  }
   addRightRow('Dated:', bill.transaction_date, true);
   addRightRow('Dispatched By:', bill.dispatched_by_name || bill.dispatcher_name || 'Admin', true);
+  if (bill.is_cancelled && bill.cancelled_by_name) {
+    addRightRow('Cancelled By:', bill.cancelled_by_name, true);
+  }
   addRightRow('Vehicle / Ref:', bill.delivery_reference || 'Direct / Local', true);
   addRightRow('Mode of Transport:', 'Road / Local Delivery', false);
 
@@ -380,8 +396,24 @@ function buildBillPdf(bill) {
 
   // Page Numbers & Footer note
   const pageCount = doc.internal.getNumberOfPages();
+  const pageHeight = doc.internal.pageSize.getHeight();
   for (let i = 1; i <= pageCount; i++) {
     doc.setPage(i);
+
+    // Watermark on every page if bill is cancelled
+    if (bill.is_cancelled) {
+      doc.saveGraphicsState();
+      doc.setGState(new doc.GState({ opacity: 0.16 }));
+      doc.setTextColor(220, 38, 38);
+      doc.setFontSize(60);
+      doc.setFont('helvetica', 'bold');
+      doc.text('CANCELLED', pageWidth / 2, pageHeight / 2, {
+        align: 'center',
+        angle: 45,
+      });
+      doc.restoreGraphicsState();
+    }
+
     doc.setFontSize(7);
     doc.setTextColor(60, 60, 60);
     doc.text(

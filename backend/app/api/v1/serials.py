@@ -543,6 +543,7 @@ async def lookup_serial(
         .outerjoin(Category, Product.category_id == Category.id)
         .join(Shop, OutwardLine.shop_id == Shop.id)
         .where(func.lower(OutwardLine.serial_text) == clean_serial.lower())
+        .order_by(OutwardLine.is_cancelled.asc(), OutwardLine.created_at.desc())
     )
     unm_res = await db.execute(unm_query)
     unm_row = unm_res.first()
@@ -587,21 +588,24 @@ async def lookup_serial(
             for h in history_items
         ) or (line.flag_reason and "damage" in line.flag_reason.lower())
 
+        status_val = "available" if line.is_cancelled else "dispatched"
+        status_lbl = "Recorded (Bill Cancelled)" if line.is_cancelled else "Recorded only"
+
         return SerialDetailResponse(
             serial_number=line.serial_text,
             serial_number_id=None,
             is_tracked=False,
-            status="dispatched",
+            status=status_val,
             product_id=p_id,
             product_name=p_name,
             brand=p_brand,
             model=p_model,
             category_name=cat_name,
             unit_type=line.unit_type,
-            last_shop_id=s_id,
-            last_shop_name=s_name,
-            last_shop_city=s_city,
-            status_label="Recorded only",
+            last_shop_id=None if line.is_cancelled else s_id,
+            last_shop_name=None if line.is_cancelled else s_name,
+            last_shop_city=None if line.is_cancelled else s_city,
+            status_label=status_lbl,
             history=history_items,
             is_damaged=unm_has_dmg,
             is_dispatched_damaged=unm_has_dmg,
@@ -819,7 +823,10 @@ async def check_bulk_serials(
         unmatched_query = (
             select(OutwardLine.serial_text, OutwardLine.product_id, Product.name, Product.brand, Product.model, OutwardLine.unit_type)
             .join(Product, OutwardLine.product_id == Product.id)
-            .where(OutwardLine.serial_text.in_(chunk))
+            .where(
+                OutwardLine.serial_text.in_(chunk),
+                OutwardLine.is_cancelled == False,
+            )
         )
         out_rows = (await db.execute(unmatched_query)).all()
         for s_text, p_id, p_name, p_brand, p_model, u_type in out_rows:
@@ -915,7 +922,10 @@ async def import_bulk_serials(
         existing_sn_set.update(s.upper() for s in existing_sn_res.scalars().all())
 
         existing_out_res = await db.execute(
-            select(OutwardLine.serial_text).where(OutwardLine.serial_text.in_(chunk))
+            select(OutwardLine.serial_text).where(
+                OutwardLine.serial_text.in_(chunk),
+                OutwardLine.is_cancelled == False,
+            )
         )
         existing_out_set.update(s.upper() for s in existing_out_res.scalars().all())
 

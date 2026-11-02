@@ -61,6 +61,11 @@ class ApiService {
   List<Shop>? get cachedShops => _cachedShops;
   List<BillListItem>? get cachedBills => _cachedBills;
 
+  void invalidateBillsCache() {
+    _cachedBills = null;
+    _billsCacheTime = null;
+  }
+
   void updateCachedCategory(Category cat) {
     _cachedCategories ??= [];
     final idx = _cachedCategories!.indexWhere((c) => c.id == cat.id);
@@ -1077,6 +1082,7 @@ class ApiService {
 
     if (res.statusCode == 200 || res.statusCode == 201) {
       invalidateProductCache();
+      invalidateBillsCache();
       _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
@@ -1108,6 +1114,7 @@ class ApiService {
 
     if (res.statusCode == 200 || res.statusCode == 201) {
       invalidateProductCache();
+      invalidateBillsCache();
       _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
@@ -1237,6 +1244,7 @@ class ApiService {
 
     if (res.statusCode == 200 || res.statusCode == 201) {
       invalidateProductCache();
+      invalidateBillsCache();
       _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
@@ -1272,6 +1280,7 @@ class ApiService {
 
     if (res.statusCode == 200 || res.statusCode == 201) {
       invalidateProductCache();
+      invalidateBillsCache();
       _refreshProductsInBackground();
       return jsonDecode(res.body);
     } else {
@@ -1378,10 +1387,12 @@ class ApiService {
     }
   }
 
-  Future<BillDetail> getBillDetail(String billNumber) async {
+  Future<BillDetail> getBillDetail(String billNumber, {bool? isCancelled}) async {
     final uri = Uri.parse(
       '$_baseUrl/outward/bills/${Uri.encodeComponent(billNumber)}',
-    );
+    ).replace(queryParameters: {
+      if (isCancelled != null) 'cancelled': isCancelled.toString(),
+    });
     final res = await _authenticatedGet(uri);
     if (res.statusCode == 200) {
       return BillDetail.fromJson(jsonDecode(res.body));
@@ -1413,12 +1424,14 @@ class ApiService {
   Future<Map<String, dynamic>> printBill({
     required String billNumber,
     String? printerName,
+    bool? isCancelled,
     bool dryRun = false,
   }) async {
     final uri = Uri.parse('$_baseUrl/print/bill');
     final payload = <String, dynamic>{
       'bill_number': billNumber.trim(),
       'dry_run': dryRun,
+      if (isCancelled != null) 'is_cancelled': isCancelled,
     };
     if (printerName != null && printerName.isNotEmpty) {
       payload['printer_name'] = printerName;

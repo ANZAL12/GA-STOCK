@@ -149,10 +149,14 @@ async def get_offline_snapshot(
         )
         .outerjoin(Shop, OutwardLine.shop_id == Shop.id)
         .outerjoin(Product, OutwardLine.product_id == Product.id)
+        .where(OutwardLine.is_cancelled == False)
     )
     if not full:
         cutoff_date = date.today() - timedelta(days=days_dispatched)
-        outward_query = outward_query.where(OutwardLine.transaction_date >= cutoff_date)
+        outward_query = outward_query.where(
+            OutwardLine.transaction_date >= cutoff_date,
+            OutwardLine.is_cancelled == False,
+        )
 
     outward_disp_res = await db.execute(outward_query.distinct())
     for disp_text, disp_prod_id, disp_unit_type, disp_s_name, disp_s_city, disp_p_model, disp_p_brand in outward_disp_res.all():

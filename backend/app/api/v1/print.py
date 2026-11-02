@@ -28,6 +28,7 @@ router = APIRouter(prefix="/print", tags=["print"])
 
 class PrintBillRequest(BaseModel):
     bill_number: str = Field(..., description="Bill Number or delivery reference to print")
+    is_cancelled: Optional[bool] = Field(None, description="Whether to print the cancelled version if multiple exist")
     printer_name: Optional[str] = Field(None, description="Office PC printer name. If null, default is used.")
     dry_run: bool = Field(False, description="If true, verifies PDF rendering and printer DC without spooling paper.")
 
@@ -574,6 +575,7 @@ async def print_bill(
         bill_number=clean_b_num,
         current_user=current_user,
         db=db,
+        cancelled=payload.is_cancelled,
     )
 
     # Render professional Delivery Challan PDF bytes
