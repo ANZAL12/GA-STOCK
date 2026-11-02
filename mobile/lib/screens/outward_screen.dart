@@ -13,6 +13,7 @@ import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
 import '../widgets/add_shop_dialog.dart';
+import '../widgets/add_product_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../widgets/office_pc_confirm_dialog.dart';
 import '../services/sound_service.dart';
@@ -1037,6 +1038,26 @@ class _OutwardScreenState extends State<OutwardScreen> {
               }
             }
 
+            Future<void> onAddNewModel() async {
+              final newProd = await showAddProductDialog(
+                context,
+                initialModel: sheetSearch.trim().isNotEmpty ? sheetSearch.trim() : null,
+              );
+              if (newProd != null && mounted) {
+                setState(() {
+                  if (!_products.any((p) => p.id == newProd.id)) {
+                    _products.insert(0, newProd);
+                  }
+                  _selectedProduct = newProd;
+                  _activeFilterModelId = 'ALL';
+                });
+                if (ctx.mounted) {
+                  Navigator.pop(ctx);
+                }
+                _showToast('Active model: ${newProd.brand} ${newProd.model}', const Color(0xFF059669));
+              }
+            }
+
             final filteredProds = _products.where((p) {
               final q = sheetSearch.toLowerCase();
               return p.name.toLowerCase().contains(q) ||
@@ -1073,6 +1094,16 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                             overflow: TextOverflow.ellipsis,
                           ),
+                        ),
+                        // Add New Model Button
+                        TextButton.icon(
+                          style: TextButton.styleFrom(
+                            foregroundColor: const Color(0xFF059669),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          ),
+                          icon: const Icon(Icons.add_circle_outline, size: 18),
+                          label: const Text('Add Model', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          onPressed: onAddNewModel,
                         ),
                         // Real-time Sync Button
                         IconButton(
@@ -1159,28 +1190,51 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                     textAlign: TextAlign.center,
                                   ),
                                   const SizedBox(height: 6),
-                                  const Text(
-                                    'If this model was just added on the admin dashboard, tap below to sync immediately into this dispatch window.',
+                                  Text(
+                                    sheetSearch.isNotEmpty
+                                        ? 'Model "$sheetSearch" is not in the system yet. Add it now or sync from server.'
+                                        : 'No models found. Add a new model or sync from server.',
                                     textAlign: TextAlign.center,
-                                    style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                    style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                                   ),
                                   const SizedBox(height: 16),
-                                  ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF4F46E5),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    ),
-                                    icon: isSyncing
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                          )
-                                        : const Icon(Icons.cloud_sync_outlined, size: 18),
-                                    label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
-                                    onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
+                                  Wrap(
+                                    alignment: WrapAlignment.center,
+                                    spacing: 12,
+                                    runSpacing: 10,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(0xFF059669),
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        icon: const Icon(Icons.add_circle_outline, size: 18),
+                                        label: Text(
+                                          sheetSearch.trim().isNotEmpty ? 'Add "${sheetSearch.trim()}" Model' : 'Add Model',
+                                          style: const TextStyle(fontWeight: FontWeight.bold),
+                                        ),
+                                        onPressed: onAddNewModel,
+                                      ),
+                                      OutlinedButton.icon(
+                                        style: OutlinedButton.styleFrom(
+                                          foregroundColor: const Color(0xFF4F46E5),
+                                          side: const BorderSide(color: Color(0xFF4F46E5)),
+                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        icon: isSyncing
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                                              )
+                                            : const Icon(Icons.cloud_sync_outlined, size: 18),
+                                        label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
+                                        onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
@@ -3041,24 +3095,61 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         'Select Model to Dispatch:',
                         style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
                       ),
-                      InkWell(
-                        onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
-                        borderRadius: BorderRadius.circular(6),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                          child: Row(
-                            children: [
-                              _loadingProducts
-                                  ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
-                                  : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
-                              const SizedBox(width: 4),
-                              Text(
-                                _loadingProducts ? 'Syncing...' : 'Sync Models',
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                      Row(
+                        children: [
+                          InkWell(
+                            onTap: () async {
+                              final newProd = await showAddProductDialog(
+                                context,
+                                initialModel: _productSearch.trim().isNotEmpty ? _productSearch.trim() : null,
+                              );
+                              if (newProd != null && mounted) {
+                                setState(() {
+                                  if (!_products.any((p) => p.id == newProd.id)) {
+                                    _products.insert(0, newProd);
+                                  }
+                                  _selectedProduct = newProd;
+                                  _currentStep = 3;
+                                });
+                                _showToast('Added and selected: ${newProd.brand} ${newProd.model}', const Color(0xFF059669));
+                              }
+                            },
+                            borderRadius: BorderRadius.circular(6),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.add_circle_outline, size: 14, color: Color(0xFF059669)),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'Add Model',
+                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
+                                  ),
+                                ],
                               ),
-                            ],
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 8),
+                          InkWell(
+                            onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                            borderRadius: BorderRadius.circular(6),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              child: Row(
+                                children: [
+                                  _loadingProducts
+                                      ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
+                                      : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _loadingProducts ? 'Syncing...' : 'Sync Models',
+                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -3130,28 +3221,66 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 6),
-                        const Text(
-                          'If this model was just added on the admin dashboard, tap below to sync immediately.',
+                        Text(
+                          _productSearch.isNotEmpty
+                              ? 'Model "$_productSearch" is not in the system yet. Add it now or sync from server.'
+                              : 'If this model was just added on the admin dashboard, tap below to sync immediately.',
                           textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                         ),
                         const SizedBox(height: 16),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF4F46E5),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                          icon: _loadingProducts
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                                )
-                              : const Icon(Icons.cloud_sync_outlined, size: 18),
-                          label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
-                          onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 12,
+                          runSpacing: 10,
+                          children: [
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF059669),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              icon: const Icon(Icons.add_circle_outline, size: 18),
+                              label: Text(
+                                _productSearch.trim().isNotEmpty ? 'Add "${_productSearch.trim()}" Model' : 'Add Model',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              onPressed: () async {
+                                final newProd = await showAddProductDialog(
+                                  context,
+                                  initialModel: _productSearch.trim().isNotEmpty ? _productSearch.trim() : null,
+                                );
+                                if (newProd != null && mounted) {
+                                  setState(() {
+                                    if (!_products.any((p) => p.id == newProd.id)) {
+                                      _products.insert(0, newProd);
+                                    }
+                                    _selectedProduct = newProd;
+                                    _currentStep = 3;
+                                  });
+                                  _showToast('Added and selected: ${newProd.brand} ${newProd.model}', const Color(0xFF059669));
+                                }
+                              },
+                            ),
+                            OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFF4F46E5),
+                                side: const BorderSide(color: Color(0xFF4F46E5)),
+                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              icon: _loadingProducts
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                                    )
+                                  : const Icon(Icons.cloud_sync_outlined, size: 18),
+                              label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
+                              onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                            ),
+                          ],
                         ),
                       ],
                     ),
