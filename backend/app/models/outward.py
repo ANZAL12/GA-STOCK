@@ -1,8 +1,8 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,8 +41,18 @@ class OutwardBatch(Base, PrimaryKeyMixin, CreatedAtMixin):
     flagged_count:  Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     remarks: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Cancellation support
+    is_cancelled:          Mapped[bool]                  = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"), index=True
+    )
+    cancelled_at:          Mapped[Optional[datetime]]    = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_by_user_id:  Mapped[Optional[uuid.UUID]]   = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    cancel_reason:         Mapped[Optional[str]]         = mapped_column(Text, nullable=True)
+
     def __repr__(self) -> str:
-        return f"<OutwardBatch shop={self.shop_id} qty={self.quantity}>"
+        return f"<OutwardBatch shop={self.shop_id} qty={self.quantity} cancelled={self.is_cancelled}>"
 
 
 class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
@@ -99,5 +109,11 @@ class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
     flag_reason:          Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     unit_type:            Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
+    # Cancellation support
+    is_cancelled:         Mapped[bool]          = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"), index=True
+    )
+
     def __repr__(self) -> str:
-        return f"<OutwardLine {self.serial_text!r} matched={self.is_matched}>"
+        return f"<OutwardLine {self.serial_text!r} matched={self.is_matched} cancelled={self.is_cancelled}>"
+

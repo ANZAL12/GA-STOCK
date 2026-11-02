@@ -33,11 +33,15 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
   // Title Banner
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text("DELIVERY CHALLAN", pageWidth / 2, startY + 5.5, { align: "center" });
+  const titleText = bill.is_cancelled ? "DELIVERY CHALLAN [CANCELLED]" : "DELIVERY CHALLAN";
+  doc.text(titleText, pageWidth / 2, startY + 5.5, { align: "center" });
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
-  doc.text("(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)", pageWidth / 2, startY + 9.5, {
+  const subText = bill.is_cancelled
+    ? "(THIS BILL HAS BEEN CANCELLED - ALL SERIALS RETURNED TO INVENTORY)"
+    : "(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)";
+  doc.text(subText, pageWidth / 2, startY + 9.5, {
     align: "center",
   });
 
@@ -115,6 +119,9 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
   };
 
   addRightRow("Challan / Bill No.:", bill.bill_number, true);
+  if (bill.is_cancelled) {
+    addRightRow("Voucher Status:", "CANCELLED", true);
+  }
   addRightRow("Dated:", bill.transaction_date, true);
   addRightRow("Dispatched By:", bill.dispatched_by_name, true);
   addRightRow("Vehicle / Ref:", bill.delivery_reference || "Direct / Local", true);

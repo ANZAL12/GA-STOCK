@@ -1,12 +1,13 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Annotated, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_device_optional, get_current_user
+from app.api.deps import get_current_device_optional, get_current_user, require_admin
 from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
@@ -22,6 +23,8 @@ from app.schemas.outward import (
     BillBatchSummary,
     BillDetailResponse,
     BillListItem,
+    CancelBillRequest,
+    CancelBillResponse,
     OutwardBatchCreate,
     OutwardBatchResponse,
     OutwardCheckRefRequest,
@@ -67,11 +70,14 @@ async def check_serial(
     result = await db.execute(query)
     row = result.first()
 
-    # 2. Query previous outward dispatch lines (any batch, any shop)
+    # 2. Query previous outward dispatch lines (any batch, any shop) - excluding cancelled dispatches
     prev_disp_res = await db.execute(
         select(OutwardLine, Shop.name.label("shop_name"))
         .join(Shop, OutwardLine.shop_id == Shop.id)
-        .where(OutwardLine.serial_text == clean_serial)
+        .where(
+            OutwardLine.serial_text == clean_serial,
+            OutwardLine.is_cancelled == False,
+        )
         .order_by(OutwardLine.transaction_date.desc())
     )
     prev_disp = prev_disp_res.first()
@@ -1456,6 +1462,7 @@ async def list_outward_bills(
     List outward dispatches aggregated by Bill Number.
     Allows viewing all models/batches dispatched together under one invoice or bill.
     """
+    Canceller = aliased(User)
     query = (
         select(
             OutwardBatch,
@@ -1465,10 +1472,12 @@ async def list_outward_bills(
             Shop.name.label("shop_name"),
             Shop.city.label("shop_city"),
             User.full_name.label("dispatcher_name"),
+            Canceller.full_name.label("canceller_name"),
         )
         .join(Product, OutwardBatch.product_id == Product.id)
         .join(Shop, OutwardBatch.shop_id == Shop.id)
         .join(User, OutwardBatch.dispatched_by_user_id == User.id)
+        .outerjoin(Canceller, OutwardBatch.cancelled_by_user_id == Canceller.id)
         .order_by(OutwardBatch.transaction_date.desc(), OutwardBatch.created_at.desc())
     )
 
@@ -1492,7 +1501,7 @@ async def list_outward_bills(
 
     # Group batches by bill_number (or by batch id if bill_number is missing)
     bills_map: dict[str, dict] = {}
-    for b, p_name, p_brand, p_model, s_name, s_city, u_name in rows:
+    for b, p_name, p_brand, p_model, s_name, s_city, u_name, c_name in rows:
         b_key = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
         if b_key not in bills_map:
             bills_map[b_key] = {
@@ -1507,11 +1516,24 @@ async def list_outward_bills(
                 "remarks": b.remarks,
                 "total_units": 0,
                 "total_batches": 0,
+                "is_cancelled": b.is_cancelled,
+                "cancelled_at": b.cancelled_at,
+                "cancelled_by_name": c_name if b.is_cancelled else None,
+                "cancel_reason": b.cancel_reason,
                 "models_summary": [],
             }
         item = bills_map[b_key]
         item["total_units"] += b.quantity
         item["total_batches"] += 1
+        if b.is_cancelled:
+            item["is_cancelled"] = True
+            if b.cancelled_at and not item["cancelled_at"]:
+                item["cancelled_at"] = b.cancelled_at
+            if c_name and not item["cancelled_by_name"]:
+                item["cancelled_by_name"] = c_name
+            if b.cancel_reason and not item["cancel_reason"]:
+                item["cancel_reason"] = b.cancel_reason
+
         summary_str = f"{p_brand} {p_model} ({b.quantity}u)"
         if summary_str not in item["models_summary"]:
             item["models_summary"].append(summary_str)
@@ -1530,6 +1552,7 @@ async def get_outward_bill_detail(
     Get all batches and scanned serial lines associated with a specific Bill Number.
     """
     clean_b_num = bill_number.strip()
+    Canceller = aliased(User)
     query = (
         select(
             OutwardBatch,
@@ -1539,10 +1562,12 @@ async def get_outward_bill_detail(
             Shop.name.label("shop_name"),
             Shop.city.label("shop_city"),
             User.full_name.label("dispatcher_name"),
+            Canceller.full_name.label("canceller_name"),
         )
         .join(Product, OutwardBatch.product_id == Product.id)
         .join(Shop, OutwardBatch.shop_id == Shop.id)
         .join(User, OutwardBatch.dispatched_by_user_id == User.id)
+        .outerjoin(Canceller, OutwardBatch.cancelled_by_user_id == Canceller.id)
         .where(
             (func.lower(OutwardBatch.bill_number) == clean_b_num.lower())
             | (func.lower(OutwardBatch.delivery_reference) == clean_b_num.lower())
@@ -1554,9 +1579,9 @@ async def get_outward_bill_detail(
     if not rows:
         raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
 
-    first_b, _, _, _, s_name, s_city, u_name = rows[0]
+    first_b, _, _, _, s_name, s_city, u_name, c_name = rows[0]
 
-    batch_ids = [b.id for b, _, _, _, _, _, _ in rows]
+    batch_ids = [b.id for b, _, _, _, _, _, _, _ in rows]
     lines_res = await db.execute(
         select(OutwardLine)
         .where(OutwardLine.batch_id.in_(batch_ids))
@@ -1576,13 +1601,25 @@ async def get_outward_bill_detail(
                 flag_reason=l.flag_reason,
                 unit_type=l.unit_type,
                 status_label=lbl,
+                is_cancelled=l.is_cancelled,
             )
         )
 
     batch_summaries: list[BillBatchSummary] = []
     total_units = 0
-    for b, p_name, p_brand, p_model, _, _, _ in rows:
+    is_any_cancelled = False
+    cancelled_at = None
+    canceller_name = None
+    cancel_reason = None
+
+    for b, p_name, p_brand, p_model, _, _, _, b_c_name in rows:
         total_units += b.quantity
+        if b.is_cancelled:
+            is_any_cancelled = True
+            cancelled_at = cancelled_at or b.cancelled_at
+            canceller_name = canceller_name or b_c_name
+            cancel_reason = cancel_reason or b.cancel_reason
+
         batch_summaries.append(
             BillBatchSummary(
                 batch_id=b.id,
@@ -1594,6 +1631,7 @@ async def get_outward_bill_detail(
                 matched_count=b.matched_count,
                 unmatched_count=b.unmatched_count,
                 flagged_count=b.flagged_count,
+                is_cancelled=b.is_cancelled,
                 lines=lines_by_batch.get(b.id, []),
             )
         )
@@ -1610,5 +1648,175 @@ async def get_outward_bill_detail(
         remarks=first_b.remarks,
         total_units=total_units,
         total_batches=len(rows),
+        is_cancelled=is_any_cancelled,
+        cancelled_at=cancelled_at,
+        cancelled_by_name=canceller_name,
+        cancel_reason=cancel_reason,
         batches=batch_summaries,
+    )
+
+
+@router.post("/bills/{bill_number}/cancel", response_model=CancelBillResponse)
+async def cancel_outward_bill(
+    bill_number: str,
+    req: CancelBillRequest,
+    current_user: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CancelBillResponse:
+    """
+    Cancel an Outward Dispatch Bill (Admin Only):
+    - Automatically returns all matched serial numbers back to 'available' inventory for that specific model.
+    - If a serial was an unmatched 'new / old stock' serial (not in system), it is simply ignored from stock return.
+    - Increments the model's current_stock_qty by the returned matched units.
+    - Marks outward batches and lines as cancelled (immutable audit record preserved).
+    - Logs SerialHistory entries and broadcasts WebSocket stock updates.
+    """
+    clean_b_num = bill_number.strip()
+    if not clean_b_num:
+        raise HTTPException(status_code=400, detail="Bill number cannot be blank.")
+
+    # 1. Fetch all batches for this bill
+    batches_res = await db.execute(
+        select(OutwardBatch)
+        .where(
+            (func.lower(OutwardBatch.bill_number) == clean_b_num.lower())
+            | (func.lower(OutwardBatch.delivery_reference) == clean_b_num.lower())
+        )
+        .with_for_update()
+    )
+    batches = batches_res.scalars().all()
+    if not batches:
+        raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
+
+    if all(b.is_cancelled for b in batches):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bill '{clean_b_num}' has already been cancelled.",
+        )
+
+    batch_ids = [b.id for b in batches]
+
+    # 2. Fetch all lines for these batches
+    lines_res = await db.execute(
+        select(OutwardLine)
+        .where(OutwardLine.batch_id.in_(batch_ids))
+        .with_for_update()
+    )
+    lines = lines_res.scalars().all()
+
+    # 3. Categorize lines into matched vs unmatched
+    matched_lines = [l for l in lines if l.serial_number_id is not None]
+    unmatched_lines = [l for l in lines if l.serial_number_id is None]
+
+    # Unmatched serials: Ignored from stock return as instructed
+    ignored_serials = []
+    for l in unmatched_lines:
+        l.is_cancelled = True
+        ignored_serials.append(l.serial_text)
+
+    # 4. Matched serials: Return to 'available' status and clear shop
+    returned_serials = []
+    sn_ids = [l.serial_number_id for l in matched_lines]
+    sns_map: dict[uuid.UUID, SerialNumber] = {}
+    if sn_ids:
+        sns_res = await db.execute(
+            select(SerialNumber).where(SerialNumber.id.in_(sn_ids)).with_for_update()
+        )
+        sns_map = {sn.id: sn for sn in sns_res.scalars().all()}
+
+    now = datetime.now(timezone.utc)
+    cancel_note = req.reason.strip() if req.reason else "Bill cancelled by admin"
+
+    for l in matched_lines:
+        l.is_cancelled = True
+        sn = sns_map.get(l.serial_number_id)
+        if sn:
+            old_status = sn.status
+            if sn.status == SerialStatus.dispatched:
+                sn.status = SerialStatus.available
+                sn.last_shop_id = None
+
+            returned_serials.append(l.serial_text)
+
+            history = SerialHistory(
+                serial_number_id=sn.id,
+                serial_text=l.serial_text,
+                action=HistoryAction.returned,
+                from_status=old_status,
+                to_status=sn.status,
+                shop_id=l.shop_id,
+                outward_batch_id=l.batch_id,
+                is_matched=True,
+                user_id=current_user.id,
+                remarks=f"Bill '{clean_b_num}' cancelled by admin {current_user.full_name}: {cancel_note}. Returned to inventory.",
+            )
+            db.add(history)
+
+    # 5. Restore stock quantity on specific product models
+    restored_models = []
+    for b in batches:
+        if b.is_cancelled:
+            continue
+
+        prod = await db.get(Product, b.product_id)
+        if prod:
+            cat = await db.get(Category, prod.category_id) if prod.category_id else None
+            is_dual = cat and cat.has_dual_serial
+            # Only matched units originally decremented product.current_stock_qty
+            units_to_restore = (b.matched_count // 2) if is_dual else b.matched_count
+            prod.current_stock_qty += units_to_restore
+
+            restored_models.append({
+                "product_id": str(prod.id),
+                "model": prod.model,
+                "brand": prod.brand,
+                "restored_units": units_to_restore,
+                "new_stock_qty": prod.current_stock_qty,
+            })
+
+        b.is_cancelled = True
+        b.cancelled_at = now
+        b.cancelled_by_user_id = current_user.id
+        b.cancel_reason = cancel_note
+
+    # 6. Audit log
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="BILL_CANCELLED",
+        entity_type="bill",
+        entity_id=clean_b_num,
+        details={
+            "bill_number": clean_b_num,
+            "reason": cancel_note,
+            "total_batches_cancelled": len(batches),
+            "matched_serials_returned": len(returned_serials),
+            "unmatched_serials_ignored": len(ignored_serials),
+            "restored_models": restored_models,
+        },
+    )
+    db.add(audit)
+
+    # 7. Atomic DB commit
+    await db.commit()
+
+    # 8. Real-time WebSocket notification to all clients
+    await ws_manager.broadcast("stock_updated", {
+        "type": "bill_cancelled",
+        "bill_number": clean_b_num,
+        "restored_models": restored_models,
+        "matched_count": len(returned_serials),
+        "unmatched_count": len(ignored_serials),
+    })
+
+    return CancelBillResponse(
+        success=True,
+        bill_number=clean_b_num,
+        message=f"Bill '{clean_b_num}' cancelled successfully. {len(returned_serials)} matched serial(s) returned to stock; {len(ignored_serials)} unmatched serial(s) ignored.",
+        cancelled_at=now,
+        cancelled_by_name=current_user.full_name,
+        returned_serials_count=len(returned_serials),
+        ignored_serials_count=len(ignored_serials),
+        returned_serials=returned_serials,
+        ignored_serials=ignored_serials,
+        restored_models=restored_models,
     )

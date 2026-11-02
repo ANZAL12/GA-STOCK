@@ -92,15 +92,21 @@ async def get_overview(
     )
     inward_today = res_in_today.scalar() or 0
 
-    # 4. Outward today (total)
+    # 4. Outward today (total, excluding cancelled)
     res_out_today = await db.execute(
-        select(func.coalesce(func.sum(OutwardBatch.quantity), 0)).where(OutwardBatch.transaction_date == today)
+        select(func.coalesce(func.sum(OutwardBatch.quantity), 0)).where(
+            OutwardBatch.transaction_date == today,
+            OutwardBatch.is_cancelled == False,
+        )
     )
     outward_today = res_out_today.scalar() or 0
 
-    # 5. Recorded only today (unmatched old stock today)
+    # 5. Recorded only today (unmatched old stock today, excluding cancelled)
     res_unm_today = await db.execute(
-        select(func.coalesce(func.sum(OutwardBatch.unmatched_count), 0)).where(OutwardBatch.transaction_date == today)
+        select(func.coalesce(func.sum(OutwardBatch.unmatched_count), 0)).where(
+            OutwardBatch.transaction_date == today,
+            OutwardBatch.is_cancelled == False,
+        )
     )
     recorded_only_today = res_unm_today.scalar() or 0
 
@@ -184,13 +190,16 @@ async def get_stock_by_model(
         .subquery()
     )
 
-    # Subquery for unmatched outward dispatches per product
+    # Subquery for unmatched outward dispatches per product (excluding cancelled)
     unmatched_counts = (
         select(
             OutwardLine.product_id,
             func.count(OutwardLine.id).label("unmatched_count"),
         )
-        .where(OutwardLine.is_matched == False)
+        .where(
+            OutwardLine.is_matched == False,
+            OutwardLine.is_cancelled == False,
+        )
         .group_by(OutwardLine.product_id)
         .subquery()
     )
@@ -393,6 +402,9 @@ async def get_stock_out_report(
         query = query.where(OutwardLine.transaction_date <= date_to)
     if is_matched is not None:
         query = query.where(OutwardLine.is_matched == is_matched)
+
+    # Exclude cancelled outward dispatches
+    query = query.where(OutwardLine.is_cancelled == False)
 
     result = await db.execute(query)
     rows = result.all()

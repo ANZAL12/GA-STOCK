@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
-import type { BillListItem, BillDetail, Shop } from "../types";
+import { useAuth } from "../context/AuthContext";
+import type { BillListItem, BillDetail, Shop, CancelBillResponse } from "../types";
 import { generateBillPdf, printBillPdf } from "../utils/generateBillPdf";
 import {
   Receipt,
@@ -17,9 +18,13 @@ import {
   RotateCcw,
   Truck,
   Hash,
+  Ban,
+  AlertTriangle,
+  AlertCircle,
 } from "lucide-react";
 
 export const BillsPage: React.FC = () => {
+  const { isAdmin } = useAuth();
   const [bills, setBills] = useState<BillListItem[]>([]);
   const [shops, setShops] = useState<Shop[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,6 +33,7 @@ export const BillsPage: React.FC = () => {
   const [search, setSearch] = useState("");
   const [selectedShopId, setSelectedShopId] = useState<string>("");
   const [selectedDate, setSelectedDate] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "cancelled">("all");
 
   // Detailed Modal State
   const [selectedBill, setSelectedBill] = useState<BillDetail | null>(null);
@@ -36,6 +42,17 @@ export const BillsPage: React.FC = () => {
   const [serialSearch, setSerialSearch] = useState("");
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [printingPdf, setPrintingPdf] = useState(false);
+
+  // Cancellation State (Admin Only)
+  const [billToCancel, setBillToCancel] = useState<{
+    bill_number: string;
+    total_units: number;
+    shop_name?: string;
+  } | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [cancelModalError, setCancelModalError] = useState<string | null>(null);
+  const [actionSuccessNotice, setActionSuccessNotice] = useState<string | null>(null);
 
   const fetchShops = async () => {
     try {
@@ -135,6 +152,42 @@ export const BillsPage: React.FC = () => {
     }
   };
 
+  // Filter bills by active/cancelled status
+  const displayedBills = useMemo(() => {
+    if (statusFilter === "active") return bills.filter((b) => !b.is_cancelled);
+    if (statusFilter === "cancelled") return bills.filter((b) => b.is_cancelled);
+    return bills;
+  }, [bills, statusFilter]);
+
+  const activeCount = useMemo(() => bills.filter((b) => !b.is_cancelled).length, [bills]);
+  const cancelledCount = useMemo(() => bills.filter((b) => b.is_cancelled).length, [bills]);
+
+  const handleExecuteCancel = async () => {
+    if (!billToCancel) return;
+    setIsCancelling(true);
+    setCancelModalError(null);
+    try {
+      const res = await apiRequest<CancelBillResponse>(
+        `/outward/bills/${encodeURIComponent(billToCancel.bill_number)}/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({ reason: cancelReason.trim() || undefined }),
+        }
+      );
+      setActionSuccessNotice(res.message);
+      setBillToCancel(null);
+      setCancelReason("");
+      if (selectedBill && selectedBill.bill_number === billToCancel.bill_number) {
+        await openBillDetail(selectedBill.bill_number);
+      }
+      await fetchBills();
+    } catch (err: any) {
+      setCancelModalError(err.message || "Failed to cancel bill");
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
   // Filtered serials in detail modal
   const filteredSerials = useMemo(() => {
     if (!selectedBill) return [];
@@ -200,7 +253,60 @@ export const BillsPage: React.FC = () => {
         </button>
       </div>
 
-      {/* 2. Search and Filters */}
+      {/* Action Success Toast Banner */}
+      {actionSuccessNotice && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-4 rounded-2xl flex items-center justify-between shadow-xs animate-in fade-in">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+            <span className="text-xs font-semibold">{actionSuccessNotice}</span>
+          </div>
+          <button
+            onClick={() => setActionSuccessNotice(null)}
+            className="text-emerald-600 hover:text-emerald-800 p-1 rounded-lg"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* 2. Status Filter Tabs */}
+      <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
+        <button
+          type="button"
+          onClick={() => setStatusFilter("all")}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            statusFilter === "all"
+              ? "bg-white text-slate-900 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          All Bills ({bills.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setStatusFilter("active")}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            statusFilter === "active"
+              ? "bg-white text-emerald-700 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          Active ({activeCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setStatusFilter("cancelled")}
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            statusFilter === "cancelled"
+              ? "bg-white text-rose-700 shadow-xs"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          Cancelled ({cancelledCount})
+        </button>
+      </div>
+
+      {/* 3. Search and Filters */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-center">
           {/* Text Search */}
@@ -300,6 +406,7 @@ export const BillsPage: React.FC = () => {
             <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
               <tr>
                 <th className="py-3 px-4">Bill Number</th>
+                <th className="py-3 px-4">Status</th>
                 <th className="py-3 px-4">Date</th>
                 <th className="py-3 px-4">Consignee / Shop</th>
                 <th className="py-3 px-4">Dispatched Units & Models</th>
@@ -311,27 +418,29 @@ export const BillsPage: React.FC = () => {
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-slate-400">
+                  <td colSpan={8} className="text-center py-12 text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <div className="w-6 h-6 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin" />
                       <span>Loading bills...</span>
                     </div>
                   </td>
                 </tr>
-              ) : bills.length === 0 ? (
+              ) : displayedBills.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-14 text-slate-400">
+                  <td colSpan={8} className="text-center py-14 text-slate-400">
                     <div className="flex flex-col items-center gap-2">
                       <Receipt size={32} className="opacity-30 text-[#3C3489]" />
                       <p className="font-semibold text-slate-600">No dispatch bills found</p>
                       <p className="text-[11px] text-slate-400">
-                        When outward dispatches are submitted with a bill number, they will appear here.
+                        {statusFilter === "all"
+                          ? "When outward dispatches are submitted with a bill number, they will appear here."
+                          : `No ${statusFilter} bills match your current filters.`}
                       </p>
                     </div>
                   </td>
                 </tr>
               ) : (
-                bills.map((bill) => (
+                displayedBills.map((bill) => (
                   <tr
                     key={bill.bill_number + bill.created_at}
                     onClick={() => openBillDetail(bill.bill_number)}
@@ -343,6 +452,21 @@ export const BillsPage: React.FC = () => {
                         <Hash size={12} className="opacity-70" />
                         {bill.bill_number}
                       </span>
+                    </td>
+
+                    {/* Status Badge */}
+                    <td className="py-3 px-4 whitespace-nowrap">
+                      {bill.is_cancelled ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                          <Ban size={10} className="text-rose-600" />
+                          CANCELLED
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <CheckCircle2 size={10} className="text-emerald-600" />
+                          ACTIVE
+                        </span>
+                      )}
                     </td>
 
                     {/* Date */}
@@ -361,7 +485,13 @@ export const BillsPage: React.FC = () => {
                     {/* Models & Quantities */}
                     <td className="py-3 px-4">
                       <div className="space-y-1">
-                        <span className="inline-block px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold border ${
+                            bill.is_cancelled
+                              ? "bg-slate-100 text-slate-600 border-slate-200 line-through"
+                              : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          }`}
+                        >
                           {bill.total_units} unit{bill.total_units > 1 ? "s" : ""} ({bill.total_batches} model
                           {bill.total_batches > 1 ? "s" : ""})
                         </span>
@@ -419,6 +549,29 @@ export const BillsPage: React.FC = () => {
                           <FileDown size={13} />
                           PDF
                         </button>
+
+                        {/* Admin Cancel Button */}
+                        {isAdmin && (
+                          bill.is_cancelled ? (
+                            <span className="text-[10px] font-semibold text-rose-500 italic px-1">
+                              Cancelled
+                            </span>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setBillToCancel(bill);
+                                setCancelReason("");
+                                setCancelModalError(null);
+                              }}
+                              title="Cancel Bill & Return Serials to Stock (Admin Only)"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors shadow-xs"
+                            >
+                              <Ban size={12} />
+                              Cancel
+                            </button>
+                          )
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -468,6 +621,11 @@ export const BillsPage: React.FC = () => {
                     <span className="px-2.5 py-0.5 rounded-md bg-white/20 text-white font-mono font-bold text-xs">
                       BILL #{selectedBill.bill_number}
                     </span>
+                    {selectedBill.is_cancelled && (
+                      <span className="px-2.5 py-0.5 rounded-md bg-rose-600 text-white font-bold text-xs flex items-center gap-1">
+                        <Ban size={11} /> CANCELLED
+                      </span>
+                    )}
                     <span className="text-xs text-indigo-200 font-medium">
                       {selectedBill.transaction_date}
                     </span>
@@ -514,6 +672,27 @@ export const BillsPage: React.FC = () => {
 
               {/* Modal Body */}
               <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6 min-h-0">
+                {/* Cancelled Banner if applicable */}
+                {selectedBill.is_cancelled && (
+                  <div className="bg-rose-50 border border-rose-200 p-4 rounded-xl flex items-start gap-3 text-rose-900">
+                    <AlertTriangle size={20} className="shrink-0 text-rose-600 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="font-bold text-xs uppercase tracking-wide text-rose-800">
+                        This Bill Was Cancelled
+                      </p>
+                      <p className="text-xs text-rose-700">
+                        Cancelled by <span className="font-semibold text-rose-900">{selectedBill.cancelled_by_name || "Admin"}</span>
+                        {selectedBill.cancelled_at ? ` on ${new Date(selectedBill.cancelled_at).toLocaleString()}` : ""}.
+                        All matched serial numbers in this bill were automatically returned to warehouse stock for their respective models.
+                      </p>
+                      {selectedBill.cancel_reason && (
+                        <p className="text-xs text-rose-600 font-medium italic">
+                          Reason: {selectedBill.cancel_reason}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {/* 1. Summary Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="bg-slate-50 border border-slate-200 p-3 rounded-xl">
@@ -659,11 +838,26 @@ export const BillsPage: React.FC = () => {
               </div>
 
               {/* Modal Footer */}
-              <div className="shrink-0 bg-slate-50 border-t border-slate-200 px-5 sm:px-6 py-3.5 flex items-center justify-between">
+              <div className="shrink-0 bg-slate-50 border-t border-slate-200 px-5 sm:px-6 py-3.5 flex items-center justify-between gap-3 flex-wrap">
                 <span className="text-xs text-slate-500">
-                  Ready to print or share delivery challan with dealer.
+                  {selectedBill.is_cancelled
+                    ? "This bill has been cancelled. All serials were returned to stock."
+                    : "Ready to print or share delivery challan with dealer."}
                 </span>
                 <div className="flex items-center gap-2">
+                  {isAdmin && !selectedBill.is_cancelled && (
+                    <button
+                      onClick={() => {
+                        setBillToCancel(selectedBill);
+                        setCancelReason("");
+                        setCancelModalError(null);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold hover:bg-rose-100 transition-colors shadow-xs"
+                    >
+                      <Ban size={14} />
+                      Cancel Bill
+                    </button>
+                  )}
                   <button
                     onClick={() => setSelectedBill(null)}
                     className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200/60 transition-colors"
@@ -677,7 +871,102 @@ export const BillsPage: React.FC = () => {
                     <FileDown size={14} />
                     Download PDF Challan
                   </button>
+                </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Admin Cancel Confirmation Modal */}
+      {billToCancel && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 shrink-0">
+                <AlertTriangle size={24} />
               </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Cancel Bill #{billToCancel.bill_number}?
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {billToCancel.shop_name
+                    ? `Dispatched to ${billToCancel.shop_name}`
+                    : "This outward bill will be marked as cancelled"}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-xs text-slate-700 space-y-1.5">
+              <p className="font-semibold text-slate-900">What happens on cancellation:</p>
+              <ul className="list-disc pl-4 space-y-1 text-slate-600">
+                <li>
+                  <span className="font-medium text-emerald-700">Matched Serials:</span> All verified serial numbers will return to available stock for their specific models immediately.
+                </li>
+                <li>
+                  <span className="font-medium text-amber-700">New / Unmatched Serials:</span> Pre-go-live unrecorded serials will simply be ignored.
+                </li>
+                <li>
+                  <span className="font-medium text-indigo-700">Model Stock Counts:</span> On-hand stock quantities will be restored automatically.
+                </li>
+              </ul>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Cancellation Reason (Optional)
+              </label>
+              <input
+                type="text"
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="e.g. Order cancelled by dealer, bill entered incorrectly..."
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50"
+              />
+            </div>
+
+            {cancelModalError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle size={15} className="shrink-0" />
+                <span>{cancelModalError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isCancelling}
+                onClick={() => {
+                  setBillToCancel(null);
+                  setCancelReason("");
+                  setCancelModalError(null);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                Keep Bill
+              </button>
+
+              <button
+                type="button"
+                disabled={isCancelling}
+                onClick={handleExecuteCancel}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60"
+              >
+                {isCancelling ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Cancelling & Returning...</span>
+                  </>
+                ) : (
+                  <>
+                    <Ban size={14} />
+                    <span>Yes, Cancel & Return Serials</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

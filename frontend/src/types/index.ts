@@ -274,6 +274,7 @@ export interface BillLineItem {
   flag_reason?: string | null;
   unit_type?: string | null;
   status_label: string;
+  is_cancelled?: boolean;
 }
 
 export interface BillBatchSummary {
@@ -286,6 +287,7 @@ export interface BillBatchSummary {
   matched_count: number;
   unmatched_count: number;
   flagged_count: number;
+  is_cancelled?: boolean;
   lines: BillLineItem[];
 }
 
@@ -301,6 +303,10 @@ export interface BillDetail {
   remarks?: string | null;
   total_units: number;
   total_batches: number;
+  is_cancelled?: boolean;
+  cancelled_at?: string | null;
+  cancelled_by_name?: string | null;
+  cancel_reason?: string | null;
   batches: BillBatchSummary[];
 }
 
@@ -316,7 +322,30 @@ export interface BillListItem {
   remarks?: string | null;
   total_units: number;
   total_batches: number;
+  is_cancelled?: boolean;
+  cancelled_at?: string | null;
+  cancelled_by_name?: string | null;
+  cancel_reason?: string | null;
   models_summary: string[];
+}
+
+export interface CancelBillResponse {
+  success: boolean;
+  bill_number: string;
+  message: string;
+  cancelled_at: string;
+  cancelled_by_name: string;
+  returned_serials_count: number;
+  ignored_serials_count: number;
+  returned_serials: string[];
+  ignored_serials: string[];
+  restored_models: Array<{
+    product_id: string;
+    model: string;
+    brand: string;
+    restored_units: number;
+    new_stock_qty: number;
+  }>;
 }
 
 export interface BulkSerialCheckItem {

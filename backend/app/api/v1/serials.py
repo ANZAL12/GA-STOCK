@@ -70,6 +70,10 @@ async def list_serials(
         )
         .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
         .join(Shop, OutwardLine.shop_id == Shop.id)
+        .where(
+            OutwardLine.is_cancelled == False,
+            OutwardBatch.is_cancelled == False,
+        )
         .distinct(OutwardLine.serial_number_id)
         .order_by(OutwardLine.serial_number_id, OutwardLine.created_at.desc())
         .subquery()
@@ -146,7 +150,11 @@ async def list_serials(
         .outerjoin(Category, Product.category_id == Category.id)
         .join(Shop, OutwardLine.shop_id == Shop.id)
         .join(OutwardBatch, OutwardLine.batch_id == OutwardBatch.id)
-        .where(OutwardLine.serial_number_id.is_(None))
+        .where(
+            OutwardLine.serial_number_id.is_(None),
+            OutwardLine.is_cancelled == False,
+            OutwardBatch.is_cancelled == False,
+        )
     )
 
     # SQL-level flow filtering for high speed at scale

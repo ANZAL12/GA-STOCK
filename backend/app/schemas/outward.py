@@ -121,6 +121,7 @@ class OutwardLineResponse(BaseModel):
     flag_reason: Optional[str] = None
     unit_type: Optional[str] = None
     status_label: str  # "Matched" | "Recorded only" | "Flagged"
+    is_cancelled: bool = False
 
 
 class OutwardBatchResponse(BaseModel):
@@ -145,6 +146,9 @@ class OutwardBatchResponse(BaseModel):
     dispatched_by_name: str
     device_id: Optional[uuid.UUID] = None
     remarks: Optional[str] = None
+    is_cancelled: bool = False
+    cancelled_at: Optional[datetime] = None
+    cancel_reason: Optional[str] = None
     created_at: datetime
     lines: list[OutwardLineResponse] = []
 
@@ -169,6 +173,7 @@ class BillBatchSummary(BaseModel):
     matched_count: int
     unmatched_count: int
     flagged_count: int
+    is_cancelled: bool = False
     lines: list[OutwardLineResponse] = []
 
 
@@ -184,6 +189,10 @@ class BillDetailResponse(BaseModel):
     remarks: Optional[str] = None
     total_units: int
     total_batches: int
+    is_cancelled: bool = False
+    cancelled_at: Optional[datetime] = None
+    cancelled_by_name: Optional[str] = None
+    cancel_reason: Optional[str] = None
     batches: list[BillBatchSummary] = []
 
 
@@ -199,4 +208,25 @@ class BillListItem(BaseModel):
     remarks: Optional[str] = None
     total_units: int
     total_batches: int
+    is_cancelled: bool = False
+    cancelled_at: Optional[datetime] = None
+    cancelled_by_name: Optional[str] = None
+    cancel_reason: Optional[str] = None
     models_summary: list[str] = []
+
+
+class CancelBillRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class CancelBillResponse(BaseModel):
+    success: bool = True
+    bill_number: str
+    message: str
+    cancelled_at: datetime
+    cancelled_by_name: str
+    returned_serials_count: int
+    ignored_serials_count: int
+    returned_serials: list[str] = []
+    ignored_serials: list[str] = []
+    restored_models: list[dict] = []
