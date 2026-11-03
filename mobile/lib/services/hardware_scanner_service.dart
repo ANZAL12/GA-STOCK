@@ -1,3 +1,4 @@
+
 import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -24,6 +25,7 @@ class HardwareScannerService {
   // Keystroke burst assembly buffer
   final StringBuffer _buffer = StringBuffer();
   DateTime? _lastKeystrokeTime;
+  DateTime? _lastBurstEndTime;
   Timer? _burstTimer;
   bool _initialized = false;
   bool _isEnabled = true;
@@ -97,6 +99,11 @@ class HardwareScannerService {
   VoidCallback registerListener(BarcodeScanCallback callback) {
     init(); // Ensure handler is active
 
+    // Proactively unfocus any focused text field and hide IME immediately upon screen mount
+    // so the soft keyboard can never steal or compose characters from the first scan
+    FocusManager.instance.primaryFocus?.unfocus();
+    SystemChannels.textInput.invokeMethod('TextInput.hide');
+
     // Only clear buffer if it is truly stale (> 1500ms).
     // NEVER wipe an active scan in progress (< 1500ms) when a screen mounts!
     if (_lastKeystrokeTime != null &&
@@ -162,6 +169,15 @@ class HardwareScannerService {
       _buffer.clear();
     }
 
+    // Drop any stray focus immediately on first keystroke so IME never consumes keys
+    if (_buffer.isEmpty) {
+      final currentFocus = FocusManager.instance.primaryFocus;
+      if (currentFocus != null && currentFocus.hasFocus) {
+        currentFocus.unfocus();
+        SystemChannels.textInput.invokeMethod('TextInput.hide');
+      }
+    }
+
     // 3. Check for Terminator Keys (Enter / NumpadEnter / Carriage Return / LineFeed)
     // NOTE: We deliberately DO NOT treat Tab as a terminator because many 2.4GHz
     // scanners transmit 2D or multi-field barcodes with an embedded Tab.
@@ -176,8 +192,8 @@ class HardwareScannerService {
       _lastKeystrokeTime = now;
       _buffer.write('\n');
       // Terminator received: scan is complete.
-      // Use 30ms micro-window to ensure trailing CR/LF or final hardware packets arrive.
-      _scheduleBurstCompletion(delayMs: 30);
+      // Use fast 25ms micro-window to ensure trailing CR/LF arrives without user-perceptible delay.
+      _scheduleBurstCompletion(delayMs: 25);
       return true; // Swallowed completely
     }
 
@@ -188,12 +204,13 @@ class HardwareScannerService {
       _buffer.write(char);
 
       // Auto-assembly fallback:
-      // For scanners without Enter, or during cold startup jitter where Android
-      // introduces an initial 100-250ms pause between the first few characters,
-      // wait 400ms of quiet.
-      // Normal scanner typing speed is 10-30ms per character. 400ms is imperceptible
-      // to humans, yet guarantees that cold-start USB/Bluetooth latency NEVER splits the barcode!
-      _scheduleBurstCompletion(delayMs: 400);
+      // Adaptive quiet window to accommodate Bluetooth HID / 2.4GHz cold-start wake-up jitter:
+      // When a scanner wakes from sleep (> 5s idle), 1500ms guarantees cold-start characters
+      // are never prematurely cut off. Once 4+ characters are received, 350ms ensures swift completion.
+      final bool isCold = _lastBurstEndTime == null ||
+          now.difference(_lastBurstEndTime!).inMilliseconds > 5000;
+      final int delay = _buffer.length < 4 ? (isCold ? 1500 : 650) : 350;
+      _scheduleBurstCompletion(delayMs: delay);
     }
 
     // 100% SWALLOWED: All external hardware keyboard events are consumed here!
@@ -216,6 +233,7 @@ class HardwareScannerService {
     _burstTimer?.cancel();
     _burstTimer = null;
     _lastKeystrokeTime = null;
+    _lastBurstEndTime = DateTime.now();
 
     final raw = _buffer.toString();
     _buffer.clear();

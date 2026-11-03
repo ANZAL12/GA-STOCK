@@ -1,8 +1,10 @@
 package com.globalagencies.godown_scanner
 
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -20,8 +22,15 @@ class MainActivity : FlutterActivity() {
     private var isScannerEnabled = true
     private val scannerBuffer = StringBuilder()
     private var lastKeystrokeTime: Long = 0L
+    private var lastBurstEndTime: Long = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
     private var burstRunnable: Runnable? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Ensure Android soft keyboard never steals focus or pops up when a physical scanner is connected
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -71,6 +80,7 @@ class MainActivity : FlutterActivity() {
         burstRunnable?.let { mainHandler.removeCallbacks(it) }
         burstRunnable = null
         lastKeystrokeTime = 0L
+        lastBurstEndTime = System.currentTimeMillis()
 
         val raw = scannerBuffer.toString()
         scannerBuffer.setLength(0)
@@ -92,6 +102,18 @@ class MainActivity : FlutterActivity() {
         burstRunnable?.let { mainHandler.removeCallbacks(it) }
         burstRunnable = Runnable { finalizeScannerBurst() }
         mainHandler.postDelayed(burstRunnable!!, delayMs)
+    }
+
+    private fun determineQuietWindow(): Long {
+        // Cold-start Bluetooth / 2.4GHz wake-up adaptive safety window:
+        // When a scanner wakes from idle/sleep (> 5s), the first 1-3 characters are followed by a
+        // longer radio link negotiation gap (up to 1200ms) before subsequent characters stream in.
+        // Using a 1500ms safety window guarantees cold bursts are NEVER cut off early!
+        val cold = lastBurstEndTime == 0L || (System.currentTimeMillis() - lastBurstEndTime > 5000L)
+        return when {
+            scannerBuffer.length < 4 -> if (cold) 1500L else 650L
+            else -> 350L
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -130,7 +152,7 @@ class MainActivity : FlutterActivity() {
 
         // Consume UP events for scanner keys so trailing events never reach UI
         if (event.action == KeyEvent.ACTION_UP) {
-            if (isPotentialScannerKey(keyCode)) {
+            if (isPotentialScannerKey(event)) {
                 return true
             }
             return super.dispatchKeyEvent(event)
@@ -146,13 +168,21 @@ class MainActivity : FlutterActivity() {
                 }
                 lastKeystrokeTime = now
                 scannerBuffer.append(characters)
-                scheduleBurstCompletion(350)
+                scheduleBurstCompletion(determineQuietWindow())
                 return true
             }
         }
 
         if (event.action != KeyEvent.ACTION_DOWN) {
             return super.dispatchKeyEvent(event)
+        }
+
+        // Ensure soft keyboard doesn't capture or compose characters during hardware scan
+        if (isPotentialScannerKey(event)) {
+            val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            currentFocus?.let { view ->
+                imm?.hideSoftInputFromWindow(view.windowToken, 0)
+            }
         }
 
         // Ignore modifier-only keys (Shift, Ctrl, Alt, CapsLock, NumLock)
@@ -180,7 +210,7 @@ class MainActivity : FlutterActivity() {
         if (isTerminator) {
             lastKeystrokeTime = now
             scannerBuffer.append('\n')
-            // Fast 25ms finalization on Enter
+            // Fast 25ms finalization on Enter - immediate response!
             scheduleBurstCompletion(25)
             return true
         }
@@ -190,23 +220,36 @@ class MainActivity : FlutterActivity() {
         if (char != null) {
             lastKeystrokeTime = now
             scannerBuffer.append(char)
-            // 350ms silence window for scanners without enter or cold-start jitter
-            scheduleBurstCompletion(350)
+            // Use cold-start adaptive safety window (650ms for first few characters, 350ms once rolling)
+            scheduleBurstCompletion(determineQuietWindow())
+            return true
+        }
+
+        // If it's a potential scanner key that couldn't be mapped to printable ASCII,
+        // still swallow it so raw unprintable characters never leak into UI fields during a burst!
+        if (isPotentialScannerKey(event)) {
             return true
         }
 
         return super.dispatchKeyEvent(event)
     }
 
-    private fun isPotentialScannerKey(keyCode: Int): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) return true
+    private fun isPotentialScannerKey(event: KeyEvent): Boolean {
+        val keyCode = event.keyCode
+        if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER || keyCode == KeyEvent.KEYCODE_TAB) return true
         if (keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) return true
         if (keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) return true
         if (keyCode in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9) return true
         if (isModifierKey(keyCode)) return true
+        if (event.isPrintingKey) return true
         if (keyCode == KeyEvent.KEYCODE_MINUS || keyCode == KeyEvent.KEYCODE_SLASH ||
             keyCode == KeyEvent.KEYCODE_PERIOD || keyCode == KeyEvent.KEYCODE_SPACE ||
-            keyCode == KeyEvent.KEYCODE_EQUALS || keyCode == KeyEvent.KEYCODE_SEMICOLON) return true
+            keyCode == KeyEvent.KEYCODE_EQUALS || keyCode == KeyEvent.KEYCODE_SEMICOLON ||
+            keyCode == KeyEvent.KEYCODE_COMMA || keyCode == KeyEvent.KEYCODE_BACKSLASH ||
+            keyCode == KeyEvent.KEYCODE_GRAVE || keyCode == KeyEvent.KEYCODE_LEFT_BRACKET ||
+            keyCode == KeyEvent.KEYCODE_RIGHT_BRACKET || keyCode == KeyEvent.KEYCODE_APOSTROPHE ||
+            keyCode == KeyEvent.KEYCODE_STAR || keyCode == KeyEvent.KEYCODE_POUND ||
+            keyCode == KeyEvent.KEYCODE_AT || keyCode == KeyEvent.KEYCODE_PLUS) return true
         return false
     }
 
@@ -223,9 +266,14 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun extractChar(event: KeyEvent): Char? {
+        val chars = event.characters
+        if (!chars.isNullOrEmpty()) {
+            return chars[0]
+        }
+
         val keyCode = event.keyCode
 
-        // Numpad mappings
+        // 1. Numpad mappings (very common on 2.4G wireless scanners & OTG wedges)
         when (keyCode) {
             KeyEvent.KEYCODE_NUMPAD_0 -> return '0'
             KeyEvent.KEYCODE_NUMPAD_1 -> return '1'
@@ -242,32 +290,43 @@ class MainActivity : FlutterActivity() {
             KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> return '*'
             KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> return '-'
             KeyEvent.KEYCODE_NUMPAD_ADD -> return '+'
+            KeyEvent.KEYCODE_NUMPAD_EQUALS -> return '='
         }
 
-        // Direct Unicode character from key character map (with meta/shift state applied)
-        val u = event.keyCharacterMap?.get(keyCode, event.metaState) ?: event.unicodeChar
-        if (u in 32..126) {
-            return u.toChar()
+        // 2. Direct Unicode with event's metaState (Shift, Alt, etc.)
+        val uWithMeta = event.getUnicodeChar(event.metaState)
+        if (uWithMeta in 32..126) {
+            return uWithMeta.toChar()
         }
 
-        // Fallback using event.unicodeChar directly
-        val fallback = event.unicodeChar
-        if (fallback in 32..126) {
-            return fallback.toChar()
+        // 3. Direct Unicode without metaState
+        val uNoMeta = event.getUnicodeChar(0)
+        if (uNoMeta in 32..126) {
+            return uNoMeta.toChar()
         }
 
-        // Physical key code fallback for standard digits 0-9
+        // 4. KeyCharacterMap explicit lookup (with safety against primitive 0)
+        val kcm = event.keyCharacterMap
+        if (kcm != null) {
+            val k1 = kcm.get(keyCode, event.metaState)
+            if (k1 in 32..126) return k1.toChar()
+            val k0 = kcm.get(keyCode, 0)
+            if (k0 in 32..126) return k0.toChar()
+        }
+
+        // 5. Physical key code fallback for standard top-row digits 0-9
         if (keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) {
             return ('0'.code + (keyCode - KeyEvent.KEYCODE_0)).toChar()
         }
 
-        // Physical key code fallback for standard letters A-Z
+        // 6. Physical key code fallback for standard letters A-Z
+        val isShift = event.isShiftPressed || (event.metaState and KeyEvent.META_SHIFT_ON != 0)
         if (keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
-            return ('A'.code + (keyCode - KeyEvent.KEYCODE_A)).toChar()
+            val baseChar = ('A'.code + (keyCode - KeyEvent.KEYCODE_A)).toChar()
+            return if (isShift) baseChar else baseChar.lowercaseChar()
         }
 
-        // Common symbols
-        val isShift = event.isShiftPressed
+        // 7. Comprehensive symbol mappings
         when (keyCode) {
             KeyEvent.KEYCODE_MINUS -> return if (isShift) '_' else '-'
             KeyEvent.KEYCODE_EQUALS -> return if (isShift) '+' else '='
@@ -277,6 +336,15 @@ class MainActivity : FlutterActivity() {
             KeyEvent.KEYCODE_COMMA -> return if (isShift) '<' else ','
             KeyEvent.KEYCODE_PERIOD -> return if (isShift) '>' else '.'
             KeyEvent.KEYCODE_SPACE -> return ' '
+            KeyEvent.KEYCODE_GRAVE -> return if (isShift) '~' else '`'
+            KeyEvent.KEYCODE_LEFT_BRACKET -> return if (isShift) '{' else '['
+            KeyEvent.KEYCODE_RIGHT_BRACKET -> return if (isShift) '}' else ']'
+            KeyEvent.KEYCODE_APOSTROPHE -> return if (isShift) '"' else '\''
+            KeyEvent.KEYCODE_STAR -> return '*'
+            KeyEvent.KEYCODE_POUND -> return '#'
+            KeyEvent.KEYCODE_AT -> return '@'
+            KeyEvent.KEYCODE_PLUS -> return '+'
+            KeyEvent.KEYCODE_TAB -> return '\t'
         }
 
         return null
