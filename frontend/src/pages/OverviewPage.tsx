@@ -170,7 +170,7 @@ export const OverviewPage: React.FC = () => {
                   <span className="font-mono font-bold text-base text-slate-900">
                     {searchResult.serial_number}
                   </span>
-                  {searchResult.unit_type && (
+                  {searchResult.unit_type && ['indoor', 'outdoor'].includes(searchResult.unit_type.toLowerCase()) && (
                     <span className={`text-xs font-semibold ${
                       searchResult.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
                     }`}>

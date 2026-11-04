@@ -67,7 +67,7 @@ export const ImportSerialsPage: React.FC = () => {
   const [mappingMode, setMappingMode] = useState<"single" | "column">("single");
   const [selectedProductId, setSelectedProductId] = useState<string>("");
   const [modelColumn, setModelColumn] = useState<string>("");
-  const [unitTypeMode, setUnitTypeMode] = useState<"auto" | "single_unit" | "indoor" | "outdoor" | "column">("auto");
+  const [unitTypeMode, setUnitTypeMode] = useState<"auto" | "indoor" | "outdoor" | "column">("auto");
   const [unitTypeColumn, setUnitTypeColumn] = useState<string>("");
   const [inwardRef, setInwardRef] = useState<string>("");
   const [skipExisting, setSkipExisting] = useState<boolean>(true);
@@ -336,31 +336,32 @@ export const ImportSerialsPage: React.FC = () => {
         }
       }
 
-      // Unit type resolution
-      let extractedUnit = "";
-      if (unitTypeMode === "column" && unitColIdx !== -1) {
-        const rawUnit = String(row[unitColIdx] || "").trim().toLowerCase();
-        if (rawUnit.includes("indoor") || rawUnit === "id" || rawUnit === "in") {
+      // Unit type resolution (only assigned for dual-serial products)
+      let extractedUnit: string | undefined = undefined;
+      const isDual = matchedProd?.has_dual_serial;
+
+      if (isDual) {
+        if (unitTypeMode === "column" && unitColIdx !== -1) {
+          const rawUnit = String(row[unitColIdx] || "").trim().toLowerCase();
+          if (rawUnit.includes("indoor") || rawUnit === "id" || rawUnit === "in") {
+            extractedUnit = "indoor";
+          } else if (rawUnit.includes("outdoor") || rawUnit === "od" || rawUnit === "out") {
+            extractedUnit = "outdoor";
+          } else {
+            extractedUnit = undefined;
+          }
+        } else if (unitTypeMode === "indoor") {
           extractedUnit = "indoor";
-        } else if (rawUnit.includes("outdoor") || rawUnit === "od" || rawUnit === "out") {
+        } else if (unitTypeMode === "outdoor") {
           extractedUnit = "outdoor";
         } else {
-          extractedUnit = "single";
-        }
-      } else if (unitTypeMode === "indoor") {
-        extractedUnit = "indoor";
-      } else if (unitTypeMode === "outdoor") {
-        extractedUnit = "outdoor";
-      } else if (unitTypeMode === "single_unit") {
-        extractedUnit = "single";
-      } else if (unitTypeMode === "auto") {
-        const isDual = matchedProd?.has_dual_serial;
-        if (isDual) {
+          // "auto" or default: alternate indoor/outdoor
           extractedUnit = dualSerialCounter % 2 === 0 ? "indoor" : "outdoor";
           dualSerialCounter++;
-        } else {
-          extractedUnit = "single";
         }
+      } else {
+        // Single unit models: no unit type needed at all
+        extractedUnit = undefined;
       }
 
       let isValid = true;
@@ -635,8 +636,8 @@ export const ImportSerialsPage: React.FC = () => {
       ["Serial Number", "Model", "Unit Type", "Reference"],
       ["SN-SPLIT-90812-A", "CS-XU18XKYF", "Indoor", "INV-2026-001"],
       ["SN-SPLIT-90812-B", "CS-XU18XKYF", "Outdoor", "INV-2026-001"],
-      ["SN-INVERTER-4410", "FTKM50U", "Single", "INV-2026-001"],
-      ["SN-INVERTER-4411", "FTKM50U", "Single", "INV-2026-001"],
+      ["SN-INVERTER-4410", "FTKM50U", "", "INV-2026-001"],
+      ["SN-INVERTER-4411", "FTKM50U", "", "INV-2026-001"],
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(wsData);
@@ -1073,37 +1074,45 @@ export const ImportSerialsPage: React.FC = () => {
               )}
 
               {/* Unit Type Handling for Dual Units */}
-              <div className="space-y-1.5 pt-3 border-t border-slate-100">
-                <label className="text-xs font-bold text-slate-700 block">
-                  Unit Type Handling
-                </label>
-                <select
-                  value={unitTypeMode}
-                  onChange={(e: any) => setUnitTypeMode(e.target.value)}
-                  className="w-full text-xs font-semibold px-3 py-2 rounded-xl border border-slate-200 bg-slate-50"
-                >
-                  <option value="auto">Automatic (Indoor/Outdoor alternation for Dual Models, Single for others)</option>
-                  <option value="single_unit">All Single Units</option>
-                  <option value="indoor">All Indoor Units</option>
-                  <option value="outdoor">All Outdoor Units</option>
-                  <option value="column">Map from Spreadsheet Column</option>
-                </select>
-
-                {unitTypeMode === "column" && (
+              {mappingMode === "single" && currentProduct && !currentProduct.has_dual_serial ? (
+                <div className="pt-3 border-t border-slate-100">
+                  <div className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-xs">
+                    <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
+                    <span>Single-serial model: Unit type is not needed and omitted automatically.</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5 pt-3 border-t border-slate-100">
+                  <label className="text-xs font-bold text-slate-700 block">
+                    Dual Unit Type Handling
+                  </label>
                   <select
-                    value={unitTypeColumn}
-                    onChange={(e) => setUnitTypeColumn(e.target.value)}
-                    className="w-full text-xs font-semibold px-3 py-2 mt-2 rounded-xl border border-slate-200 bg-white"
+                    value={unitTypeMode}
+                    onChange={(e: any) => setUnitTypeMode(e.target.value)}
+                    className="w-full text-xs font-semibold px-3 py-2 rounded-xl border border-slate-200 bg-slate-50"
                   >
-                    <option value="">-- Select Unit Type Column --</option>
-                    {columns.map((col, idx) => (
-                      <option key={idx} value={col}>
-                        {col}
-                      </option>
-                    ))}
+                    <option value="auto">Automatic (Indoor/Outdoor alternation for Dual Models)</option>
+                    <option value="indoor">All Indoor Units</option>
+                    <option value="outdoor">All Outdoor Units</option>
+                    <option value="column">Map from Spreadsheet Column</option>
                   </select>
-                )}
-              </div>
+
+                  {unitTypeMode === "column" && (
+                    <select
+                      value={unitTypeColumn}
+                      onChange={(e) => setUnitTypeColumn(e.target.value)}
+                      className="w-full text-xs font-semibold px-3 py-2 mt-2 rounded-xl border border-slate-200 bg-white"
+                    >
+                      <option value="">-- Select Unit Type Column --</option>
+                      {columns.map((col, idx) => (
+                        <option key={idx} value={col}>
+                          {col}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
 
               {/* Inward Reference & Options */}
               <div className="space-y-3 pt-3 border-t border-slate-100">
@@ -1462,15 +1471,17 @@ export const ImportSerialsPage: React.FC = () => {
                             )}
                           </td>
                           <td className="py-2.5 px-3">
-                            <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
-                              row.extractedUnitType === "indoor"
-                                ? "bg-sky-100 text-sky-800 border border-sky-200"
-                                : row.extractedUnitType === "outdoor"
-                                ? "bg-amber-100 text-amber-800 border border-amber-200"
-                                : "bg-slate-100 text-slate-700"
-                            }`}>
-                              {row.extractedUnitType || "single"}
-                            </span>
+                            {row.extractedUnitType && (row.extractedUnitType === "indoor" || row.extractedUnitType === "outdoor") ? (
+                              <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold uppercase ${
+                                row.extractedUnitType === "indoor"
+                                  ? "bg-sky-100 text-sky-800 border border-sky-200"
+                                  : "bg-amber-100 text-amber-800 border border-amber-200"
+                              }`}>
+                                {row.extractedUnitType}
+                              </span>
+                            ) : (
+                              <span className="text-slate-300">-</span>
+                            )}
                           </td>
                           <td className="py-2.5 px-3">
                             {row.dbStatus?.exists ? (

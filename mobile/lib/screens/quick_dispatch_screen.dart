@@ -396,6 +396,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
       if (isDamaged) {
         HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         if (mounted) {
           final bool proceed = await _showDamagedConfirmationDialog(cleanSerial, regModelName);
           if (!proceed) {
@@ -434,7 +435,8 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         return true;
       } else {
         // Serial not in system -> Prompt user to select model
-        HapticFeedback.mediumImpact();
+        HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         if (mounted) {
           return await _promptSelectModelForNewSerial(cleanSerial);
         }
@@ -442,6 +444,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
       }
     } catch (e) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       _showToast('Check error: $e', const Color(0xFFE11D48));
       return false;
     } finally {
@@ -1033,6 +1036,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
     if (mismatchMessages.isNotEmpty) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       if (mounted) {
         await showDialog(
           context: context,

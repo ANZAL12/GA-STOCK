@@ -478,7 +478,7 @@ export const SerialsPage: React.FC = () => {
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <Barcode size={14} className="text-slate-400 group-hover:text-[#3C3489] transition-colors shrink-0" />
                         <span>{item.serial_number}</span>
-                        {item.unit_type && (
+                        {item.unit_type && ['indoor', 'outdoor'].includes(item.unit_type.toLowerCase()) && (
                           <span className={`text-[11px] font-sans font-semibold ${
                             item.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
                           }`}>
@@ -729,7 +729,7 @@ export const SerialsPage: React.FC = () => {
       <Modal
         isOpen={Boolean(selectedSerial)}
         onClose={() => setSelectedSerial(null)}
-        title={selectedSerial ? `Serial Trace • ${selectedSerial.serial_number}${selectedSerial.unit_type ? ` (${selectedSerial.unit_type.charAt(0).toUpperCase() + selectedSerial.unit_type.slice(1).toLowerCase()})` : ""}` : ""}
+        title={selectedSerial ? `Serial Trace • ${selectedSerial.serial_number}${selectedSerial.unit_type && ['indoor', 'outdoor'].includes(selectedSerial.unit_type.toLowerCase()) ? ` (${selectedSerial.unit_type.charAt(0).toUpperCase() + selectedSerial.unit_type.slice(1).toLowerCase()})` : ""}` : ""}
         subtitle={selectedSerial ? `${selectedSerial.brand} ${selectedSerial.model} • ${selectedSerial.category_name || "Appliance"}` : ""}
         maxWidth="2xl"
       >
@@ -747,60 +747,65 @@ export const SerialsPage: React.FC = () => {
           <div className="space-y-6">
             
             {/* Header Fact Strip */}
-            <div className={`grid grid-cols-1 ${selectedSerial.unit_type ? 'sm:grid-cols-5' : 'sm:grid-cols-4'} gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs`}>
-              <div>
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Current Status
-                </span>
-                <span className="font-bold text-slate-900 mt-0.5 block capitalize">
-                  {selectedSerial.status_label}
-                </span>
-                {(selectedSerial.is_damaged || selectedSerial.is_dispatched_damaged || selectedSerial.status === "damaged" || selectedSerial.flag_reason?.toLowerCase().includes("damage")) && (
-                  <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-                    Damaged {selectedSerial.status === "dispatched" || selectedSerial.is_dispatched_damaged ? "(Dispatched Damaged)" : ""}
-                  </span>
-                )}
-              </div>
-              {selectedSerial.unit_type && (
-                <div>
-                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                    Unit Type
-                  </span>
-                  <span className={`font-semibold mt-0.5 block ${
-                    selectedSerial.unit_type.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
-                  }`}>
-                    {selectedSerial.unit_type.charAt(0).toUpperCase() + selectedSerial.unit_type.slice(1).toLowerCase()}
-                  </span>
+            {(() => {
+              const hasDualUnit = selectedSerial.unit_type && ['indoor', 'outdoor'].includes(selectedSerial.unit_type.toLowerCase());
+              return (
+                <div className={`grid grid-cols-1 ${hasDualUnit ? 'sm:grid-cols-5' : 'sm:grid-cols-4'} gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs`}>
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                      Current Status
+                    </span>
+                    <span className="font-bold text-slate-900 mt-0.5 block capitalize">
+                      {selectedSerial.status_label}
+                    </span>
+                    {(selectedSerial.is_damaged || selectedSerial.is_dispatched_damaged || selectedSerial.status === "damaged" || selectedSerial.flag_reason?.toLowerCase().includes("damage")) && (
+                      <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                        Damaged {selectedSerial.status === "dispatched" || selectedSerial.is_dispatched_damaged ? "(Dispatched Damaged)" : ""}
+                      </span>
+                    )}
+                  </div>
+                  {hasDualUnit && (
+                    <div>
+                      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                        Unit Type
+                      </span>
+                      <span className={`font-semibold mt-0.5 block ${
+                        selectedSerial.unit_type!.toLowerCase() === 'indoor' ? 'text-indigo-600' : 'text-teal-600'
+                      }`}>
+                        {selectedSerial.unit_type!.charAt(0).toUpperCase() + selectedSerial.unit_type!.slice(1).toLowerCase()}
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                      Category
+                    </span>
+                    <span className="font-semibold text-slate-800 mt-0.5 block">
+                      {selectedSerial.category_name || "General"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                      Tracking Type
+                    </span>
+                    <span className="font-semibold text-slate-800 mt-0.5 block">
+                      {selectedSerial.is_tracked ? "Scanned at Inward" : "Pre-go-live Outward"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                      Destination Shop
+                    </span>
+                    <span className="font-semibold text-slate-800 mt-0.5 block">
+                      {selectedSerial.last_shop_name 
+                        ? `${selectedSerial.last_shop_name}${selectedSerial.last_shop_city ? ` (${selectedSerial.last_shop_city})` : ""}` 
+                        : "In Godown"}
+                    </span>
+                  </div>
                 </div>
-              )}
-              <div>
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Category
-                </span>
-                <span className="font-semibold text-slate-800 mt-0.5 block">
-                  {selectedSerial.category_name || "General"}
-                </span>
-              </div>
-              <div>
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Tracking Type
-                </span>
-                <span className="font-semibold text-slate-800 mt-0.5 block">
-                  {selectedSerial.is_tracked ? "Scanned at Inward" : "Pre-go-live Outward"}
-                </span>
-              </div>
-              <div>
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Destination Shop
-                </span>
-                <span className="font-semibold text-slate-800 mt-0.5 block">
-                  {selectedSerial.last_shop_name 
-                    ? `${selectedSerial.last_shop_name}${selectedSerial.last_shop_city ? ` (${selectedSerial.last_shop_city})` : ""}` 
-                    : "In Godown"}
-                </span>
-              </div>
-            </div>
+              );
+            })()}
 
             {/* Serial Trace PDF & Print Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200">
@@ -909,7 +914,7 @@ export const SerialsPage: React.FC = () => {
         isOpen={isStatusModalOpen}
         onClose={() => setIsStatusModalOpen(false)}
         title="Adjust Serial Status"
-        subtitle={`Update status for ${selectedSerial?.serial_number}${selectedSerial?.unit_type ? ` (${selectedSerial.unit_type.charAt(0).toUpperCase() + selectedSerial.unit_type.slice(1).toLowerCase()})` : ""}`}
+        subtitle={`Update status for ${selectedSerial?.serial_number}${selectedSerial?.unit_type && ['indoor', 'outdoor'].includes(selectedSerial.unit_type.toLowerCase()) ? ` (${selectedSerial.unit_type.charAt(0).toUpperCase() + selectedSerial.unit_type.slice(1).toLowerCase()})` : ""}`}
         maxWidth="md"
       >
         {statusError && (

@@ -896,12 +896,16 @@ async def import_bulk_serials(
             })
             continue
 
+        u_type = it.unit_type.strip().lower() if it.unit_type else None
+        if u_type in ("single", "single_unit", "none", "-", ""):
+            u_type = None
+
         if sn_clean not in seen_in_payload:
             seen_in_payload.add(sn_clean)
             cleaned_items.append(ExcelSerialImportItem(
                 serial_number=sn_clean,
                 product_id=prod_id,
-                unit_type=it.unit_type.strip().lower() if it.unit_type else None,
+                unit_type=u_type,
             ))
 
     if not cleaned_items and not skipped_invalid:
@@ -999,12 +1003,13 @@ async def import_bulk_serials(
         created_batch_ids.append(str(batch.id))
 
         for it in p_items:
+            sn_unit_type = it.unit_type if (has_dual and it.unit_type in ("indoor", "outdoor")) else None
             sn_obj = SerialNumber(
                 serial_number=it.serial_number,
                 product_id=product.id,
                 status=SerialStatus.available,
                 last_shop_id=None,
-                unit_type=it.unit_type,
+                unit_type=sn_unit_type,
             )
             db.add(sn_obj)
             await db.flush()

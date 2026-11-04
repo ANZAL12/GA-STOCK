@@ -787,6 +787,7 @@ class _InwardScreenState extends State<InwardScreen> {
       }
     } catch (e) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       _showWarningDialog('Validation Error', 'Failed to validate serial "$cleanSerial": $e');
     } finally {
       _inFlightSerials.remove(cleanSerial);
@@ -1308,6 +1309,7 @@ class _InwardScreenState extends State<InwardScreen> {
         final outdoorCount = entry.value.where((it) => it.unitType == 'outdoor').length;
         if (indoorCount != outdoorCount) {
           HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
           _showWarningDialog(
             'Count Mismatch: Cannot Store',
             'Dual-serial model "${p.brand} ${p.model}" requires equal numbers of Indoor and Outdoor units.\n\n'

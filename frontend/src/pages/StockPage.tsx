@@ -23,7 +23,9 @@ import {
   Building2,
   Package,
   FileSpreadsheet,
-  Upload
+  Upload,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
 
 export const StockPage: React.FC = () => {
@@ -201,6 +203,8 @@ export const StockPage: React.FC = () => {
   const [deletingSerialId, setDeletingSerialId] = useState<string | null>(null);
   const [serialActionMsg, setSerialActionMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [copiedSerial, setCopiedSerial] = useState<string | null>(null);
+  const [serialCurrentPage, setSerialCurrentPage] = useState(1);
+  const SERIALS_PER_PAGE = 50;
 
   const openSerialModal = async (p: Product) => {
     setSelectedProductForSerials(p);
@@ -208,6 +212,7 @@ export const StockPage: React.FC = () => {
     setSerialsLoading(true);
     setSerialSearch("");
     setSerialStatusFilter("all");
+    setSerialCurrentPage(1);
     setSerialActionMsg(null);
     try {
       const list = await apiRequest<ProductSerialItem[]>(`/products/${p.id}/serials`);
@@ -590,6 +595,29 @@ export const StockPage: React.FC = () => {
     if (serialStatusFilter === "other") return matchesSearch && s.status !== "available" && s.status !== "dispatched";
     return matchesSearch;
   });
+
+  const totalSerialPages = Math.ceil(filteredProductSerials.length / SERIALS_PER_PAGE) || 1;
+  const safeSerialPage = Math.min(Math.max(serialCurrentPage, 1), totalSerialPages);
+  const paginatedProductSerials = filteredProductSerials.slice(
+    (safeSerialPage - 1) * SERIALS_PER_PAGE,
+    safeSerialPage * SERIALS_PER_PAGE
+  );
+
+  const getSerialPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    if (totalSerialPages <= 5) {
+      for (let i = 1; i <= totalSerialPages; i++) pages.push(i);
+    } else {
+      if (safeSerialPage <= 3) {
+        pages.push(1, 2, 3, "...", totalSerialPages);
+      } else if (safeSerialPage >= totalSerialPages - 2) {
+        pages.push(1, "...", totalSerialPages - 2, totalSerialPages - 1, totalSerialPages);
+      } else {
+        pages.push(1, "...", safeSerialPage, "...", totalSerialPages);
+      }
+    }
+    return pages;
+  };
 
   return (
     <div className="space-y-6 animate-fade-in pb-12">
@@ -1475,7 +1503,10 @@ export const StockPage: React.FC = () => {
                   type="text"
                   placeholder="Filter serials, shop..."
                   value={serialSearch}
-                  onChange={(e) => setSerialSearch(e.target.value)}
+                  onChange={(e) => {
+                    setSerialSearch(e.target.value);
+                    setSerialCurrentPage(1);
+                  }}
                   className="w-full pl-8.5 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-800 focus:border-indigo-800 transition-all text-slate-800 placeholder-slate-400"
                 />
               </div>
@@ -1497,7 +1528,10 @@ export const StockPage: React.FC = () => {
                   return (
                     <button
                       key={tab}
-                      onClick={() => setSerialStatusFilter(tab)}
+                      onClick={() => {
+                        setSerialStatusFilter(tab);
+                        setSerialCurrentPage(1);
+                      }}
                       className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
                         isActive
                           ? "bg-slate-900 text-white shadow-xs"
@@ -1533,6 +1567,7 @@ export const StockPage: React.FC = () => {
                   <table className="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
+                        <th className="py-2.5 px-3 w-10 text-center">#</th>
                         <th className="py-2.5 px-3">Serial Number</th>
                         <th className="py-2.5 px-3">Unit Type</th>
                         <th className="py-2.5 px-3">Status</th>
@@ -1542,10 +1577,14 @@ export const StockPage: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
-                      {filteredProductSerials.map((sn) => {
+                      {paginatedProductSerials.map((sn, idx) => {
                         const isDeleting = deletingSerialId === sn.id;
+                        const rowNumber = (safeSerialPage - 1) * SERIALS_PER_PAGE + idx + 1;
                         return (
                           <tr key={sn.id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="py-2.5 px-3 text-center text-slate-400 font-mono text-[11px]">
+                              {rowNumber}
+                            </td>
                             {/* Serial Number & Copy */}
                             <td className="py-2.5 px-3">
                               <div className="flex items-center gap-1.5">
@@ -1571,7 +1610,7 @@ export const StockPage: React.FC = () => {
 
                             {/* Unit Type */}
                             <td className="py-2.5 px-3">
-                              {sn.unit_type ? (
+                              {sn.unit_type && ["indoor", "outdoor"].includes(sn.unit_type.toLowerCase()) ? (
                                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
                                   sn.unit_type.toLowerCase() === "indoor"
                                     ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
@@ -1662,14 +1701,75 @@ export const StockPage: React.FC = () => {
               )}
             </div>
 
-            {/* Modal Footer */}
-            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 shrink-0">
-              <span>
-                Showing {filteredProductSerials.length} of {productSerials.length} serials
-              </span>
+            {/* Modal Footer with Pagination (50 per page) */}
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500 shrink-0">
+              <div className="flex items-center gap-2">
+                <span>
+                  Showing <span className="font-semibold text-slate-800">{filteredProductSerials.length === 0 ? 0 : ((safeSerialPage - 1) * SERIALS_PER_PAGE + 1).toLocaleString()} – {Math.min(safeSerialPage * SERIALS_PER_PAGE, filteredProductSerials.length).toLocaleString()}</span> of <span className="font-bold text-slate-900">{filteredProductSerials.length.toLocaleString()}</span> serials
+                </span>
+                {totalSerialPages > 1 && (
+                  <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-[#3C3489] border border-indigo-100">
+                    Page {safeSerialPage} of {totalSerialPages}
+                  </span>
+                )}
+              </div>
+
+              {/* Pagination Controls */}
+              {totalSerialPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setSerialCurrentPage((p) => Math.max(p - 1, 1))}
+                    disabled={safeSerialPage === 1}
+                    className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+                    title="Previous 50"
+                  >
+                    <ChevronLeft size={14} />
+                  </button>
+
+                  <div className="flex items-center gap-1">
+                    {getSerialPageNumbers().map((pg, idx) => {
+                      if (pg === "...") {
+                        return (
+                          <span key={`dots-${idx}`} className="px-1.5 py-0.5 text-xs text-slate-400">
+                            ...
+                          </span>
+                        );
+                      }
+                      const pageNum = Number(pg);
+                      const isActive = pageNum === safeSerialPage;
+                      return (
+                        <button
+                          key={`page-${pageNum}`}
+                          type="button"
+                          onClick={() => setSerialCurrentPage(pageNum)}
+                          className={`min-w-[28px] h-7 px-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                            isActive
+                              ? "bg-[#3C3489] text-white shadow-xs"
+                              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          {pageNum}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSerialCurrentPage((p) => Math.min(p + 1, totalSerialPages))}
+                    disabled={safeSerialPage === totalSerialPages}
+                    className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+                    title="Next 50"
+                  >
+                    <ChevronRight size={14} />
+                  </button>
+                </div>
+              )}
+
               <button
                 onClick={() => setIsSerialModalOpen(false)}
-                className="px-4 py-2 bg-slate-900 text-white font-semibold rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+                className="px-4 py-2 bg-slate-900 text-white font-semibold rounded-xl hover:bg-slate-800 transition-colors cursor-pointer w-full sm:w-auto text-center"
               >
                 Done
               </button>

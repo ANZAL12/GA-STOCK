@@ -456,10 +456,12 @@ def export_inward_register_to_pdf(
 
         for idx, s in enumerate(serials, start=1):
             itype = s.get("inward_type", "Stock In")
+            u_val = s.get("unit_type")
+            u_disp = u_val.capitalize() if (u_val and str(u_val).strip().lower() in ("indoor", "outdoor")) else "-"
             table_rows.append([
                 str(idx),
                 s.get("serial_number", "-"),
-                s.get("unit_type", "-").capitalize() if s.get("unit_type") else "-",
+                u_disp,
                 itype,
                 s.get("reference") or "-",
                 s.get("time") or "-",
@@ -807,7 +809,8 @@ def export_bill_to_pdf(bill: dict[str, Any]) -> bytes:
             for l_idx, l in enumerate(lines, start=1):
                 s_text = l.get("serial_text") if isinstance(l, dict) else getattr(l, "serial_text", "-")
                 u_type = l.get("unit_type") if isinstance(l, dict) else getattr(l, "unit_type", None)
-                u_tag = f" [{u_type.upper()}]" if (u_type and str(u_type).strip()) else ""
+                is_dual = u_type and str(u_type).strip().lower() in ("indoor", "outdoor", "idu", "odu")
+                u_tag = f" [{str(u_type).strip().upper()}]" if is_dual else ""
                 serial_entries.append(f"{l_idx}.&nbsp;{s_text}{u_tag}")
 
             max_len = max((len(s.replace("&nbsp;", " ")) for s in serial_entries), default=0)

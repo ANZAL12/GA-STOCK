@@ -258,7 +258,8 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
       ]);
     } else {
       const serialStrings = b.lines.map((l, lIdx) => {
-        const uType = l.unit_type && l.unit_type.trim() ? ` [${l.unit_type.toUpperCase()}]` : "";
+        const isDual = l.unit_type && ["indoor", "outdoor", "idu", "odu"].includes(l.unit_type.trim().toLowerCase());
+        const uType = isDual ? ` [${l.unit_type!.trim().toUpperCase()}]` : "";
         return `${lIdx + 1}.\u00A0${l.serial_text}${uType}`;
       });
 

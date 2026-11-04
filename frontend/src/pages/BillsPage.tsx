@@ -1278,7 +1278,7 @@ export const BillsPage: React.FC = () => {
                                 )}
                               </td>
                               <td className="py-2 px-3 text-center">
-                                {s.unit_type ? (
+                                {s.unit_type && (s.unit_type.toLowerCase() === "indoor" || s.unit_type.toLowerCase() === "outdoor") ? (
                                   <span
                                     className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
                                       s.unit_type.toLowerCase() === "indoor"

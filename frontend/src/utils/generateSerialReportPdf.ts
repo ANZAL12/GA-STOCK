@@ -149,8 +149,9 @@ export function generateSerialListPdf(options: {
       ? (item.flow_type === "outward" ? "\n[DAMAGED - DISPATCHED]" : "\n[DAMAGED]")
       : "";
 
-    const serialDisplay = (item.unit_type
-      ? `${item.serial_number} (${item.unit_type.charAt(0).toUpperCase() + item.unit_type.slice(1).toLowerCase()})`
+    const isDualUnit = item.unit_type && ["indoor", "outdoor", "idu", "odu"].includes(item.unit_type.trim().toLowerCase());
+    const serialDisplay = (isDualUnit
+      ? `${item.serial_number} (${item.unit_type!.charAt(0).toUpperCase() + item.unit_type!.slice(1).toLowerCase()})`
       : item.serial_number) + damagedSuffix;
 
     const dateStr = item.transaction_date
@@ -371,8 +372,9 @@ export function generateSerialTracePdf(options: {
   doc.setFontSize(8);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(100, 116, 139);
-  if (serial.unit_type) {
-    doc.text(`Unit Type: ${serial.unit_type.toUpperCase()}`, 18, startY + 19);
+  const isDualUnit = serial.unit_type && ["indoor", "outdoor", "idu", "odu"].includes(serial.unit_type.trim().toLowerCase());
+  if (isDualUnit) {
+    doc.text(`Unit Type: ${serial.unit_type!.toUpperCase()}`, 18, startY + 19);
   }
   doc.text(`Product Name: ${serial.product_name || "—"}`, 100, startY + 19);
 

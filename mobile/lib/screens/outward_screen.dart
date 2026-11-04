@@ -70,6 +70,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   BuildContext? _alertContext;
   Timer? _alertTimer;
+  bool _isMismatchDialogOpen = false;
+  void Function(void Function())? _setMismatchDialogState;
+  String? _mismatchScanWarning;
 
   void _dismissSimpleAlert() {
     _alertTimer?.cancel();
@@ -194,6 +197,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
       final bool wasAlertShowing = _alertContext != null;
       if (wasAlertShowing) {
         _dismissSimpleAlert();
+      }
+
+      // If a model mismatch or unit type mismatch dialog is active, keep beeping error
+      // and display the warning under the dialog until the mismatch is resolved!
+      if (_isMismatchDialogOpen) {
+        SoundService().playErrorSound();
+        HapticFeedback.heavyImpact();
+        if (_setMismatchDialogState != null) {
+          _setMismatchDialogState!(() {
+            _mismatchScanWarning = 'Resolve model mismatch first before scanning "$barcode"!';
+          });
+        }
+        _showToast(
+          'Model Mismatch Active! Please resolve or cancel this dialog before scanning.',
+          const Color(0xFFDC2626),
+        );
+        return;
       }
 
       if (!wasAlertShowing && ModalRoute.of(context)?.isCurrent != true) return;
@@ -351,6 +371,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   @override
   void dispose() {
+    HardwareScannerService().isMismatchActive = false;
     _dismissSimpleAlert();
     _scannerSub?.call();
     _wsSubscription?.cancel();
@@ -516,6 +537,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       if (isDamaged) {
         HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         final proceed = await _showCase3StatusWarningDialog(
           cleanSerial,
           'This item is damaged. Are you sure you want to add?',
@@ -540,6 +562,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
               registeredUnitType.isNotEmpty &&
               registeredUnitType != _outwardUnitType.toLowerCase()) {
             HapticFeedback.heavyImpact();
+            SoundService().playErrorSound();
             await _showUnitTypeMismatchDialog(
               cleanSerial: cleanSerial,
               actualUnitType: registeredUnitType,
@@ -575,7 +598,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       // --- CASE 2: RECORDED ONLY (Unmatched pre-go-live stock) ---
       else if (caseVal == 2 || caseName == 'unmatched') {
-        HapticFeedback.lightImpact();
+        HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
         if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
           final seq = _sequenceCounter++;
@@ -607,6 +631,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
               registeredUnitType.isNotEmpty &&
               registeredUnitType != _outwardUnitType.toLowerCase()) {
             HapticFeedback.heavyImpact();
+            SoundService().playErrorSound();
             await _showUnitTypeMismatchDialog(
               cleanSerial: cleanSerial,
               actualUnitType: registeredUnitType,
@@ -619,6 +644,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         bool proceed = true;
         if (!isDamaged) {
           HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
           final resProceed = await _showCase3StatusWarningDialog(
             cleanSerial,
             msg ?? 'Unit is not currently marked available.',
@@ -656,6 +682,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       // --- CASE 4: MODEL MISMATCH (Serial is registered under another model in this godown) ---
       else if (caseVal == 4 || caseName == 'model_mismatch') {
         HapticFeedback.heavyImpact();
+        SoundService().playErrorSound();
         final regProdId = res['registered_product_id']?.toString();
         Product? matchedProd;
         if (regProdId != null) {
@@ -719,6 +746,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       }
     } catch (e) {
       HapticFeedback.heavyImpact();
+      SoundService().playErrorSound();
       _showSimpleAlert('Validation Error', 'Could not verify serial "$cleanSerial": $e');
     } finally {
       _inFlightSerials.remove(cleanSerial);
@@ -732,6 +760,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
     String? initialUnitType,
     bool isDamaged = false,
   }) {
+    SoundService().playErrorSound();
+    _isMismatchDialogOpen = true;
+    HardwareScannerService().isMismatchActive = true;
+    _mismatchScanWarning = null;
     String selectedUnitType = initialUnitType ?? 'indoor';
 
     return showDialog<Map<String, dynamic>>(
@@ -739,6 +771,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       barrierDismissible: false,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
+          _setMismatchDialogState = setDialogState;
           final isDual = targetProd.hasDualSerial;
           final inCount = _scannedItems.where((e) => (e.product?.id == targetProd.id) && e.unitType?.toLowerCase() == 'indoor').length;
           final outCount = _scannedItems.where((e) => (e.product?.id == targetProd.id) && e.unitType?.toLowerCase() == 'outdoor').length;
@@ -957,6 +990,34 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                   ),
                 ],
+                if (_mismatchScanWarning != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFFECACA)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline, size: 16, color: Color(0xFFDC2626)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _mismatchScanWarning!,
+                            style: const TextStyle(
+                              color: Color(0xFF991B1B),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
             actions: [
@@ -985,7 +1046,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
           );
         },
       ),
-    );
+    ).whenComplete(() {
+      _isMismatchDialogOpen = false;
+      HardwareScannerService().isMismatchActive = false;
+      _setMismatchDialogState = null;
+      _mismatchScanWarning = null;
+    });
   }
 
   void _showModelSwitchBottomSheet() {
@@ -1326,6 +1392,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
     required String actualUnitType,
     required String selectedUnitType,
   }) {
+    SoundService().playErrorSound();
+    _isMismatchDialogOpen = true;
+    HardwareScannerService().isMismatchActive = true;
+    _mismatchScanWarning = null;
     final isActualIndoor = actualUnitType.toLowerCase() == 'indoor';
     final actualTitle = isActualIndoor ? 'Indoor Unit' : 'Outdoor Unit';
     final selectedTitle = selectedUnitType.toLowerCase() == 'indoor' ? 'Indoor Unit' : 'Outdoor Unit';
@@ -1333,7 +1403,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
     return showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          _setMismatchDialogState = setDialogState;
+          return AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
           children: [
@@ -1402,6 +1475,34 @@ class _OutwardScreenState extends State<OutwardScreen> {
               'Please select $actualTitle in the scanner header if you wish to scan this unit.',
               style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
             ),
+            if (_mismatchScanWarning != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFFECACA)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, size: 16, color: Color(0xFFDC2626)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _mismatchScanWarning!,
+                        style: const TextStyle(
+                          color: Color(0xFF991B1B),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
         actions: [
@@ -1426,15 +1527,30 @@ class _OutwardScreenState extends State<OutwardScreen> {
             },
           ),
         ],
-      ),
-    );
-  }
+      );
+    },
+  ),
+).whenComplete(() {
+  _isMismatchDialogOpen = false;
+  HardwareScannerService().isMismatchActive = false;
+  _setMismatchDialogState = null;
+  _mismatchScanWarning = null;
+});
+}
 
   Future<void> _showAlreadyDispatchedDialog(String serial, String message) {
+    SoundService().playErrorSound();
+    _isMismatchDialogOpen = true;
+    HardwareScannerService().isMismatchActive = true;
+    _mismatchScanWarning = null;
+
     return showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          _setMismatchDialogState = setDialogState;
+          return AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
@@ -1477,9 +1593,16 @@ class _OutwardScreenState extends State<OutwardScreen> {
             child: const Text('OK'),
           ),
         ],
-      ),
-    );
-  }
+      );
+    },
+  ),
+).whenComplete(() {
+  _isMismatchDialogOpen = false;
+  HardwareScannerService().isMismatchActive = false;
+  _setMismatchDialogState = null;
+  _mismatchScanWarning = null;
+});
+}
 
   void _showToast(String message, Color bgColor) {
     if (!mounted) return;
@@ -1558,10 +1681,18 @@ class _OutwardScreenState extends State<OutwardScreen> {
     String message, {
     bool isDamaged = false,
   }) {
+    SoundService().playErrorSound();
+    _isMismatchDialogOpen = true;
+    HardwareScannerService().isMismatchActive = true;
+    _mismatchScanWarning = null;
+
     return showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          _setMismatchDialogState = setDialogState;
+          return AlertDialog(
         backgroundColor: Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
@@ -1650,35 +1781,92 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
+      );
+    },
+  ),
+).whenComplete(() {
+  _isMismatchDialogOpen = false;
+  HardwareScannerService().isMismatchActive = false;
+  _setMismatchDialogState = null;
+  _mismatchScanWarning = null;
+});
+}
 
   Future<void> _showCase4ModelMismatchDialog(String serial, String existingModel, String? msg) {
+    SoundService().playErrorSound();
+    _isMismatchDialogOpen = true;
+    HardwareScannerService().isMismatchActive = true;
+    _mismatchScanWarning = null;
+
     return showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.cancel, color: Color(0xFFE11D48)),
-            SizedBox(width: 8),
-            Expanded(child: Text('Model Mismatch!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
-          ],
-        ),
-        content: Text(
-          msg ?? 'Serial "$serial" belongs to "$existingModel", but this active model is "${_selectedProduct!.name}".',
-          style: const TextStyle(fontSize: 13, height: 1.4),
-        ),
-        actions: [
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Dismiss', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          _setMismatchDialogState = setDialogState;
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.cancel, color: Color(0xFFE11D48)),
+                SizedBox(width: 8),
+                Expanded(child: Text('Model Mismatch!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  msg ?? 'Serial "$serial" belongs to "$existingModel", but this active model is "${_selectedProduct!.name}".',
+                  style: const TextStyle(fontSize: 13, height: 1.4),
+                ),
+                if (_mismatchScanWarning != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFFECACA)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline, size: 16, color: Color(0xFFDC2626)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _mismatchScanWarning!,
+                            style: const TextStyle(
+                              color: Color(0xFF991B1B),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            actions: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Dismiss', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
       ),
-    );
+    ).whenComplete(() {
+      _isMismatchDialogOpen = false;
+      HardwareScannerService().isMismatchActive = false;
+      _setMismatchDialogState = null;
+      _mismatchScanWarning = null;
+    });
   }
 
   void _onPressSubmitDispatch() {

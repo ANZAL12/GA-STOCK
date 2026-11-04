@@ -29,6 +29,7 @@ class HardwareScannerService {
   Timer? _burstTimer;
   bool _initialized = false;
   bool _isEnabled = true;
+  bool isMismatchActive = false;
 
   bool get isEnabled => _isEnabled;
   set isEnabled(bool value) {
@@ -89,6 +90,7 @@ class HardwareScannerService {
     _scanQueue.clear();
     _isProcessingQueue = false;
     _recentScanTimes.clear();
+    isMismatchActive = false;
     SoundService().flush();
     debugPrint('[HardwareScannerService] flushAll completed - all queues, keystroke buffers, and audio reset.');
   }
@@ -262,7 +264,11 @@ class HardwareScannerService {
     final lastTime = _recentScanTimes[barcode];
     // Debounce exact identical repeat within 500ms to eliminate accidental optical bounces
     if (lastTime != null && now.difference(lastTime).inMilliseconds < 500) {
-      debugPrint('[HardwareScannerService] Debounced rapid duplicate scan of $barcode');
+      if (isMismatchActive) {
+        SoundService().playErrorSound();
+        HapticFeedback.heavyImpact();
+      }
+      debugPrint('[HardwareScannerService] Debounced rapid duplicate scan of $barcode (isMismatchActive=$isMismatchActive)');
       return;
     }
     _recentScanTimes[barcode] = now;
@@ -305,8 +311,12 @@ class HardwareScannerService {
 
         // 2. Immediate zero-latency audio and haptic feedback
         try {
-          SoundService().playScannerBeep();
-          HapticFeedback.lightImpact();
+          if (isMismatchActive) {
+            SoundService().playErrorSound();
+          } else {
+            SoundService().playScannerBeep();
+            HapticFeedback.lightImpact();
+          }
         } catch (_) {}
 
         // 3. Emit on public scan stream
