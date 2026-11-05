@@ -307,6 +307,7 @@ class HardwareScannerService {
         final currentFocus = FocusManager.instance.primaryFocus;
         if (currentFocus != null && currentFocus.hasFocus && currentFocus.context != null) {
           currentFocus.unfocus();
+          SystemChannels.textInput.invokeMethod('TextInput.hide');
         }
 
         // 2. Immediate zero-latency audio and haptic feedback

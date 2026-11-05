@@ -69,6 +69,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   String? _lastScanFeedback;
 
   BuildContext? _alertContext;
+  BuildContext? _modelSheetContext;
   Timer? _alertTimer;
   bool _isMismatchDialogOpen = false;
   void Function(void Function())? _setMismatchDialogState;
@@ -193,13 +194,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (!mounted) return;
 
-      // If duplicate/alert dialog is currently showing, dismiss immediately on next scan!
+      // 1. If duplicate/alert dialog is currently showing, dismiss immediately on next scan!
       final bool wasAlertShowing = _alertContext != null;
       if (wasAlertShowing) {
         _dismissSimpleAlert();
       }
 
-      // If a model mismatch or unit type mismatch dialog is active, keep beeping error
+      // 2. If a model mismatch or unit type mismatch dialog is active, keep beeping error
       // and display the warning under the dialog until the mismatch is resolved!
       if (_isMismatchDialogOpen) {
         SoundService().playErrorSound();
@@ -216,11 +217,45 @@ class _OutwardScreenState extends State<OutwardScreen> {
         return;
       }
 
-      if (!wasAlertShowing && ModalRoute.of(context)?.isCurrent != true) return;
-      _lastScanTime = DateTime.now();
-      if (FocusScope.of(context).hasFocus) {
-        FocusScope.of(context).unfocus();
+      // 3. If model switch bottom sheet is currently open:
+      // Check if scanned barcode matches a product model name or is a serial to auto-route!
+      if (_modelSheetContext != null && _modelSheetContext!.mounted) {
+        final clean = barcode.trim().toUpperCase();
+        Product? matchedProd;
+        try {
+          matchedProd = _products.firstWhere(
+            (p) => p.model.trim().toUpperCase() == clean || p.name.trim().toUpperCase() == clean,
+          );
+        } catch (_) {}
+
+        if (matchedProd != null) {
+          setState(() {
+            _selectedProduct = matchedProd;
+            _activeFilterModelId = 'ALL';
+          });
+          try {
+            Navigator.of(_modelSheetContext!).pop();
+          } catch (_) {}
+          _modelSheetContext = null;
+          _showToast('Active model: ${matchedProd.brand} ${matchedProd.model}', const Color(0xFF4F46E5));
+          return;
+        } else {
+          // Serial scanned: auto-dismiss model sheet so serial can be dispatched immediately!
+          try {
+            Navigator.of(_modelSheetContext!).pop();
+          } catch (_) {}
+          _modelSheetContext = null;
+        }
       }
+
+      // Allow scan when OutwardScreen is active even if a dialog/sheet is mid-animation
+      if (ModalRoute.of(context)?.isActive != true) return;
+      _lastScanTime = DateTime.now();
+
+      // Proactively clear focus and close IME so keystrokes never get intercepted
+      FocusManager.instance.primaryFocus?.unfocus();
+      SystemChannels.textInput.invokeMethod('TextInput.hide');
+
       if (_selectedShop == null) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -231,7 +266,25 @@ class _OutwardScreenState extends State<OutwardScreen> {
         );
         return;
       }
+
       if (_selectedProduct == null) {
+        final clean = barcode.trim().toUpperCase();
+        Product? matchedProd;
+        try {
+          matchedProd = _products.firstWhere(
+            (p) => p.model.trim().toUpperCase() == clean || p.name.trim().toUpperCase() == clean,
+          );
+        } catch (_) {}
+
+        if (matchedProd != null) {
+          setState(() {
+            _selectedProduct = matchedProd;
+            _currentStep = 3;
+          });
+          _showToast('Selected: ${matchedProd.brand} ${matchedProd.model}', const Color(0xFF4F46E5));
+          return;
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Please select a product model first to dispatch serials.'),
@@ -241,6 +294,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         );
         return;
       }
+
       _handleOutwardScan(barcode);
     });
   }
@@ -598,8 +652,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       // --- CASE 2: RECORDED ONLY (Unmatched pre-go-live stock) ---
       else if (caseVal == 2 || caseName == 'unmatched') {
-        HapticFeedback.heavyImpact();
-        SoundService().playErrorSound();
+        HapticFeedback.lightImpact();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
         if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
           final seq = _sequenceCounter++;
@@ -733,6 +786,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   // Auto-toggle to the companion unit so the next scan is ready for the other unit!
                   _outwardUnitType = (chosenUnitType == 'indoor') ? 'outdoor' : 'indoor';
                 }
+                FocusManager.instance.primaryFocus?.unfocus();
+                SystemChannels.textInput.invokeMethod('TextInput.hide');
+                HardwareScannerService().clearBuffer();
               });
               _showToast(
                 'Added $cleanSerial (${matchedProd.model})${isDamaged ? " • DAMAGED" : ""}${matchedProd.hasDualSerial ? " • Next unit: ${_outwardUnitType.toUpperCase()}" : ""}',
@@ -1022,7 +1078,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(ctx, {'action': 'cancel'}),
+                onPressed: () {
+                  _isMismatchDialogOpen = false;
+                  HardwareScannerService().isMismatchActive = false;
+                  _setMismatchDialogState = null;
+                  _mismatchScanWarning = null;
+                  Navigator.pop(ctx, {'action': 'cancel'});
+                },
                 child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
               ),
               ElevatedButton(
@@ -1032,11 +1094,17 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 ),
-                onPressed: () => Navigator.pop(ctx, {
-                  'action': 'add',
+                onPressed: () {
+                  _isMismatchDialogOpen = false;
+                  HardwareScannerService().isMismatchActive = false;
+                  _setMismatchDialogState = null;
+                  _mismatchScanWarning = null;
+                  Navigator.pop(ctx, {
+                    'action': 'add',
                   'unit_type': isDual ? selectedUnitType : null,
                   'switch_model': true,
-                }),
+                });
+                },
                 child: Text(
                   isDual ? 'Add & Switch Model' : 'Add to Dispatch',
                   style: const TextStyle(fontWeight: FontWeight.bold),
@@ -1065,6 +1133,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
+        _modelSheetContext = ctx;
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
             sheetWsSub ??= WebSocketService().stream.listen((event) {
@@ -1117,6 +1186,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   _selectedProduct = newProd;
                   _activeFilterModelId = 'ALL';
                 });
+                FocusManager.instance.primaryFocus?.unfocus();
+                SystemChannels.textInput.invokeMethod('TextInput.hide');
+                HardwareScannerService().clearBuffer();
+                _modelSheetContext = null;
                 if (ctx.mounted) {
                   Navigator.pop(ctx);
                 }
@@ -1363,10 +1436,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                         )
                                       : null,
                                   onTap: () {
+                                    FocusManager.instance.primaryFocus?.unfocus();
+                                    SystemChannels.textInput.invokeMethod('TextInput.hide');
+                                    HardwareScannerService().clearBuffer();
                                     setState(() {
                                       _selectedProduct = p;
                                       _activeFilterModelId = 'ALL';
                                     });
+                                    _modelSheetContext = null;
                                     Navigator.pop(ctx);
                                     _showToast('Active model: ${p.brand} ${p.model}', const Color(0xFF4F46E5));
                                   },
@@ -1382,6 +1459,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         );
       },
     ).whenComplete(() {
+      _modelSheetContext = null;
       sheetWsSub?.cancel();
       debounceTimer?.cancel();
     });
@@ -2368,7 +2446,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
     final bool hasOfflineShop = _selectedShop!.id.startsWith('offline_');
     final bool hasOfflineProduct = batchItems.any((item) => (item['product_id']?.toString() ?? '').startsWith('offline_'));
 
-    if (!OfflineManager().isOnline || hasOfflineShop || hasOfflineProduct) {
+    Future<void> saveOfflineAndExit([BuildContext? loadingCtx]) async {
+      if (loadingCtx != null && Navigator.canPop(loadingCtx)) {
+        Navigator.pop(loadingCtx);
+      }
+      OfflineManager().markOffline();
       await OfflineManager().queueDispatch(dispatchPayload);
       await SessionRecoveryService().clearDraft();
       _dispatchRequestId = null;
@@ -2381,20 +2463,162 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _scanQueue.clear();
         _isProcessingQueue = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            hasOfflineShop
-                ? 'Shop and dispatch saved offline • Will auto-sync when online!'
-                : 'Dispatch saved offline • Will auto-sync when online!',
+
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.cloud_done_rounded, color: Color(0xFF2563EB), size: 28),
+              SizedBox(width: 10),
+              Text('Saved in Offline Queue', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
           ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.receipt_long_rounded, color: Color(0xFF2563EB), size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Bill  for  saved offline.',
+                        style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF1E3A8A), fontSize: 13),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'No server / network connection was available. Your bill and all scanned serial numbers have been securely stored in the offline queue.',
+                style: TextStyle(fontSize: 12, color: Color(0xFF475569), height: 1.4),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDF4),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFBBF7D0)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.sync_rounded, color: Color(0xFF16A34A), size: 18),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'When network is restored, the app will automatically submit this bill in the background.',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF15803D)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1E1B4B),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              ),
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.pop(context);
+              },
+              child: const Text('OK, Got it', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
         ),
       );
-      Navigator.pop(context);
+    }
+
+    if (!OfflineManager().isOnline || hasOfflineShop || hasOfflineProduct) {
+      await saveOfflineAndExit();
       return;
     }
 
+    BuildContext? loadingCtx;
+    bool isSavingOfflineManually = false;
+
+    // Show visual submission dialog with immediate 'Save Offline' option
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (lCtx) {
+        loadingCtx = lCtx;
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 26),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3.5,
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF3C3489)),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const Text(
+                  'Submitting Dispatch...',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Connecting to server for Bill ...',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                ),
+                const SizedBox(height: 18),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFFD97706),
+                    side: const BorderSide(color: Color(0xFFF59E0B)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: const Icon(Icons.wifi_off_rounded, size: 16),
+                  label: const Text('Save Offline & Auto-Submit Later', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    isSavingOfflineManually = true;
+                    saveOfflineAndExit(loadingCtx);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
     try {
+      // Fast probe: check if server is reachable within 2.5 seconds before attempting large request
+      final isAlive = await OfflineManager().checkServerHealth(timeoutSeconds: 3);
+      if (!isAlive) {
+        if (!isSavingOfflineManually) {
+          await saveOfflineAndExit(loadingCtx);
+        }
+        return;
+      }
+
       final result = await _api.submitOutwardMultiBatch(
         shopId: _selectedShop!.id,
         items: batchItems,
@@ -2402,7 +2626,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
         deliveryReference: deliveryRef.isEmpty ? null : deliveryRef,
         remarks: remarks.isEmpty ? null : remarks,
         clientRequestId: _dispatchRequestId,
-      );
+      ).timeout(const Duration(seconds: 10));
+
+      if (loadingCtx != null && Navigator.canPop(loadingCtx!)) {
+        Navigator.pop(loadingCtx!);
+      }
 
       // Successfully processed: reset request ID
       _dispatchRequestId = null;
@@ -2577,6 +2805,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
       if (!mounted) return;
       Navigator.pop(context);
     } catch (e) {
+      if (isSavingOfflineManually) return;
+      if (loadingCtx != null && Navigator.canPop(loadingCtx!)) {
+        Navigator.pop(loadingCtx!);
+      }
       if (!mounted) return;
       setState(() => _submitting = false);
 
@@ -2632,25 +2864,17 @@ class _OutwardScreenState extends State<OutwardScreen> {
           errLower.contains('cannot reach server') ||
           errLower.contains('connection') ||
           errLower.contains('socketexception') ||
-          errLower.contains('timeout');
+          errLower.contains('timeout') ||
+          errLower.contains('timed out') ||
+          errLower.contains('host lookup') ||
+          errLower.contains('unreachable') ||
+          errLower.contains('clientexception') ||
+          errLower.contains('handshake') ||
+          errLower.contains('network') ||
+          errLower.contains('os error');
 
       if (isNetError) {
-        OfflineManager().markOffline();
-        await OfflineManager().queueDispatch(dispatchPayload);
-        _dispatchRequestId = null;
-        if (!mounted) return;
-        setState(() {
-          _submitting = false;
-          _scannedItems.clear();
-          _scannedSerialSet.clear();
-          _sequenceCounter = 1;
-          _scanQueue.clear();
-          _isProcessingQueue = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Dispatch saved to offline queue • Will auto-sync when connected!')),
-        );
-        Navigator.pop(context);
+        await saveOfflineAndExit();
         return;
       }
 
@@ -3488,7 +3712,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         borderRadius: BorderRadius.circular(14),
                         child: InkWell(
                           onTap: () {
-                            FocusScope.of(context).unfocus();
+                            FocusManager.instance.primaryFocus?.unfocus();
+                            SystemChannels.textInput.invokeMethod('TextInput.hide');
+                            HardwareScannerService().clearBuffer();
                             setState(() {
                               _selectedProduct = p;
                               _currentStep = 3;
@@ -3950,6 +4176,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           ),
                         ),
                         onSelected: (val) {
+                          FocusManager.instance.primaryFocus?.unfocus();
+                          SystemChannels.textInput.invokeMethod('TextInput.hide');
+                          HardwareScannerService().clearBuffer();
                           setState(() {
                             _activeFilterModelId = val ? prod.id : 'ALL';
                             if (val) _selectedProduct = prod;

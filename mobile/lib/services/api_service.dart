@@ -1222,6 +1222,7 @@ class ApiService {
     String? billNumber,
     String? deliveryReference,
     String? remarks,
+    String? clientRequestId,
   }) async {
     clearSerialCheckCache();
     final res = await _authenticatedPost(
@@ -1239,6 +1240,7 @@ class ApiService {
         'bill_number': billNumber?.trim().isEmpty == true ? null : billNumber?.trim(),
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks,
+        if (clientRequestId != null) 'client_request_id': clientRequestId,
       }),
     );
 

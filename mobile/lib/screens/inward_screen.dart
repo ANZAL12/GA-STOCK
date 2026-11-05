@@ -1654,6 +1654,48 @@ class _InwardScreenState extends State<InwardScreen> {
     }
 
     try {
+      final isAlive = await OfflineManager().checkServerHealth(timeoutSeconds: 3);
+      if (!isAlive) {
+        OfflineManager().markOffline();
+        final batch = QueuedBatch(
+          id: const Uuid().v4(),
+          type: QueueType.inward,
+          createdAt: DateTime.now(),
+          payload: {
+            'items': multiBatchItems,
+            'remarks': _remarksController.text.trim(),
+          },
+          description: ':  units',
+        );
+        await _queue.enqueue(batch);
+        await SessionRecoveryService().clearDraft();
+        for (final item in _scannedItems) {
+          OfflineManager().recordScannedInwardSerial(
+            serialNumber: item.serialNumber,
+            productId: item.product.id,
+            modelName: ' ',
+            unitType: item.unitType,
+            inwardType: _inwardType,
+          );
+        }
+        if (!mounted) return;
+        TopToast.show(
+          context,
+          message: '✓ Inward saved to Offline Queue! Will automatically sync when online.',
+          backgroundColor: const Color(0xFF2563EB),
+          icon: Icons.cloud_done_rounded,
+        );
+        setState(() {
+          _scannedItems.clear();
+          _scannedSerialSet.clear();
+          _sequenceCounter = 1;
+          _scanQueue.clear();
+          _isProcessingQueue = false;
+        });
+        Navigator.pop(context);
+        return;
+      }
+
       final remarks = _remarksController.text.trim().isEmpty ? null : _remarksController.text.trim();
       final result = await _api.submitInwardMultiBatch(
         items: multiBatchItems,
@@ -1768,6 +1810,61 @@ class _InwardScreenState extends State<InwardScreen> {
           _submitInwardBatch();
           return;
         }
+      }
+
+      final errLower = errorStr.toLowerCase();
+      final isNetError = !OfflineManager().isOnline ||
+          errLower.contains('cannot reach server') ||
+          errLower.contains('connection') ||
+          errLower.contains('socketexception') ||
+          errLower.contains('timeout') ||
+          errLower.contains('timed out') ||
+          errLower.contains('host lookup') ||
+          errLower.contains('unreachable') ||
+          errLower.contains('clientexception') ||
+          errLower.contains('handshake') ||
+          errLower.contains('network') ||
+          errLower.contains('os error');
+
+      if (isNetError) {
+        OfflineManager().markOffline();
+        final batch = QueuedBatch(
+          id: const Uuid().v4(),
+          type: QueueType.inward,
+          createdAt: DateTime.now(),
+          payload: {
+            'items': multiBatchItems,
+            'remarks': _remarksController.text.trim(),
+          },
+          description: ':  units',
+        );
+        await _queue.enqueue(batch);
+        await SessionRecoveryService().clearDraft();
+        for (final item in _scannedItems) {
+          OfflineManager().recordScannedInwardSerial(
+            serialNumber: item.serialNumber,
+            productId: item.product.id,
+            modelName: ' ',
+            unitType: item.unitType,
+            inwardType: _inwardType,
+          );
+        }
+        if (!mounted) return;
+        TopToast.show(
+          context,
+          message: '✓ Inward saved to Offline Queue! Will automatically sync when online.',
+          backgroundColor: const Color(0xFF2563EB),
+          icon: Icons.cloud_done_rounded,
+        );
+        setState(() {
+          _scannedItems.clear();
+          _scannedSerialSet.clear();
+          _sequenceCounter = 1;
+          _scanQueue.clear();
+          _isProcessingQueue = false;
+        });
+        Navigator.pop(context);
+        return;
       }
 
       if (!mounted) return;

@@ -191,9 +191,10 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
     _scannerSub = HardwareScannerService().registerListener((barcode) async {
       if (!mounted) return;
-      if (ModalRoute.of(context)?.isCurrent != true) return;
+      if (ModalRoute.of(context)?.isActive != true) return;
       _lastScanTime = DateTime.now();
-      FocusScope.of(context).unfocus();
+      FocusManager.instance.primaryFocus?.unfocus();
+      SystemChannels.textInput.invokeMethod('TextInput.hide');
       if (_selectedShop == null) {
         _showToast('Select a shop first', const Color(0xFFD97706));
         return;
@@ -1389,12 +1390,27 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         _scannedItems.clear();
         _scannedSerialSet.clear();
       });
-      _showToast('Offline: Dispatch queued. Will auto-sync when online.', const Color(0xFFD97706));
+      _showToast('Saved offline. Will automatically submit bill when online!', const Color(0xFF0284C7));
       Navigator.pop(context);
       return;
     }
 
     try {
+      final isAlive = await OfflineManager().checkServerHealth(timeoutSeconds: 3);
+      if (!isAlive) {
+        OfflineManager().markOffline();
+        await OfflineManager().queueDispatch(dispatchPayload);
+        await SessionRecoveryService().clearDraft();
+        if (!mounted) return;
+        setState(() {
+          _isSubmitting = false;
+          _scannedItems.clear();
+          _scannedSerialSet.clear();
+        });
+        _showToast('Saved offline. Will automatically submit bill when online!', const Color(0xFF0284C7));
+        Navigator.pop(context);
+        return;
+      }
       final res = await _api.submitOutwardMultiBatch(
         shopId: _selectedShop!.id,
         items: itemsPayload,
@@ -1423,7 +1439,14 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
             errStr.contains('cannot reach server') ||
             errStr.contains('connection') ||
             errStr.contains('socketexception') ||
-            errStr.contains('timeout');
+            errStr.contains('timeout') ||
+            errStr.contains('timed out') ||
+            errStr.contains('host lookup') ||
+            errStr.contains('unreachable') ||
+            errStr.contains('clientexception') ||
+            errStr.contains('handshake') ||
+            errStr.contains('network') ||
+            errStr.contains('os error');
 
         if (isNetError) {
           OfflineManager().markOffline();

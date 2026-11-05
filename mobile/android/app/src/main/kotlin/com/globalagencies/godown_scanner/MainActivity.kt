@@ -62,6 +62,11 @@ class MainActivity : FlutterActivity() {
                 }
                 "clearBuffer" -> {
                     clearScannerBuffer()
+                    val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                    currentFocus?.let { view ->
+                        imm?.hideSoftInputFromWindow(view.windowToken, 0)
+                        view.clearFocus()
+                    }
                     result.success(true)
                 }
                 else -> result.notImplemented()
@@ -182,6 +187,7 @@ class MainActivity : FlutterActivity() {
             val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
             currentFocus?.let { view ->
                 imm?.hideSoftInputFromWindow(view.windowToken, 0)
+                view.clearFocus()
             }
         }
 

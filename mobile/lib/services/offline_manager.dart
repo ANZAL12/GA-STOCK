@@ -77,9 +77,7 @@ class OfflineManager {
   void markOnline() {
     _consecutiveFailures = 0;
     _setOnlineStatus(true);
-    if (_queuedDispatches.isNotEmpty) {
-      unawaited(syncPendingDispatches());
-    }
+    unawaited(syncPendingDispatches());
   }
 
   void setOffline(bool offline) {

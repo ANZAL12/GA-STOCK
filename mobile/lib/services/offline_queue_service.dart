@@ -1037,6 +1037,7 @@ class OfflineQueueService {
               ),
               invoiceReference: item.payload['invoice_reference'],
               remarks: item.payload['remarks'],
+              clientRequestId: item.payload['client_request_id']?.toString() ?? item.id,
             );
           } else {
             await api.submitInwardBatch(
@@ -1047,6 +1048,7 @@ class OfflineQueueService {
                   : null,
               inwardType: item.payload['inward_type'] ?? 'stock_in',
               remarks: item.payload['remarks'],
+              clientRequestId: item.payload['client_request_id']?.toString() ?? item.id,
             );
           }
         } else {
@@ -1059,6 +1061,7 @@ class OfflineQueueService {
               billNumber: item.payload['bill_number'],
               deliveryReference: item.payload['delivery_reference'],
               remarks: item.payload['remarks'],
+              clientRequestId: item.payload['client_request_id']?.toString() ?? item.id,
             );
           } else {
             await api.submitOutwardBatch(
@@ -1071,6 +1074,7 @@ class OfflineQueueService {
               billNumber: item.payload['bill_number'],
               deliveryReference: item.payload['delivery_reference'],
               remarks: item.payload['remarks'],
+              clientRequestId: item.payload['client_request_id']?.toString() ?? item.id,
             );
           }
         }
