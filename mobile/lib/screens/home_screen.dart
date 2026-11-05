@@ -17,6 +17,9 @@ import 'offline_queue_screen.dart';
 import 'print_bill_screen.dart';
 import 'quick_dispatch_screen.dart';
 import 'godown_report_print_screen.dart';
+import 'tally_bills_screen.dart';
+import '../models/models.dart';
+import '../services/sound_service.dart';
 import '../widgets/flush_lag_button.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -30,6 +33,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final ApiService _api = ApiService();
   final OfflineQueueService _queue = OfflineQueueService();
   VoidCallback? _scannerSub;
+  VoidCallback? _tallySub;
   int _pendingQueueCount = 0;
 
   @override
@@ -39,6 +43,15 @@ class _HomeScreenState extends State<HomeScreen> {
     WebSocketService().connect();
     _api.preWarmCache();
     SessionRecoveryService().init();
+
+    // Sound chime and notify when a new Tally bill is created
+    _tallySub = () {
+      final bill = _api.latestTallyBillNotifier.value;
+      if (bill != null && mounted) {
+        SoundService().playScannerBeep();
+      }
+    };
+    _api.latestTallyBillNotifier.addListener(_tallySub!);
 
     // Listen for hardware barcode scanner on home screen (auto-opens Serial Trace only when on home screen)
     _scannerSub = HardwareScannerService().registerListener((barcode) {
@@ -56,6 +69,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _scannerSub?.call();
+    if (_tallySub != null) {
+      _api.latestTallyBillNotifier.removeListener(_tallySub!);
+    }
     super.dispose();
   }
 
@@ -163,6 +179,21 @@ class _HomeScreenState extends State<HomeScreen> {
         Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const SerialLookupScreen()),
+        );
+      },
+    );
+
+    final cardTallyBills = _buildActionCard(
+      isTablet: isTablet,
+      title: 'Tally Sales Bills',
+      icon: Icons.receipt_long_rounded,
+      iconColor: const Color(0xFF0284C7),
+      iconBg: const Color(0xFFE0F2FE),
+      badgeText: 'Live Sync',
+      onTap: () {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const TallyBillsScreen()),
         );
       },
     );
@@ -390,6 +421,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   },
                 ),
 
+                // Live Incoming Tally Sales Bill Notification Card
+                ValueListenableBuilder<TallySalesVoucher?>(
+                  valueListenable: ApiService().latestTallyBillNotifier,
+                  builder: (context, tv, _) {
+                    if (tv == null) return const SizedBox.shrink();
+                    return Padding(
+                      padding: EdgeInsets.only(bottom: isTablet ? 20 : 16),
+                      child: _buildIncomingTallyBillCard(isTablet, tv),
+                    );
+                  },
+                ),
+
                 Text(
                   'WAREHOUSE OPERATIONS',
                   style: TextStyle(
@@ -429,9 +472,23 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(child: cardPrint),
+                        Expanded(child: cardTallyBills),
                         const SizedBox(width: 20),
+                        Expanded(child: cardPrint),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  IntrinsicHeight(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
                         Expanded(child: cardReportPrint),
+                        const SizedBox(width: 20),
+                        if (cardQueue != null)
+                          Expanded(child: cardQueue)
+                        else
+                          const Expanded(child: SizedBox()),
                       ],
                     ),
                   ),
@@ -446,19 +503,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-                  if (cardQueue != null) ...[
-                    const SizedBox(height: 20),
-                    IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Expanded(child: cardQueue),
-                          const SizedBox(width: 20),
-                          const Expanded(child: SizedBox()),
-                        ],
-                      ),
-                    ),
-                  ],
                 ] else ...[
                   cardInward,
                   const SizedBox(height: 14),
@@ -467,6 +511,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   cardQuickScan,
                   const SizedBox(height: 14),
                   cardTrace,
+                  const SizedBox(height: 14),
+                  cardTallyBills,
                   const SizedBox(height: 14),
                   cardPrint,
                   const SizedBox(height: 14),
@@ -670,6 +716,165 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildIncomingTallyBillCard(bool isTablet, TallySalesVoucher tv) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1B4B),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF1E1B4B).withValues(alpha: 0.25),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      padding: EdgeInsets.all(isTablet ? 20 : 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.bolt, color: Colors.white, size: 14),
+                    const SizedBox(width: 4),
+                    Text(
+                      'NEW TALLY BILL DETECTED',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: isTablet ? 11 : 10,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.close, color: Color(0xFF94A3B8), size: 20),
+                tooltip: 'Dismiss Banner',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+                onPressed: () => ApiService().clearLatestTallyBill(),
+              ),
+            ],
+          ),
+          SizedBox(height: isTablet ? 12 : 10),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: EdgeInsets.all(isTablet ? 12 : 10),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(Icons.receipt_long_rounded, color: const Color(0xFF67E8F9), size: isTablet ? 26 : 22),
+              ),
+              SizedBox(width: isTablet ? 14 : 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Invoice: ${tv.voucherNumber}',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontFamily: 'monospace',
+                        fontSize: isTablet ? 16 : 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      tv.partyName,
+                      style: TextStyle(
+                        color: const Color(0xFFE2E8F0),
+                        fontSize: isTablet ? 15 : 13.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (tv.address != null && tv.address!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        tv.address!.trim(),
+                        style: TextStyle(color: const Color(0xFF94A3B8), fontSize: isTablet ? 12 : 11),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (tv.items.isNotEmpty) ...[
+            SizedBox(height: isTablet ? 12 : 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.07),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.inventory_2_outlined, color: Color(0xFF94A3B8), size: 15),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      tv.items.map((i) => '${i.quantity.toInt()}x ${i.itemName}').join(', '),
+                      style: TextStyle(color: const Color(0xFFCBD5E1), fontSize: isTablet ? 12.5 : 11.5),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          SizedBox(height: isTablet ? 14 : 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4F46E5),
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: EdgeInsets.symmetric(vertical: isTablet ? 14 : 11),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              icon: const Icon(Icons.barcode_reader, size: 20),
+              label: Text(
+                'Start Dispatch Scan (${tv.items.length} items)',
+                style: TextStyle(fontSize: isTablet ? 14 : 13, fontWeight: FontWeight.bold),
+              ),
+              onPressed: () {
+                ApiService().clearLatestTallyBill();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => OutwardScreen(fromTallyVoucher: tv),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

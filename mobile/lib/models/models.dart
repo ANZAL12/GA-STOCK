@@ -558,3 +558,200 @@ class SerialLookupDetail {
     );
   }
 }
+
+// ─── TALLY INTEGRATION ───────────────────────────────────────────────────────
+
+class TallyVoucherItem {
+  final String id;
+  final String voucherId;
+  final String itemName;
+  final String? itemCode;
+  final String? productId;
+  final double quantity;
+  final String? uom;
+  final String? rawQtyText;
+  final String? godownName;
+  final String? batchName;
+  final Map<String, dynamic>? batchDetails;
+  final String? matchedProductName;
+  final String? matchedProductModel;
+
+  TallyVoucherItem({
+    required this.id,
+    required this.voucherId,
+    required this.itemName,
+    this.itemCode,
+    this.productId,
+    required this.quantity,
+    this.uom,
+    this.rawQtyText,
+    this.godownName,
+    this.batchName,
+    this.batchDetails,
+    this.matchedProductName,
+    this.matchedProductModel,
+  });
+
+  factory TallyVoucherItem.fromJson(Map<String, dynamic> json) {
+    return TallyVoucherItem(
+      id: json['id'] ?? '',
+      voucherId: json['voucher_id'] ?? '',
+      itemName: json['item_name'] ?? '',
+      itemCode: json['item_code'],
+      productId: json['product_id'],
+      quantity: (json['quantity'] as num?)?.toDouble() ?? 0.0,
+      uom: json['uom'],
+      rawQtyText: json['raw_qty_text'],
+      godownName: json['godown_name'],
+      batchName: json['batch_name'],
+      batchDetails: json['batch_details'] as Map<String, dynamic>?,
+      matchedProductName: json['matched_product_name'],
+      matchedProductModel: json['matched_product_model'],
+    );
+  }
+}
+
+class TallySalesVoucher {
+  final String id;
+  final String guid;
+  final int? alterId;
+  final String voucherNumber;
+  final String voucherDate;
+  final String voucherType;
+  final String partyName;
+  final String? partyLedgerName;
+  final String? buyerName;
+  final String? address;
+  final String? stateName;
+  final String? companyName;
+  final String? shopId;
+  final bool isCancelled;
+  final bool isDeleted;
+  final bool isProcessed;
+  final String? processedAt;
+  final int itemCount;
+  final double totalQuantity;
+  final List<String> godowns;
+  final List<TallyVoucherItem> items;
+  final String? notes;
+
+  TallySalesVoucher({
+    required this.id,
+    required this.guid,
+    this.alterId,
+    required this.voucherNumber,
+    required this.voucherDate,
+    required this.voucherType,
+    required this.partyName,
+    this.partyLedgerName,
+    this.buyerName,
+    this.address,
+    this.stateName,
+    this.companyName,
+    this.shopId,
+    required this.isCancelled,
+    required this.isDeleted,
+    required this.isProcessed,
+    this.processedAt,
+    required this.itemCount,
+    required this.totalQuantity,
+    required this.godowns,
+    this.items = const [],
+    this.notes,
+  });
+
+  factory TallySalesVoucher.fromJson(Map<String, dynamic> json) {
+    final itms = (json['items'] as List<dynamic>? ?? [])
+        .map((e) => TallyVoucherItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    final gds = (json['godowns'] as List<dynamic>? ?? [])
+        .map((e) => e.toString())
+        .toList();
+
+    return TallySalesVoucher(
+      id: json['id'] ?? '',
+      guid: json['guid'] ?? '',
+      alterId: json['alter_id'],
+      voucherNumber: json['voucher_number'] ?? '',
+      voucherDate: json['voucher_date'] ?? '',
+      voucherType: json['voucher_type'] ?? 'Sales',
+      partyName: json['party_name'] ?? '',
+      partyLedgerName: json['party_ledger_name'],
+      buyerName: json['buyer_name'],
+      address: json['address'],
+      stateName: json['state_name'],
+      companyName: json['company_name'],
+      shopId: json['shop_id']?.toString(),
+      isCancelled: json['is_cancelled'] ?? false,
+      isDeleted: json['is_deleted'] ?? false,
+      isProcessed: json['is_processed'] ?? false,
+      processedAt: json['processed_at'],
+      itemCount: json['item_count'] ?? itms.length,
+      totalQuantity: (json['total_quantity'] as num?)?.toDouble() ?? 0.0,
+      godowns: gds,
+      items: itms,
+      notes: json['notes'],
+    );
+  }
+}
+
+class TallyStatus {
+  final bool isConnected;
+  final String host;
+  final int port;
+  final String? tallyUrl;
+  final String? activeCompany;
+  final bool isEnabled;
+  final bool autoSync;
+  final int syncIntervalMinutes;
+  final String? lastSyncAt;
+  final String? lastSyncStatus;
+  final String? lastSyncMessage;
+  final int lastAlterId;
+  final List<String> availableCompanies;
+  final int totalVouchers;
+  final int pendingVouchers;
+  final bool isSyncing;
+
+  TallyStatus({
+    required this.isConnected,
+    required this.host,
+    required this.port,
+    this.tallyUrl,
+    this.activeCompany,
+    required this.isEnabled,
+    required this.autoSync,
+    required this.syncIntervalMinutes,
+    this.lastSyncAt,
+    this.lastSyncStatus,
+    this.lastSyncMessage,
+    required this.lastAlterId,
+    required this.availableCompanies,
+    required this.totalVouchers,
+    required this.pendingVouchers,
+    required this.isSyncing,
+  });
+
+  factory TallyStatus.fromJson(Map<String, dynamic> json) {
+    return TallyStatus(
+      isConnected: json['is_connected'] ?? false,
+      host: json['host'] ?? 'localhost',
+      port: json['port'] ?? 9000,
+      tallyUrl: json['tally_url'],
+      activeCompany: json['active_company'],
+      isEnabled: json['is_enabled'] ?? true,
+      autoSync: json['auto_sync'] ?? true,
+      syncIntervalMinutes: json['sync_interval_minutes'] ?? 1,
+      lastSyncAt: json['last_sync_at'],
+      lastSyncStatus: json['last_sync_status'],
+      lastSyncMessage: json['last_sync_message'],
+      lastAlterId: json['last_alter_id'] ?? 0,
+      availableCompanies: (json['available_companies'] as List<dynamic>? ?? [])
+          .map((e) => e.toString())
+          .toList(),
+      totalVouchers: json['total_vouchers'] ?? 0,
+      pendingVouchers: json['pending_vouchers'] ?? 0,
+      isSyncing: json['is_syncing'] ?? false,
+    );
+  }
+}

@@ -1,4 +1,4 @@
-﻿# Import every model here so Alembic autogenerate can discover the full metadata.
+# Import every model here so Alembic autogenerate can discover the full metadata.
 from app.models.base import Base
 from app.models.enums import UserRole, SerialStatus, HistoryAction, InspectionResult
 from app.models.user import User
@@ -12,6 +12,12 @@ from app.models.outward import OutwardBatch, OutwardLine
 from app.models.return_ import Return
 from app.models.history import SerialHistory
 from app.models.audit import AuditLog
+from app.models.tally import (
+    TallyConfig,
+    TallySalesVoucher,
+    TallyVoucherItem,
+    TallySyncHistory,
+)
 
 __all__ = [
     "Base",
@@ -23,4 +29,8 @@ __all__ = [
     "Return",
     "SerialHistory",
     "AuditLog",
+    "TallyConfig",
+    "TallySalesVoucher",
+    "TallyVoucherItem",
+    "TallySyncHistory",
 ]

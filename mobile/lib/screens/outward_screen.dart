@@ -23,7 +23,8 @@ import '../widgets/flush_lag_button.dart';
 
 class OutwardScreen extends StatefulWidget {
   final SessionDraft? restoredDraft;
-  const OutwardScreen({super.key, this.restoredDraft});
+  final TallySalesVoucher? fromTallyVoucher;
+  const OutwardScreen({super.key, this.restoredDraft, this.fromTallyVoucher});
 
   @override
   State<OutwardScreen> createState() => _OutwardScreenState();
@@ -34,6 +35,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   final OfflineQueueService _queue = OfflineQueueService();
   StreamSubscription? _wsSubscription;
   VoidCallback? _scannerSub;
+  TallySalesVoucher? _tallyVoucher;
 
   // Wizard steps: 1 = Shop, 2 = Model & Ref, 3 = Scanning & Review
   int _currentStep = 1;
@@ -187,6 +189,56 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _activeFilterModelId = _selectedProduct!.id;
       }
 
+      _currentStep = 3;
+    }
+
+    // Initialize directly from incoming Tally Sales Bill
+    if (widget.fromTallyVoucher != null) {
+      _tallyVoucher = widget.fromTallyVoucher!;
+      final tv = _tallyVoucher!;
+
+      // 1. Auto-select shop from Tally party
+      final partyClean = tv.partyName.trim().toLowerCase();
+      final matchedShop = _shops.where((s) {
+        if (tv.shopId != null && s.id == tv.shopId) return true;
+        return s.name.trim().toLowerCase() == partyClean;
+      }).firstOrNull;
+
+      _selectedShop = matchedShop ?? Shop(
+        id: tv.shopId ?? 'tally_${tv.id}',
+        name: tv.partyName,
+        city: tv.stateName ?? tv.address ?? '',
+        isActive: true,
+      );
+
+      // 2. Prefill Bill / Invoice Number and Delivery Reference
+      _billNumberController.text = tv.voucherNumber;
+      _deliveryRefController.text = 'Tally: ${tv.voucherNumber}';
+      if (tv.address != null && tv.address!.trim().isNotEmpty) {
+        _remarksController.text = tv.address!.trim();
+      }
+
+      // 3. Find first product model from bill items
+      for (final item in tv.items) {
+        final itemClean = item.itemName.trim().toLowerCase();
+        final matchedProd = _products.where((p) {
+          if (item.productId != null && p.id == item.productId) return true;
+          return p.name.trim().toLowerCase() == itemClean ||
+                 p.model.trim().toLowerCase() == itemClean ||
+                 itemClean.contains(p.model.trim().toLowerCase());
+        }).firstOrNull;
+
+        if (matchedProd != null) {
+          _selectedProduct = matchedProd;
+          _activeFilterModelId = matchedProd.id;
+          if (matchedProd.hasDualSerial) {
+            _outwardUnitType = 'indoor';
+          }
+          break;
+        }
+      }
+
+      // 4. Jump directly to Step 3: Scanning & Review!
       _currentStep = 3;
     }
 
@@ -459,6 +511,37 @@ class _OutwardScreenState extends State<OutwardScreen> {
               orElse: () => _selectedShop!,
             );
             _selectedShop = refreshedShop;
+          }
+          if (_tallyVoucher != null) {
+            if (_selectedShop == null || _selectedShop!.id.startsWith('tally_')) {
+              final pClean = _tallyVoucher!.partyName.trim().toLowerCase();
+              final matchedShop = _shops.where((s) {
+                if (_tallyVoucher!.shopId != null && s.id == _tallyVoucher!.shopId) return true;
+                return s.name.trim().toLowerCase() == pClean;
+              }).firstOrNull;
+              if (matchedShop != null) {
+                _selectedShop = matchedShop;
+              }
+            }
+            if (_selectedProduct == null && _tallyVoucher!.items.isNotEmpty) {
+              for (final item in _tallyVoucher!.items) {
+                final itemClean = item.itemName.trim().toLowerCase();
+                final matchedProd = _products.where((p) {
+                  if (item.productId != null && p.id == item.productId) return true;
+                  return p.name.trim().toLowerCase() == itemClean ||
+                         p.model.trim().toLowerCase() == itemClean ||
+                         itemClean.contains(p.model.trim().toLowerCase());
+                }).firstOrNull;
+                if (matchedProd != null) {
+                  _selectedProduct = matchedProd;
+                  _activeFilterModelId = matchedProd.id;
+                  if (matchedProd.hasDualSerial) {
+                    _outwardUnitType = 'indoor';
+                  }
+                  break;
+                }
+              }
+            }
           }
           _loadingShops = false;
           _loadingProducts = false;
@@ -2636,6 +2719,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
       _dispatchRequestId = null;
       await SessionRecoveryService().clearDraft();
 
+      if (_tallyVoucher != null) {
+        _api.markTallyVoucherProcessed(
+          _tallyVoucher!.id,
+          processed: true,
+          notes: 'Dispatched via Godown Scanner (Bill: $billNumber)',
+        ).catchError((_) => false);
+        _api.clearLatestTallyBill();
+      }
+
       if (!mounted) return;
       setState(() => _submitting = false);
 
@@ -3785,6 +3877,118 @@ class _OutwardScreenState extends State<OutwardScreen> {
     );
   }
 
+  Widget _buildTallyTargetBar(BuildContext context) {
+    if (_tallyVoucher == null) return const SizedBox.shrink();
+    final v = _tallyVoucher!;
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0FDF4),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFBBF7D0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.receipt_long_rounded, color: Color(0xFF16A34A), size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Tally Bill: ${v.voucherNumber} • ${v.partyName}',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF166534)),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDCFCE7),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  'Auto-Synced',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF15803D)),
+                ),
+              ),
+            ],
+          ),
+          if (v.items.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: v.items.map((item) {
+                final clean = item.itemName.trim().toLowerCase();
+                final count = _scannedItems.where((s) {
+                  final p = s.product;
+                  if (p == null) return false;
+                  if (item.productId != null && p.id == item.productId) return true;
+                  return p.name.trim().toLowerCase() == clean || p.model.trim().toLowerCase() == clean;
+                }).length;
+
+                final target = item.quantity.toInt();
+                final isDone = count >= target && target > 0;
+
+                return InkWell(
+                  onTap: () {
+                    final matched = _products.where((p) {
+                      if (item.productId != null && p.id == item.productId) return true;
+                      return p.name.trim().toLowerCase() == clean || p.model.trim().toLowerCase() == clean;
+                    }).firstOrNull;
+                    if (matched != null) {
+                      setState(() {
+                        _selectedProduct = matched;
+                        _activeFilterModelId = matched.id;
+                        if (matched.hasDualSerial) _outwardUnitType = 'indoor';
+                      });
+                      _showToast('Switched to ${matched.brand} ${matched.model}', const Color(0xFF16A34A));
+                    }
+                  },
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: isDone ? const Color(0xFFDCFCE7) : Colors.white,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: isDone ? const Color(0xFF86EFAC) : const Color(0xFFCBD5E1),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                          size: 13,
+                          color: isDone ? const Color(0xFF16A34A) : const Color(0xFF64748B),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          '${item.itemName}: $count/$target',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: isDone ? const Color(0xFF166534) : const Color(0xFF334155),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   // STEP 3: Scanning & Review
   Widget _buildScanningAndReviewView() {
     final matchedCount = _scannedItems.where((e) => e.isMatched).length;
@@ -3830,7 +4034,8 @@ class _OutwardScreenState extends State<OutwardScreen> {
       skipTraversal: true,
       child: Column(
         children: [
-        // Ultra-Compact Header (Minimal height, zero wasted space)
+          if (_tallyVoucher != null) _buildTallyTargetBar(context),
+          // Ultra-Compact Header (Minimal height, zero wasted space)
         Container(
           color: Colors.white,
           padding: EdgeInsets.symmetric(

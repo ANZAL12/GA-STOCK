@@ -20,5 +20,14 @@ class Settings(BaseSettings):
     # App
     debug: bool = False
 
+    # Tally Integration
+    tally_host: str = "localhost"
+    tally_port: int = 9000
+    tally_company_name: str | None = None
+    tally_auto_sync: bool = True
+    tally_sync_interval_minutes: int = 1
+    tally_sync_interval_seconds: int = 10
+    tally_agent_token: str = "ga-tally-secret-2026"
+
 
 settings = Settings()

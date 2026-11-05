@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 from fastapi import FastAPI
@@ -5,8 +6,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
+from app.api.v1.tally import router as tally_router
 from app.api.v1.websocket import router as websocket_router
 from app.config import settings
+from app.services.tally_service import TallyBackgroundWorker
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start Tally background sync worker
+    TallyBackgroundWorker.get_instance().start()
+    yield
+    # Shutdown: Stop Tally background sync worker
+    TallyBackgroundWorker.get_instance().stop()
+
 
 app = FastAPI(
     title="Godown Management System — Global Agencies",
@@ -14,6 +27,7 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -32,6 +46,11 @@ async def health() -> dict:
 
 # Mount WebSocket directly at root /ws and also under /api/v1
 app.include_router(websocket_router)
+
+# Mount direct /api/tally alias as specified in prompt (alongside /api/v1/tally)
+app.include_router(tally_router, prefix="/api")
+
+# Mount full API v1 routers under /api
 app.include_router(api_router, prefix="/api")
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -50,4 +69,4 @@ class SPAStaticFiles(StaticFiles):
 # Serve built React frontend if dist folder exists (spec §9)
 frontend_dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 if frontend_dist.exists() and (frontend_dist / "index.html").exists():
-    app.mount("/", SPAStaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+    app.mount("/", SPAStaticFiles(directory=str(frontend_dist), html=True), name="frontend")

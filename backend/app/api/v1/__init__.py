@@ -13,6 +13,7 @@ from app.api.v1.returns import router as returns_router
 from app.api.v1.serials import router as serials_router
 from app.api.v1.shops import router as shops_router
 from app.api.v1.sync import router as sync_router
+from app.api.v1.tally import router as tally_router
 from app.api.v1.users import router as users_router
 from app.api.v1.websocket import router as websocket_router
 
@@ -32,6 +33,7 @@ api_router.include_router(audit_router)
 api_router.include_router(websocket_router)
 api_router.include_router(sync_router)
 api_router.include_router(print_router)
+api_router.include_router(tally_router)
 
 
 @api_router.get("/health", tags=["system"])

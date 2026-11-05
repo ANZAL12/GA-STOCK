@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
@@ -44,6 +45,13 @@ class ApiService {
   // Recent serial check cache: key is "$productId:$serial" -> response Map
   final Map<String, Map<String, dynamic>> _outwardSerialCheckCache = {};
   final Map<String, Map<String, dynamic>> _inwardSerialValidateCache = {};
+
+  /// Live notifier when an automatic Tally sales voucher is detected
+  final ValueNotifier<TallySalesVoucher?> latestTallyBillNotifier = ValueNotifier<TallySalesVoucher?>(null);
+
+  void clearLatestTallyBill() {
+    latestTallyBillNotifier.value = null;
+  }
 
   void clearSerialCaches() {
     _outwardSerialCheckCache.clear();
@@ -482,6 +490,13 @@ class ApiService {
       final id = data['id']?.toString();
       if (id != null) {
         removeCachedShop(id);
+      }
+    } else if (type == 'tally_bill_created' && data is Map<String, dynamic>) {
+      try {
+        final voucher = TallySalesVoucher.fromJson(data);
+        latestTallyBillNotifier.value = voucher;
+      } catch (e) {
+        debugPrint('[WS] Failed to parse tally_bill_created: $e');
       }
     }
   }
@@ -1561,6 +1576,115 @@ class ApiService {
       return jsonDecode(res.body) as Map<String, dynamic>;
     } else {
       String msg = 'Test print failed on Office PC';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  // --- TALLYPRIME INTEGRATION ---
+
+  Future<TallyStatus> getTallyStatus() async {
+    final uri = Uri.parse('$_baseUrl/tally/status');
+    final res = await _authenticatedGet(uri);
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return TallyStatus.fromJson(data);
+    } else {
+      String msg = 'Failed to fetch Tally status';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<List<TallySalesVoucher>> getTallyVouchers({
+    String? query,
+    bool? isProcessed,
+    bool? isCancelled,
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final queryParams = <String, String>{
+      'limit': limit.toString(),
+      'offset': offset.toString(),
+    };
+    if (query != null && query.trim().isNotEmpty) {
+      queryParams['q'] = query.trim();
+    }
+    if (isProcessed != null) {
+      queryParams['is_processed'] = isProcessed.toString();
+    }
+    if (isCancelled != null) {
+      queryParams['is_cancelled'] = isCancelled.toString();
+    }
+
+    final uri = Uri.parse('$_baseUrl/tally/sales-vouchers').replace(queryParameters: queryParams);
+    final res = await _authenticatedGet(uri);
+    if (res.statusCode == 200) {
+      final list = jsonDecode(res.body) as List<dynamic>;
+      return list.map((e) => TallySalesVoucher.fromJson(e as Map<String, dynamic>)).toList();
+    } else {
+      String msg = 'Failed to fetch Tally sales vouchers';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<TallySalesVoucher> getTallyVoucherDetail(String voucherId) async {
+    final uri = Uri.parse('$_baseUrl/tally/sales-vouchers/$voucherId');
+    final res = await _authenticatedGet(uri);
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return TallySalesVoucher.fromJson(data);
+    } else {
+      String msg = 'Failed to fetch Tally voucher details';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Map<String, dynamic>> triggerTallySync({bool forceFull = false}) async {
+    final queryParams = <String, String>{
+      'force_full': forceFull.toString(),
+    };
+    final uri = Uri.parse('$_baseUrl/tally/sync').replace(queryParameters: queryParams);
+    final res = await _authenticatedPost(uri);
+    if (res.statusCode == 200) {
+      return jsonDecode(res.body) as Map<String, dynamic>;
+    } else {
+      String msg = 'Failed to trigger Tally sync';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<bool> markTallyVoucherProcessed(
+    String voucherId, {
+    bool processed = true,
+    String? notes,
+  }) async {
+    final queryParams = <String, String>{
+      'processed': processed.toString(),
+    };
+    if (notes != null && notes.isNotEmpty) {
+      queryParams['notes'] = notes;
+    }
+    final uri = Uri.parse('$_baseUrl/tally/sales-vouchers/$voucherId/mark-processed')
+        .replace(queryParameters: queryParams);
+    final res = await _authenticatedPost(uri);
+    if (res.statusCode == 200) {
+      return true;
+    } else {
+      String msg = 'Failed to update voucher status';
       try {
         msg = jsonDecode(res.body)['detail'] ?? msg;
       } catch (_) {}
