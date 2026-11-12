@@ -10,8 +10,17 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private val LINES_REGEX = Regex("[\r\n]+")
+        private val CTRL_CHARS_REGEX = Regex("[\\x00-\\x1F\\x7F-\\x9F]")
+    }
+
     private val VOLUME_CHANNEL = "com.globalagencies.godown_scanner/volume_key"
     private val SCANNER_CHANNEL = "com.globalagencies.godown_scanner/scanner"
+
+    private val imm by lazy {
+        getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+    }
 
     private var volumeChannel: MethodChannel? = null
     private var scannerChannel: MethodChannel? = null
@@ -61,11 +70,13 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "clearBuffer" -> {
-                    clearScannerBuffer()
-                    val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                    val onlyIfStale = call.argument<Boolean>("onlyIfStale") ?: false
+                    val now = System.currentTimeMillis()
+                    if (!onlyIfStale || lastKeystrokeTime == 0L || (now - lastKeystrokeTime) > 500L) {
+                        clearScannerBuffer()
+                    }
                     currentFocus?.let { view ->
                         imm?.hideSoftInputFromWindow(view.windowToken, 0)
-                        view.clearFocus()
                     }
                     result.success(true)
                 }
@@ -92,13 +103,11 @@ class MainActivity : FlutterActivity() {
 
         if (raw.isBlank()) return
 
-        val lines = raw.split(Regex("[\r\n]+"))
+        val lines = raw.split(LINES_REGEX)
         for (line in lines) {
-            val clean = line.replace(Regex("[\\x00-\\x1F\\x7F-\\x9F]"), "").trim().uppercase()
+            val clean = line.replace(CTRL_CHARS_REGEX, "").trim().uppercase()
             if (clean.length >= 2) {
-                runOnUiThread {
-                    scannerChannel?.invokeMethod("onBarcodeScanned", clean)
-                }
+                scannerChannel?.invokeMethod("onBarcodeScanned", clean)
             }
         }
     }
@@ -171,6 +180,11 @@ class MainActivity : FlutterActivity() {
                 if (lastKeystrokeTime != 0L && now - lastKeystrokeTime > 1500) {
                     scannerBuffer.setLength(0)
                 }
+                if (scannerBuffer.isEmpty()) {
+                    currentFocus?.let { view ->
+                        imm?.hideSoftInputFromWindow(view.windowToken, 0)
+                    }
+                }
                 lastKeystrokeTime = now
                 scannerBuffer.append(characters)
                 scheduleBurstCompletion(determineQuietWindow())
@@ -182,12 +196,15 @@ class MainActivity : FlutterActivity() {
             return super.dispatchKeyEvent(event)
         }
 
-        // Ensure soft keyboard doesn't capture or compose characters during hardware scan
-        if (isPotentialScannerKey(event)) {
-            val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+        val now = System.currentTimeMillis()
+        if (lastKeystrokeTime != 0L && now - lastKeystrokeTime > 1500) {
+            scannerBuffer.setLength(0)
+        }
+
+        // Ensure soft keyboard doesn't compose characters on start of hardware scan burst
+        if (scannerBuffer.isEmpty() && isPotentialScannerKey(event)) {
             currentFocus?.let { view ->
                 imm?.hideSoftInputFromWindow(view.windowToken, 0)
-                view.clearFocus()
             }
         }
 
@@ -202,9 +219,14 @@ class MainActivity : FlutterActivity() {
             return true
         }
 
-        val now = System.currentTimeMillis()
-        if (lastKeystrokeTime != 0L && now - lastKeystrokeTime > 1500) {
-            scannerBuffer.setLength(0)
+        // Handle multi-character payload attached directly to ACTION_DOWN
+        val directChars = event.characters
+        if (!directChars.isNullOrEmpty() && directChars.length > 1) {
+            lastKeystrokeTime = now
+            scannerBuffer.append(directChars)
+            val endsWithTerm = directChars.endsWith('\n') || directChars.endsWith('\r')
+            scheduleBurstCompletion(if (endsWithTerm) 25 else determineQuietWindow())
+            return true
         }
 
         // Check for Terminator Keys (Enter / Numpad Enter / \n / \r)
@@ -247,7 +269,7 @@ class MainActivity : FlutterActivity() {
         if (keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) return true
         if (keyCode in KeyEvent.KEYCODE_NUMPAD_0..KeyEvent.KEYCODE_NUMPAD_9) return true
         if (isModifierKey(keyCode)) return true
-        if (event.isPrintingKey) return true
+        if (event.isPrintingKey || event.unicodeChar >= 32 || !event.characters.isNullOrEmpty()) return true
         if (keyCode == KeyEvent.KEYCODE_MINUS || keyCode == KeyEvent.KEYCODE_SLASH ||
             keyCode == KeyEvent.KEYCODE_PERIOD || keyCode == KeyEvent.KEYCODE_SPACE ||
             keyCode == KeyEvent.KEYCODE_EQUALS || keyCode == KeyEvent.KEYCODE_SEMICOLON ||

@@ -30,7 +30,7 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
     super.initState();
     _scannerSub = HardwareScannerService().registerListener((barcode) {
       if (mounted) {
-        if (ModalRoute.of(context)?.isCurrent != true) return;
+        if (ModalRoute.of(context)?.isActive != true) return;
         _lastScanTime = DateTime.now();
         FocusScope.of(context).unfocus();
         _searchController.text = barcode;
@@ -123,13 +123,19 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
+        if (didPop) {
+          _scannerSub?.call();
+          _scannerSub = null;
+          return;
+        }
         final now = DateTime.now();
         // If a barcode scan occurred within the last 2000ms, swallow the pop request
         if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
           debugPrint('[SerialLookupScreen] Swallowed pop attempt from scanner keys');
           return;
         }
+        _scannerSub?.call();
+        _scannerSub = null;
         Navigator.pop(context);
       },
       child: Scaffold(
@@ -144,9 +150,12 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: IconButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               icon: const Icon(Icons.arrow_back),
-              onPressed: () => Navigator.pop(context),
+              onPressed: () {
+                _scannerSub?.call();
+                _scannerSub = null;
+                Navigator.pop(context);
+              },
             ),
           ),
           title: Text(
@@ -213,7 +222,6 @@ class _SerialLookupScreenState extends State<SerialLookupScreen> {
                       descendantsAreFocusable: false,
                       skipTraversal: true,
                       child: IconButton(
-                        focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                         style: IconButton.styleFrom(
                           backgroundColor: const Color(0xFF1E1B4B),
                           foregroundColor: Colors.white,

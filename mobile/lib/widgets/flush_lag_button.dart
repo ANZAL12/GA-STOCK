@@ -101,7 +101,6 @@ class _FlushLagButtonState extends State<FlushLagButton> with SingleTickerProvid
             CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
           ),
           child: IconButton(
-            focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
             icon: Icon(
               Icons.bolt_rounded,
               color: widget.color ?? const Color(0xFFD97706),

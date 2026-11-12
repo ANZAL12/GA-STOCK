@@ -21,6 +21,8 @@ class HardwareScannerService {
 
   static const MethodChannel _nativeChannel =
       MethodChannel('com.globalagencies.godown_scanner/scanner');
+  static final RegExp _lineSplitRegex = RegExp(r'[\r\n]+');
+  static final RegExp _ctrlCharRegex = RegExp(r'[\x00-\x1F\x7F-\x9F]');
 
   // Keystroke burst assembly buffer
   final StringBuffer _buffer = StringBuffer();
@@ -72,13 +74,19 @@ class HardwareScannerService {
   }
 
   /// Clears any pending or partial keystroke buffer and resets burst timer
-  void clearBuffer() {
+  void clearBuffer({bool onlyIfStale = false}) {
+    final now = DateTime.now();
+    if (onlyIfStale &&
+        _lastKeystrokeTime != null &&
+        now.difference(_lastKeystrokeTime!).inMilliseconds <= 500) {
+      return;
+    }
     _burstTimer?.cancel();
     _burstTimer = null;
     _buffer.clear();
     _lastKeystrokeTime = null;
     try {
-      _nativeChannel.invokeMethod('clearBuffer');
+      _nativeChannel.invokeMethod('clearBuffer', {'onlyIfStale': onlyIfStale});
     } catch (_) {}
   }
 
@@ -244,11 +252,11 @@ class HardwareScannerService {
 
     // Split on newlines if multiple distinct lines were sent in one burst
     // (e.g. 2D carton barcode containing both Model and Serial, or multi-scan)
-    final lines = raw.split(RegExp(r'[\r\n]+'));
+    final lines = raw.split(_lineSplitRegex);
     for (final line in lines) {
       // Strip any unprintable ASCII control characters (0x00-0x1F, 0x7F-0x9F)
       final clean = line
-          .replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F]'), '')
+          .replaceAll(_ctrlCharRegex, '')
           .trim()
           .toUpperCase();
       // Only process valid barcode tokens (length >= 2, ignore empty chunks)

@@ -34,6 +34,8 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
   // 30-second cooldown tracking per billNumber
   final Map<String, int> _printCooldowns = {};
   Timer? _listCooldownTimer;
+  Timer? _searchDebounce;
+  int _loadSeq = 0;
 
   @override
   void initState() {
@@ -48,6 +50,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _listCooldownTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
@@ -83,6 +86,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
   }
 
   Future<void> _loadBills({String? search, bool forceRefresh = false}) async {
+    final seq = ++_loadSeq;
     if (_bills.isEmpty) {
       setState(() {
         _loading = true;
@@ -91,13 +95,21 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
     }
     try {
       final bills = await _api.listBills(search: search, forceRefresh: forceRefresh);
-      if (mounted) setState(() { _bills = bills; _loading = false; });
+      if (mounted && seq == _loadSeq) setState(() { _bills = bills; _loading = false; });
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString(); _loading = false; });
+      if (mounted && seq == _loadSeq) setState(() { _error = e.toString(); _loading = false; });
     }
   }
 
-  void _onSearch(String value) => _loadBills(search: value.trim().isEmpty ? null : value.trim());
+  void _onSearch(String value) {
+    _searchDebounce?.cancel();
+    final trimmed = value.trim();
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        _loadBills(search: trimmed.isEmpty ? null : trimmed);
+      }
+    });
+  }
 
   // ── Open detail then trigger print/share ──────────────────────────────────
   Future<void> _openBill(BillListItem item) async {
@@ -202,6 +214,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
                     ? IconButton(
                         icon: Icon(Icons.clear, size: context.isTablet ? 22 : 18),
                         onPressed: () {
+                          _searchDebounce?.cancel();
                           _searchCtrl.clear();
                           _loadBills();
                         },
@@ -613,14 +626,21 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   // For test verification
   Future<pw.Document> buildPdfForTesting(BillDetail bill) => _buildPdf(bill);
 
+  static Uint8List? _cachedLogoBytes;
+
   // Build the PDF document from BillDetail - exact match to admin dashboard generateBillPdf
   Future<pw.Document> _buildPdf(BillDetail bill) async {
     final doc = pw.Document();
 
     pw.MemoryImage? logoImage;
     try {
-      final bytes = await rootBundle.load('assets/images/logo.png');
-      logoImage = pw.MemoryImage(bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes));
+      var logoBytes = _cachedLogoBytes;
+      if (logoBytes == null) {
+        final bytes = await rootBundle.load('assets/images/logo.png');
+        logoBytes = bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes);
+        _cachedLogoBytes = logoBytes;
+      }
+      logoImage = pw.MemoryImage(logoBytes);
     } catch (_) {}
 
       doc.addPage(

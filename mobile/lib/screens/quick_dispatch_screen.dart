@@ -1117,9 +1117,26 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         builder: (ctx) {
           final isTablet = context.isTablet;
           final Map<String, int> modelCounts = {};
-          for (var item in _scannedItems) {
+          final Map<String, int> modelInCounts = {};
+          final Map<String, int> modelOutCounts = {};
+          final Set<String> modelHasDual = {};
+          int qIn = 0;
+          int qOut = 0;
+          for (final item in _scannedItems) {
             modelCounts[item.modelName] = (modelCounts[item.modelName] ?? 0) + 1;
+            if (item.unitType != null) {
+              modelHasDual.add(item.modelName);
+              final ut = item.unitType!.toLowerCase();
+              if (ut == 'indoor') {
+                qIn++;
+                modelInCounts[item.modelName] = (modelInCounts[item.modelName] ?? 0) + 1;
+              } else if (ut == 'outdoor') {
+                qOut++;
+                modelOutCounts[item.modelName] = (modelOutCounts[item.modelName] ?? 0) + 1;
+              }
+            }
           }
+          final hasAnyDual = qIn > 0 || qOut > 0;
 
           return Padding(
             padding: EdgeInsets.only(
@@ -1182,6 +1199,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                                   'assets/images/shop_icon.png',
                                   width: 24,
                                   height: 24,
+                                  cacheWidth: 72,
                                   fit: BoxFit.contain,
                                   errorBuilder: (c, e, s) => const Icon(Icons.storefront, size: 20),
                                 ),
@@ -1192,18 +1210,11 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                                   ),
                                 ),
-                                Builder(
-                                  builder: (context) {
-                                    final qIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
-                                    final qOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
-                                    final hasDual = qIn > 0 || qOut > 0;
-                                    return Text(
-                                      hasDual
-                                          ? '${_scannedItems.length} units ($qIn In / $qOut Out)'
-                                          : '${_scannedItems.length} units',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
-                                    );
-                                  },
+                                Text(
+                                  hasAnyDual
+                                      ? '${_scannedItems.length} units ($qIn In / $qOut Out)'
+                                      : '${_scannedItems.length} units',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
                                 ),
                               ],
                             ),
@@ -1226,10 +1237,9 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                               separatorBuilder: (_, _) => const Divider(height: 10, color: Color(0xFFE2E8F0)),
                               itemBuilder: (ctx, i) {
                                 final entry = modelCounts.entries.elementAt(i);
-                                final itemsOfModel = _scannedItems.where((e) => e.modelName == entry.key);
-                                final hasDual = itemsOfModel.any((e) => e.unitType != null);
-                                final inCount = hasDual ? itemsOfModel.where((e) => e.unitType == 'indoor').length : 0;
-                                final outCount = hasDual ? itemsOfModel.where((e) => e.unitType == 'outdoor').length : 0;
+                                final hasDual = modelHasDual.contains(entry.key);
+                                final inCount = modelInCounts[entry.key] ?? 0;
+                                final outCount = modelOutCounts[entry.key] ?? 0;
 
                                 return Row(
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1509,7 +1519,11 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return;
+        if (didPop) {
+          _scannerSub?.call();
+          _scannerSub = null;
+          return;
+        }
         final now = DateTime.now();
         // If a barcode scan occurred within the last 2500ms, swallow the pop request
         if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
@@ -1537,6 +1551,8 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
         }
 
         await SessionRecoveryService().clearDraft();
+        _scannerSub?.call();
+        _scannerSub = null;
         if (!mounted) return;
         Navigator.of(context).pop();
       },
@@ -1552,7 +1568,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: IconButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               icon: const Icon(Icons.arrow_back),
               onPressed: () async {
                 final now = DateTime.now();
@@ -1578,6 +1593,8 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                   return;
                 }
                 await SessionRecoveryService().clearDraft();
+                _scannerSub?.call();
+                _scannerSub = null;
                 if (!mounted) return;
                 Navigator.of(context).pop();
               },
@@ -1598,7 +1615,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 descendantsAreFocusable: false,
                 skipTraversal: true,
                 child: TextButton(
-                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   onPressed: () async {
                     if (_scannedItems.isNotEmpty) {
                       final confirm = await _showClearConfirmationDialog();
@@ -1634,10 +1650,10 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
   Widget _buildShopSelector() {
     if (_loadingShops) return const Center(child: CircularProgressIndicator());
 
-    final filtered = _shops.where((s) {
-      final q = _shopSearch.toLowerCase();
-      return s.name.toLowerCase().contains(q) || s.city.toLowerCase().contains(q);
-    }).toList();
+    final q = _shopSearch.toLowerCase();
+    final filtered = q.isEmpty
+        ? _shops
+        : _shops.where((s) => s.searchKey.contains(q)).toList();
 
     return Padding(
       padding: EdgeInsets.all(context.isTablet ? 24 : 16),
@@ -1693,6 +1709,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                             ),
                             child: Image.asset(
                               'assets/images/shop_icon.png',
+                              cacheWidth: 72,
                               fit: BoxFit.contain,
                               errorBuilder: (ctx, err, stack) => const Icon(Icons.storefront, color: Color(0xFF3C3489)),
                             ),
@@ -1732,8 +1749,16 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     final isLandscapeTab = context.isLandscapeTablet;
 
     final Map<String, int> modelCounts = {};
-    for (var item in _scannedItems) {
+    int qIn = 0;
+    int qOut = 0;
+    for (final item in _scannedItems) {
       modelCounts[item.modelName] = (modelCounts[item.modelName] ?? 0) + 1;
+      final ut = item.unitType?.toLowerCase();
+      if (ut == 'indoor') {
+        qIn++;
+      } else if (ut == 'outdoor') {
+        qOut++;
+      }
     }
 
     if (_activeFilterModel != 'ALL' && !modelCounts.containsKey(_activeFilterModel)) {
@@ -1763,6 +1788,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 'assets/images/shop_icon.png',
                 width: isLandscapeTab ? 20 : (isTablet ? 28 : 22),
                 height: isLandscapeTab ? 20 : (isTablet ? 28 : 22),
+                cacheWidth: 72,
                 fit: BoxFit.contain,
                 errorBuilder: (c, e, s) => const Icon(Icons.storefront, size: 20),
               ),
@@ -1794,7 +1820,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 descendantsAreFocusable: false,
                 skipTraversal: true,
                 child: TextButton(
-                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   style: isLandscapeTab
                       ? TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -1872,7 +1897,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                               descendantsAreFocusable: false,
                               skipTraversal: true,
                               child: ElevatedButton(
-                                focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF1E293B),
                                   foregroundColor: Colors.white,
@@ -1899,7 +1923,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                       child: SizedBox(
                         height: 38,
                         child: ElevatedButton.icon(
-                          focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFFEA580C),
                             foregroundColor: Colors.white,
@@ -1929,7 +1952,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                       child: SizedBox(
                         width: double.infinity,
                         child: ElevatedButton.icon(
-                          focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFFEA580C),
                             foregroundColor: Colors.white,
@@ -1978,7 +2000,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                           descendantsAreFocusable: false,
                           skipTraversal: true,
                           child: ElevatedButton(
-                            focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF1E293B),
                               foregroundColor: Colors.white,
@@ -2097,20 +2118,13 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Builder(
-                      builder: (context) {
-                        final qIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
-                        final qOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
-                        final hasDual = qIn > 0 || qOut > 0;
-                        return Text(
-                          _activeFilterModel == 'ALL'
-                              ? (hasDual
-                                  ? 'Scanned Items (${_scannedItems.length}) • Indoor: $qIn | Outdoor: $qOut'
-                                  : 'Scanned Items (${_scannedItems.length})')
-                              : 'Scanned Items (${displayedItems.length} / ${_scannedItems.length})',
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
-                        );
-                      },
+                    Text(
+                      _activeFilterModel == 'ALL'
+                          ? ((qIn > 0 || qOut > 0)
+                              ? 'Scanned Items (${_scannedItems.length}) • Indoor: $qIn | Outdoor: $qOut'
+                              : 'Scanned Items (${_scannedItems.length})')
+                          : 'Scanned Items (${displayedItems.length} / ${_scannedItems.length})',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
                     ),
                     if (_scannedItems.isNotEmpty)
                       Text(

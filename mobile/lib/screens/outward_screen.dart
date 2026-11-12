@@ -71,6 +71,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   BuildContext? _alertContext;
   BuildContext? _modelSheetContext;
   Timer? _alertTimer;
+  Timer? _searchSyncDebounce;
   bool _isMismatchDialogOpen = false;
   void Function(void Function())? _setMismatchDialogState;
   String? _mismatchScanWarning;
@@ -427,6 +428,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   void dispose() {
     HardwareScannerService().isMismatchActive = false;
     _dismissSimpleAlert();
+    _searchSyncDebounce?.cancel();
     _scannerSub?.call();
     _wsSubscription?.cancel();
     _scanListScrollController.dispose();
@@ -525,8 +527,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
     // 1. Instant synchronous check in O(1): Reject immediately if already in batch OR currently in FIFO queue
     if (_scannedSerialSet.contains(cleanSerial) ||
-        _scanQueue.contains(cleanSerial) ||
-        _scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+        _scanQueue.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
       _showToast('Duplicate: Serial "$cleanSerial" already in batch', const Color(0xFFE11D48));
@@ -558,8 +559,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   }
 
   Future<void> _processSingleOutwardSerial(String cleanSerial) async {
-    if (_scannedSerialSet.contains(cleanSerial) ||
-        _scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+    if (_scannedSerialSet.contains(cleanSerial)) {
       return;
     }
     _inFlightSerials.add(cleanSerial);
@@ -628,7 +628,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
         HapticFeedback.lightImpact();
         final unitType = (res['unit_type'] as String?) ?? (_selectedProduct?.hasDualSerial == true ? _outwardUnitType : null);
-        if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+        if (!_scannedSerialSet.contains(cleanSerial)) {
           final seq = _sequenceCounter++;
           _scannedSerialSet.add(cleanSerial);
           setState(() {
@@ -654,7 +654,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       else if (caseVal == 2 || caseName == 'unmatched') {
         HapticFeedback.lightImpact();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
-        if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+        if (!_scannedSerialSet.contains(cleanSerial)) {
           final seq = _sequenceCounter++;
           _scannedSerialSet.add(cleanSerial);
           setState(() {
@@ -739,16 +739,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
         final regProdId = res['registered_product_id']?.toString();
         Product? matchedProd;
         if (regProdId != null) {
-          try {
-            matchedProd = _products.firstWhere(
-              (p) => p.id.toLowerCase() == regProdId.toLowerCase(),
-            );
-          } catch (_) {
-            try {
-              matchedProd = OfflineManager().products.firstWhere(
-                (p) => p.id.toLowerCase() == regProdId.toLowerCase(),
-              );
-            } catch (_) {}
+          matchedProd = OfflineManager().getProductById(regProdId);
+          if (matchedProd == null) {
+            final targetId = regProdId.toLowerCase();
+            for (final p in _products) {
+              if (p.id.toLowerCase() == targetId) {
+                matchedProd = p;
+                break;
+              }
+            }
           }
         }
         final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
@@ -762,7 +761,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           );
           if (dialogResult != null && dialogResult['action'] == 'add') {
             final String? chosenUnitType = dialogResult['unit_type'];
-            if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+            if (!_scannedSerialSet.contains(cleanSerial)) {
               final seq = _sequenceCounter++;
               _scannedSerialSet.add(cleanSerial);
               setState(() {
@@ -788,7 +787,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 }
                 FocusManager.instance.primaryFocus?.unfocus();
                 SystemChannels.textInput.invokeMethod('TextInput.hide');
-                HardwareScannerService().clearBuffer();
+                HardwareScannerService().clearBuffer(onlyIfStale: true);
               });
               _showToast(
                 'Added $cleanSerial (${matchedProd.model})${isDamaged ? " • DAMAGED" : ""}${matchedProd.hasDualSerial ? " • Next unit: ${_outwardUnitType.toUpperCase()}" : ""}',
@@ -1188,7 +1187,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 });
                 FocusManager.instance.primaryFocus?.unfocus();
                 SystemChannels.textInput.invokeMethod('TextInput.hide');
-                HardwareScannerService().clearBuffer();
+                HardwareScannerService().clearBuffer(onlyIfStale: true);
                 _modelSheetContext = null;
                 if (ctx.mounted) {
                   Navigator.pop(ctx);
@@ -3087,9 +3086,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return;
+        if (didPop) {
+          _scannerSub?.call();
+          _scannerSub = null;
+          return;
+        }
         final canPop = await _handleWillPop();
         if (canPop) {
+          _scannerSub?.call();
+          _scannerSub = null;
           if (!mounted) return;
           Navigator.of(context).pop();
         }
@@ -3106,11 +3111,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: IconButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               icon: const Icon(Icons.arrow_back),
               onPressed: () async {
                 final canPop = await _handleWillPop();
                 if (canPop) {
+                  _scannerSub?.call();
+                  _scannerSub = null;
                   if (!mounted) return;
                   Navigator.of(context).pop();
                 }
@@ -3125,7 +3131,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 descendantsAreFocusable: false,
                 skipTraversal: true,
                 child: TextButton(
-                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   onPressed: _handleRestartPress,
                   child: const Text('Restart', style: TextStyle(color: Color(0xFFD97706), fontWeight: FontWeight.bold)),
                 ),
@@ -3191,10 +3196,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
   Widget _buildShopSelector() {
     if (_loadingShops || _loadingProducts) return const Center(child: CircularProgressIndicator());
 
-    final filtered = _shops.where((s) {
-      final q = _shopSearch.toLowerCase();
-      return s.name.toLowerCase().contains(q) || s.city.toLowerCase().contains(q);
-    }).toList();
+    final q = _shopSearch.toLowerCase();
+    final filtered = q.isEmpty
+        ? _shops
+        : _shops.where((s) => s.searchKey.contains(q)).toList();
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -3214,6 +3219,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   'assets/images/shop_icon.png',
                   width: 22,
                   height: 22,
+                  cacheWidth: 72,
                   fit: BoxFit.contain,
                   errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, size: 18, color: Color(0xFFD97706)),
                 ),
@@ -3332,6 +3338,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   ),
                                   child: Image.asset(
                                     'assets/images/shop_icon.png',
+                                    cacheWidth: 72,
                                     fit: BoxFit.contain,
                                     errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, color: Color(0xFF3C3489), size: 20),
                                   ),
@@ -3386,12 +3393,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   // STEP 2: Select Model & Delivery Ref
   Widget _buildModelAndRefSelector() {
-    final filtered = _products.where((p) {
-      final q = _productSearch.toLowerCase();
-      return p.name.toLowerCase().contains(q) ||
-          p.brand.toLowerCase().contains(q) ||
-          p.model.toLowerCase().contains(q);
-    }).toList();
+    final q = _productSearch.toLowerCase();
+    final filtered = q.isEmpty
+        ? _products
+        : _products.where((p) => p.searchKey.contains(q)).toList();
 
     return Padding(
       padding: EdgeInsets.symmetric(
@@ -3428,6 +3433,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           ),
                           child: Image.asset(
                             'assets/images/shop_icon.png',
+                            cacheWidth: 72,
                             fit: BoxFit.contain,
                             errorBuilder: (context, error, stackTrace) => const Icon(Icons.storefront, color: Color(0xFF059669), size: 16),
                           ),
@@ -3601,8 +3607,17 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     ),
                     onChanged: (val) {
                       setState(() => _productSearch = val);
-                      if (val.trim().length >= 2 && filtered.isEmpty && !_loadingProducts) {
-                        _loadMetadata(forceRefresh: true);
+                      _searchSyncDebounce?.cancel();
+                      final qVal = val.trim().toLowerCase();
+                      if (qVal.length >= 2 && !_loadingProducts) {
+                        final hasAnyMatch = _products.any((p) => p.searchKey.contains(qVal));
+                        if (!hasAnyMatch) {
+                          _searchSyncDebounce = Timer(const Duration(milliseconds: 450), () {
+                            if (mounted && !_loadingProducts) {
+                              _loadMetadata(forceRefresh: true);
+                            }
+                          });
+                        }
                       }
                     },
                   ),
@@ -3714,7 +3729,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           onTap: () {
                             FocusManager.instance.primaryFocus?.unfocus();
                             SystemChannels.textInput.invokeMethod('TextInput.hide');
-                            HardwareScannerService().clearBuffer();
+                            HardwareScannerService().clearBuffer(onlyIfStale: true);
                             setState(() {
                               _selectedProduct = p;
                               _currentStep = 3;
@@ -3787,42 +3802,63 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   // STEP 3: Scanning & Review
   Widget _buildScanningAndReviewView() {
-    final matchedCount = _scannedItems.where((e) => e.isMatched).length;
-    final recordedOnlyCount = _scannedItems.where((e) => !e.isMatched).length;
+    int matchedCount = 0;
+    int recordedOnlyCount = 0;
+    int dualIn = 0;
+    int dualOut = 0;
+    int dualIndoorCount = 0;
+    int dualOutdoorCount = 0;
 
-    // Separate indoor and outdoor unit counts for currently active dual serial model
     final currentProdId = _selectedProduct?.id;
-    final int dualIndoorCount = _selectedProduct == null
-        ? 0
-        : _scannedItems.where((e) {
-            final pid = e.product?.id ?? _selectedProduct?.id;
-            return pid == currentProdId && e.unitType?.toLowerCase() == 'indoor';
-          }).length;
-    final int dualOutdoorCount = _selectedProduct == null
-        ? 0
-        : _scannedItems.where((e) {
-            final pid = e.product?.id ?? _selectedProduct?.id;
-            return pid == currentProdId && e.unitType?.toLowerCase() == 'outdoor';
-          }).length;
-
-    // Distinct models in current batch + selected
     final Map<String, Product> modelMap = {};
     if (_selectedProduct != null) {
       modelMap[_selectedProduct!.id] = _selectedProduct!;
     }
+    final distinctScannedModelIds = <String?>{};
+    final Map<String, int> modelTotal = {};
+    final Map<String, int> modelIn = {};
+    final Map<String, int> modelOut = {};
+    final bool filterAll = _activeFilterModelId == 'ALL';
+    final List<OutwardScanResult> filteredItems = filterAll ? _scannedItems : <OutwardScanResult>[];
+
     for (final item in _scannedItems) {
+      if (item.isMatched) {
+        matchedCount++;
+      } else {
+        recordedOnlyCount++;
+      }
       final p = item.product ?? _selectedProduct;
+      final pid = p?.id;
+      distinctScannedModelIds.add(pid);
       if (p != null) {
         modelMap[p.id] = p;
+        modelTotal[p.id] = (modelTotal[p.id] ?? 0) + 1;
+      }
+      final ut = item.unitType?.toLowerCase();
+      if (ut == 'indoor') {
+        dualIn++;
+        if (currentProdId != null && pid == currentProdId) {
+          dualIndoorCount++;
+        }
+        if (pid != null) {
+          modelIn[pid] = (modelIn[pid] ?? 0) + 1;
+        }
+      } else if (ut == 'outdoor') {
+        dualOut++;
+        if (currentProdId != null && pid == currentProdId) {
+          dualOutdoorCount++;
+        }
+        if (pid != null) {
+          modelOut[pid] = (modelOut[pid] ?? 0) + 1;
+        }
+      }
+      if (!filterAll && pid == _activeFilterModelId) {
+        filteredItems.add(item);
       }
     }
-    final modelList = modelMap.values.toList();
-    final distinctModelCount = _scannedItems.map((e) => e.product?.id ?? _selectedProduct?.id).toSet().length;
 
-    // Filter items based on active model tab
-    final filteredItems = _activeFilterModelId == 'ALL'
-        ? _scannedItems
-        : _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == _activeFilterModelId).toList();
+    final modelList = modelMap.values.toList();
+    final distinctModelCount = distinctScannedModelIds.length;
 
     return Focus(
       canRequestFocus: false,
@@ -3847,6 +3883,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     'assets/images/shop_icon.png',
                     width: context.isLandscapeTablet ? 20 : (context.isTablet ? 28 : 22),
                     height: context.isLandscapeTablet ? 20 : (context.isTablet ? 28 : 22),
+                    cacheWidth: 72,
                     fit: BoxFit.contain,
                     errorBuilder: (context, error, stackTrace) =>
                         Icon(Icons.storefront, size: context.isLandscapeTablet ? 18 : (context.isTablet ? 22 : 18), color: const Color(0xFF4F46E5)),
@@ -4075,22 +4112,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     ),
                   ],
                   const Spacer(),
-                  Builder(
-                    builder: (context) {
-                      final dualIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
-                      final dualOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
-                      final hasDual = dualIn > 0 || dualOut > 0 || _selectedProduct?.hasDualSerial == true;
-                      return Text(
-                        hasDual
-                            ? '${_scannedItems.length} Serials (Indoor: $dualIn, Outdoor: $dualOut)'
-                            : '${_scannedItems.length} Serials',
-                        style: TextStyle(
-                          fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
-                          fontWeight: FontWeight.bold,
-                          color: const Color(0xFF0F172A),
-                        ),
-                      );
-                    },
+                  Text(
+                    (dualIn > 0 || dualOut > 0 || _selectedProduct?.hasDualSerial == true)
+                        ? '${_scannedItems.length} Serials (Indoor: $dualIn, Outdoor: $dualOut)'
+                        : '${_scannedItems.length} Serials',
+                    style: TextStyle(
+                      fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF0F172A),
+                    ),
                   ),
                 ],
               ),
@@ -4145,9 +4175,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
                   // Individual Model Chips
                   ...modelList.map((prod) {
-                    final count = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id).length;
-                    final mIn = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id && e.unitType?.toLowerCase() == 'indoor').length;
-                    final mOut = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct?.id) == prod.id && e.unitType?.toLowerCase() == 'outdoor').length;
+                    final count = modelTotal[prod.id] ?? 0;
+                    final mIn = modelIn[prod.id] ?? 0;
+                    final mOut = modelOut[prod.id] ?? 0;
                     final showDual = prod.hasDualSerial || mIn > 0 || mOut > 0;
                     final isSelected = _activeFilterModelId == prod.id;
                     final isCurrentActive = prod.id == _selectedProduct?.id;
@@ -4178,7 +4208,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         onSelected: (val) {
                           FocusManager.instance.primaryFocus?.unfocus();
                           SystemChannels.textInput.invokeMethod('TextInput.hide');
-                          HardwareScannerService().clearBuffer();
+                          HardwareScannerService().clearBuffer(onlyIfStale: true);
                           setState(() {
                             _activeFilterModelId = val ? prod.id : 'ALL';
                             if (val) _selectedProduct = prod;
@@ -4190,7 +4220,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
                   // Add / Switch Model Chip
                   ActionChip(
-                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     avatar: Icon(Icons.add, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 14), color: const Color(0xFF4F46E5)),
@@ -4231,7 +4260,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     width: double.infinity,
                     height: context.isLandscapeTablet ? 38 : null,
                     child: ElevatedButton.icon(
-                      focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFD97706),
                         foregroundColor: Colors.white,
@@ -4431,7 +4459,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 width: double.infinity,
                 height: context.isLandscapeTablet ? 42 : (context.isTablet ? 64 : 50),
                 child: ElevatedButton(
-                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1E1B4B),
                     foregroundColor: Colors.white,

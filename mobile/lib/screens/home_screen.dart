@@ -270,6 +270,7 @@ class _HomeScreenState extends State<HomeScreen> {
               'assets/images/logo.png',
               width: isTablet ? 40 : 32,
               height: isTablet ? 40 : 32,
+              cacheWidth: isTablet ? 96 : 72,
               fit: BoxFit.contain,
             ),
             SizedBox(width: isTablet ? 14 : 10),
@@ -303,7 +304,6 @@ class _HomeScreenState extends State<HomeScreen> {
               descendantsAreFocusable: false,
               skipTraversal: true,
               child: IconButton(
-                focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                 iconSize: isTablet ? 28 : 24,
                 icon: Badge(
                   label: Text('$_pendingQueueCount', style: TextStyle(fontSize: isTablet ? 12 : 10)),
@@ -324,7 +324,6 @@ class _HomeScreenState extends State<HomeScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: IconButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               iconSize: isTablet ? 28 : 24,
               icon: const Icon(Icons.logout, color: Color(0xFF64748B)),
               tooltip: 'Logout',
@@ -345,16 +344,17 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               child: Stack(
                 children: [
-                  // Centered watermark logo
+                  // Centered watermark logo (direct image opacity avoids offscreen saveLayer)
                   Positioned.fill(
-                    child: Center(
-                      child: IgnorePointer(
-                        child: Opacity(
-                          opacity: 0.09,
+                    child: RepaintBoundary(
+                      child: Center(
+                        child: IgnorePointer(
                           child: Image.asset(
                             'assets/images/logo.png',
                             width: isTablet ? 360 : 250,
                             height: isTablet ? 360 : 250,
+                            cacheWidth: isTablet ? 540 : 380,
+                            opacity: const AlwaysStoppedAnimation<double>(0.09),
                             fit: BoxFit.contain,
                           ),
                         ),
@@ -506,7 +506,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     if (isTablet) {
       return Material(
-        color: Colors.white.withValues(alpha: 0.90),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(20),
         elevation: 0,
         child: InkWell(
@@ -544,7 +544,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: assetIconPath != null
                           ? Padding(
                               padding: const EdgeInsets.all(12),
-                              child: Image.asset(assetIconPath, fit: BoxFit.contain),
+                              child: Image.asset(assetIconPath, cacheWidth: 96, fit: BoxFit.contain),
                             )
                           : Icon(
                               icon ?? Icons.circle,
@@ -605,7 +605,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     return Material(
-      color: Colors.white.withValues(alpha: 0.90),
+      color: Colors.white,
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         onTap: onTap,
@@ -628,7 +628,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: assetIconPath != null
                     ? Padding(
                         padding: const EdgeInsets.all(10),
-                        child: Image.asset(assetIconPath, fit: BoxFit.contain),
+                        child: Image.asset(assetIconPath, cacheWidth: 80, fit: BoxFit.contain),
                       )
                     : Icon(
                         icon ?? Icons.circle,

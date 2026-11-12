@@ -280,8 +280,69 @@ class QueuedBatch {
     return result;
   }
 
-  /// Total count of serials stored in this queued batch
-  int get totalSerialsCount => serialDetails.length;
+  /// Total count of serials stored in this queued batch (lightweight, zero model/detail allocations)
+  int get totalSerialsCount {
+    final items = payload['items'];
+    final topSerials = payload['serial_numbers'] ?? payload['serials'];
+    final bool hasItems = items is List && items.isNotEmpty;
+    final bool hasTop = topSerials is List && topSerials.isNotEmpty;
+
+    if (!hasItems && !hasTop) return 0;
+
+    int count = 0;
+    Set<String>? seen;
+    if (hasItems && hasTop) {
+      seen = <String>{};
+    }
+
+    if (hasItems) {
+      for (final rawItem in items) {
+        if (rawItem is Map) {
+          final rawSerials = rawItem['serials'] ?? rawItem['serial_numbers'];
+          if (rawSerials is List) {
+            for (final s in rawSerials) {
+              String? sn;
+              if (s is Map) {
+                sn = s['serial_number']?.toString();
+              } else if (s is String) {
+                sn = s;
+              } else if (s != null) {
+                sn = s.toString();
+              }
+              if (sn != null) {
+                final trimmed = sn.trim();
+                if (trimmed.isNotEmpty) {
+                  seen?.add(trimmed);
+                  count++;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (hasTop) {
+      for (final s in topSerials) {
+        String? sn;
+        if (s is Map) {
+          sn = s['serial_number']?.toString();
+        } else if (s is String) {
+          sn = s;
+        } else if (s != null) {
+          sn = s.toString();
+        }
+        if (sn != null) {
+          final trimmed = sn.trim();
+          if (trimmed.isNotEmpty && (seen == null || seen.add(trimmed))) {
+            count++;
+          }
+        }
+      }
+    }
+
+    return count;
+  }
 
   /// Resolved shop destination name for outward batches
   String get shopName {
@@ -396,22 +457,25 @@ class OfflineQueueService {
   static const String _pendingCategoriesKey = 'godown_offline_pending_categories';
   static const String _pendingShopsKey = 'godown_offline_pending_shops';
 
+  SharedPreferences? _prefs;
+  Future<SharedPreferences> _getPrefs() async => _prefs ??= await SharedPreferences.getInstance();
+
   // --- BATCH QUEUE CRUD ---
   Future<List<QueuedBatch>> getQueue() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final raw = prefs.getStringList(_storageKey) ?? [];
     return raw.map((str) => QueuedBatch.fromJson(jsonDecode(str))).toList();
   }
 
   Future<void> enqueue(QueuedBatch batch) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_storageKey) ?? [];
+    final prefs = await _getPrefs();
+    final raw = List<String>.from(prefs.getStringList(_storageKey) ?? const []);
     raw.add(jsonEncode(batch.toJson()));
     await prefs.setStringList(_storageKey, raw);
   }
 
   Future<void> update(QueuedBatch updatedBatch) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final list = await getQueue();
     final idx = list.indexWhere((b) => b.id == updatedBatch.id);
     if (idx != -1) {
@@ -426,7 +490,7 @@ class OfflineQueueService {
   }
 
   Future<void> remove(String batchId) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final list = await getQueue();
     list.removeWhere((b) => b.id == batchId);
     final raw = list.map((b) => jsonEncode(b.toJson())).toList();
@@ -443,25 +507,25 @@ class OfflineQueueService {
   }
 
   Future<void> clearQueue() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     await prefs.remove(_storageKey);
   }
 
   Future<int> queueCount() async {
-    final list = await getQueue();
-    return list.length;
+    final prefs = await _getPrefs();
+    return prefs.getStringList(_storageKey)?.length ?? 0;
   }
 
   // --- PENDING OFFLINE PRODUCTS (MODELS) CRUD ---
   Future<List<QueuedProduct>> getPendingProducts() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final raw = prefs.getStringList(_pendingProductsKey) ?? [];
     return raw.map((str) => QueuedProduct.fromJson(jsonDecode(str))).toList();
   }
 
   Future<void> enqueueProduct(QueuedProduct product) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_pendingProductsKey) ?? [];
+    final prefs = await _getPrefs();
+    final raw = List<String>.from(prefs.getStringList(_pendingProductsKey) ?? const []);
     // Prevent duplicate entries for same tempId
     raw.removeWhere((str) {
       try {
@@ -476,7 +540,7 @@ class OfflineQueueService {
   }
 
   Future<void> removePendingProduct(String tempId) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final list = await getPendingProducts();
     list.removeWhere((p) => p.tempId == tempId);
     final raw = list.map((p) => jsonEncode(p.toJson())).toList();
@@ -484,20 +548,20 @@ class OfflineQueueService {
   }
 
   Future<int> pendingProductCount() async {
-    final list = await getPendingProducts();
-    return list.length;
+    final prefs = await _getPrefs();
+    return prefs.getStringList(_pendingProductsKey)?.length ?? 0;
   }
 
   // --- PENDING OFFLINE CATEGORIES CRUD ---
   Future<List<QueuedCategory>> getPendingCategories() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final raw = prefs.getStringList(_pendingCategoriesKey) ?? [];
     return raw.map((str) => QueuedCategory.fromJson(jsonDecode(str))).toList();
   }
 
   Future<void> enqueueCategory(QueuedCategory category) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_pendingCategoriesKey) ?? [];
+    final prefs = await _getPrefs();
+    final raw = List<String>.from(prefs.getStringList(_pendingCategoriesKey) ?? const []);
     raw.removeWhere((str) {
       try {
         final j = jsonDecode(str);
@@ -511,7 +575,7 @@ class OfflineQueueService {
   }
 
   Future<void> removePendingCategory(String tempId) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final list = await getPendingCategories();
     list.removeWhere((c) => c.tempId == tempId);
     final raw = list.map((c) => jsonEncode(c.toJson())).toList();
@@ -520,14 +584,14 @@ class OfflineQueueService {
 
   // --- PENDING OFFLINE SHOPS CRUD ---
   Future<List<QueuedShop>> getPendingShops() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final raw = prefs.getStringList(_pendingShopsKey) ?? [];
     return raw.map((str) => QueuedShop.fromJson(jsonDecode(str))).toList();
   }
 
   Future<void> enqueueShop(QueuedShop shop) async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getStringList(_pendingShopsKey) ?? [];
+    final prefs = await _getPrefs();
+    final raw = List<String>.from(prefs.getStringList(_pendingShopsKey) ?? const []);
     raw.removeWhere((str) {
       try {
         final j = jsonDecode(str);
@@ -541,7 +605,7 @@ class OfflineQueueService {
   }
 
   Future<void> removePendingShop(String tempId) async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final list = await getPendingShops();
     list.removeWhere((s) => s.tempId == tempId);
     final raw = list.map((s) => jsonEncode(s.toJson())).toList();
@@ -549,14 +613,15 @@ class OfflineQueueService {
   }
 
   Future<int> pendingShopCount() async {
-    final list = await getPendingShops();
-    return list.length;
+    final prefs = await _getPrefs();
+    return prefs.getStringList(_pendingShopsKey)?.length ?? 0;
   }
 
   Future<int> totalPendingCount() async {
-    final b = await queueCount();
-    final p = await pendingProductCount();
-    final s = await pendingShopCount();
+    final prefs = await _getPrefs();
+    final b = prefs.getStringList(_storageKey)?.length ?? 0;
+    final p = prefs.getStringList(_pendingProductsKey)?.length ?? 0;
+    final s = prefs.getStringList(_pendingShopsKey)?.length ?? 0;
     return b + p + s;
   }
 
@@ -564,6 +629,31 @@ class OfflineQueueService {
   /// Syncs any offline-created categories and models to backend, remapping temporary IDs
   /// in local cache and all queued batches to ensure genuine backend product IDs.
   Future<Map<String, String>> syncPendingModelsAndCategories() async {
+    final pendingCats = await getPendingCategories();
+    final pendingProds = await getPendingProducts();
+    final batches = await getQueue();
+
+    bool hasOfflineProdInBatches = false;
+    for (final b in batches) {
+      if (b.payload['product_id']?.toString().startsWith('offline_prod_') == true) {
+        hasOfflineProdInBatches = true;
+        break;
+      }
+      if (b.payload['items'] is List) {
+        for (final item in (b.payload['items'] as List)) {
+          if (item is Map && item['product_id']?.toString().startsWith('offline_prod_') == true) {
+            hasOfflineProdInBatches = true;
+            break;
+          }
+        }
+        if (hasOfflineProdInBatches) break;
+      }
+    }
+
+    if (pendingCats.isEmpty && pendingProds.isEmpty && !hasOfflineProdInBatches) {
+      return {};
+    }
+
     final Map<String, String> categoryMap = {};
     final Map<String, String> productMap = {};
     final api = ApiService();
@@ -577,7 +667,6 @@ class OfflineQueueService {
     }
 
     // 2. Sync pending categories
-    final pendingCats = await getPendingCategories();
     for (final cat in pendingCats) {
       try {
         final match = serverCats.firstWhere(
@@ -682,7 +771,6 @@ class OfflineQueueService {
     }
 
     // 4. Sync pending products (models)
-    final pendingProds = await getPendingProducts();
     for (final p in pendingProds) {
       try {
         final effectiveCatId = resolveServerCategoryId(p.categoryId, p.categoryName);
@@ -733,7 +821,6 @@ class OfflineQueueService {
     }
 
     // 5. Scan all queued batches for any remaining offline_prod_ IDs that need remapping
-    final batches = await getQueue();
     for (final b in batches) {
       final List<Map<String, dynamic>> itemsToCheck = [];
       if (b.payload['items'] is List) {
@@ -847,8 +934,16 @@ class OfflineQueueService {
   /// Syncs any offline-created shops to backend, remapping temporary IDs
   /// in local cache and all queued outward batches to ensure genuine backend shop IDs.
   Future<Map<String, String>> syncPendingShops() async {
-    final Map<String, String> shopMap = {};
     final pendingShops = await getPendingShops();
+    final batches = await getQueue();
+    final bool hasOfflineShopInBatches = batches.any(
+      (b) => b.type == QueueType.outward && (b.payload['shop_id']?.toString().startsWith('offline_shop_') == true),
+    );
+    if (pendingShops.isEmpty && !hasOfflineShopInBatches) {
+      return {};
+    }
+
+    final Map<String, String> shopMap = {};
     final api = ApiService();
     List<Shop> serverShops = [];
     try {
@@ -886,7 +981,6 @@ class OfflineQueueService {
     }
 
     // Scan all queued batches for any remaining offline_shop_ IDs
-    final batches = await getQueue();
     for (final b in batches) {
       if (b.type == QueueType.outward) {
         final sid = b.payload['shop_id']?.toString();

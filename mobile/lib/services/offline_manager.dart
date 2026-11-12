@@ -8,6 +8,10 @@ import 'api_service.dart';
 import 'offline_queue_service.dart';
 import 'websocket_service.dart';
 
+List<dynamic> _bgDecodeList(String raw) => jsonDecode(raw) as List<dynamic>;
+Map<String, dynamic> _bgDecodeMap(String raw) => jsonDecode(raw) as Map<String, dynamic>;
+String _bgEncodeJson(Object? value) => jsonEncode(value);
+
 class OfflineManager {
   static final OfflineManager _instance = OfflineManager._internal();
   factory OfflineManager() => _instance;
@@ -26,42 +30,57 @@ class OfflineManager {
   List<Shop> _shops = [];
   List<Map<String, dynamic>> _queuedDispatches = [];
 
+  // O(1) ID lookup indexes (lowercase ID -> entity)
+  final Map<String, Product> _productById = {};
+  final Map<String, Category> _categoryById = {};
+  final Map<String, Shop> _shopById = {};
+
+  SharedPreferences? _prefs;
   StreamSubscription? _wsSubscription;
+  VoidCallback? _wsConnectedListener;
   Timer? _healthCheckTimer;
   Timer? _offlineWarningTimer;
+  Timer? _diskSaveTimer;
+  Timer? _wsSyncDebounceTimer;
+  bool _serialsDirty = false;
+  bool _queueDirty = false;
+  bool _isWritingDisk = false;
   DateTime? _disconnectedSince;
   int _consecutiveFailures = 0;
   bool _isInitialized = false;
   bool _isSyncing = false;
+
+  Future<SharedPreferences> _getPrefs() async => _prefs ??= await SharedPreferences.getInstance();
+
+  void _rebuildProductIndex() {
+    _productById.clear();
+    for (final p in _products) {
+      _productById[p.id.toLowerCase()] = p;
+    }
+  }
+
+  void _rebuildCategoryIndex() {
+    _categoryById.clear();
+    for (final c in _categories) {
+      _categoryById[c.id.toLowerCase()] = c;
+    }
+  }
+
+  void _rebuildShopIndex() {
+    _shopById.clear();
+    for (final s in _shops) {
+      _shopById[s.id.toLowerCase()] = s;
+    }
+  }
 
   Map<String, Map<String, dynamic>> get serials => _serials;
   List<Product> get products => _products;
   List<Category> get categories => _categories;
   List<Shop> get shops => _shops;
   int get pendingDispatchCount => _queuedDispatches.length;
-  Product? getProductById(String id) {
-    try {
-      return _products.firstWhere((p) => p.id.toLowerCase() == id.toLowerCase());
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Category? getCategoryById(String id) {
-    try {
-      return _categories.firstWhere((c) => c.id.toLowerCase() == id.toLowerCase());
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Shop? getShopById(String id) {
-    try {
-      return _shops.firstWhere((s) => s.id.toLowerCase() == id.toLowerCase());
-    } catch (_) {
-      return null;
-    }
-  }
+  Product? getProductById(String id) => _productById[id.toLowerCase()];
+  Category? getCategoryById(String id) => _categoryById[id.toLowerCase()];
+  Shop? getShopById(String id) => _shopById[id.toLowerCase()];
 
   bool get isOnline => isOnlineNotifier.value;
 
@@ -76,8 +95,11 @@ class OfflineManager {
 
   void markOnline() {
     _consecutiveFailures = 0;
+    final bool wasOffline = !isOnlineNotifier.value;
     _setOnlineStatus(true);
-    unawaited(syncPendingDispatches());
+    if (wasOffline || _queuedDispatches.isNotEmpty) {
+      unawaited(syncPendingDispatches());
+    }
   }
 
   void setOffline(bool offline) {
@@ -105,40 +127,57 @@ class OfflineManager {
 
   Future<void> _loadFromDisk() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
+      final api = ApiService();
 
-      // 1. Products
-      final pJson = prefs.getString('cache_products_json');
-      if (pJson != null) {
-        try {
-          final List list = jsonDecode(pJson);
-          _products = list.map((p) => Product.fromJson(p)).toList();
-        } catch (_) {}
+      // 1. Products (reuse ApiService decoded catalog if already loaded to avoid duplicate JSON decode)
+      if (api.cachedProducts != null && api.cachedProducts!.isNotEmpty) {
+        _products = List<Product>.from(api.cachedProducts!);
+      } else {
+        final pJson = prefs.getString('cache_products_json');
+        if (pJson != null && pJson.isNotEmpty) {
+          try {
+            final List list = pJson.length > 25000 ? await compute(_bgDecodeList, pJson) : jsonDecode(pJson);
+            _products = list.map((p) => Product.fromJson(p)).toList();
+          } catch (_) {}
+        }
       }
+      _rebuildProductIndex();
 
       // 2. Categories
-      final cJson = prefs.getString('cache_categories_json');
-      if (cJson != null) {
-        try {
-          final List list = jsonDecode(cJson);
-          _categories = list.map((c) => Category.fromJson(c)).toList();
-        } catch (_) {}
+      if (api.cachedCategories != null && api.cachedCategories!.isNotEmpty) {
+        _categories = List<Category>.from(api.cachedCategories!);
+      } else {
+        final cJson = prefs.getString('cache_categories_json');
+        if (cJson != null && cJson.isNotEmpty) {
+          try {
+            final List list = cJson.length > 25000 ? await compute(_bgDecodeList, cJson) : jsonDecode(cJson);
+            _categories = list.map((c) => Category.fromJson(c)).toList();
+          } catch (_) {}
+        }
       }
+      _rebuildCategoryIndex();
 
       // 3. Shops
-      final sJson = prefs.getString('cache_shops_json');
-      if (sJson != null) {
-        try {
-          final List list = jsonDecode(sJson);
-          _shops = list.map((s) => Shop.fromJson(s)).toList();
-        } catch (_) {}
+      if (api.cachedShops != null && api.cachedShops!.isNotEmpty) {
+        _shops = List<Shop>.from(api.cachedShops!);
+      } else {
+        final sJson = prefs.getString('cache_shops_json');
+        if (sJson != null && sJson.isNotEmpty) {
+          try {
+            final List list = sJson.length > 25000 ? await compute(_bgDecodeList, sJson) : jsonDecode(sJson);
+            _shops = list.map((s) => Shop.fromJson(s)).toList();
+          } catch (_) {}
+        }
       }
+      _rebuildShopIndex();
 
       // 4. Serials snapshot
       final snJson = prefs.getString('cache_serials_snapshot_json');
-      if (snJson != null) {
+      if (snJson != null && snJson.isNotEmpty) {
         try {
-          final Map<String, dynamic> map = jsonDecode(snJson);
+          final Map<String, dynamic> map =
+              snJson.length > 25000 ? await compute(_bgDecodeMap, snJson) : jsonDecode(snJson);
           _serials.clear();
           map.forEach((k, v) {
             if (v is Map) {
@@ -150,9 +189,9 @@ class OfflineManager {
 
       // 5. Queued dispatches
       final qJson = prefs.getString('offline_dispatch_queue_json');
-      if (qJson != null) {
+      if (qJson != null && qJson.isNotEmpty) {
         try {
-          final List list = jsonDecode(qJson);
+          final List list = qJson.length > 25000 ? await compute(_bgDecodeList, qJson) : jsonDecode(qJson);
           _queuedDispatches = list.map((e) => Map<String, dynamic>.from(e)).toList();
           pendingDispatchCountNotifier.value = _queuedDispatches.length;
         } catch (_) {}
@@ -164,12 +203,46 @@ class OfflineManager {
     }
   }
 
-  Future<void> _saveToDisk() async {
+  void _scheduleSaveToDisk({bool serials = false, bool queue = false}) {
+    if (serials) _serialsDirty = true;
+    if (queue) _queueDirty = true;
+    _diskSaveTimer?.cancel();
+    _diskSaveTimer = Timer(const Duration(milliseconds: 450), () {
+      unawaited(_flushDiskSave());
+    });
+  }
+
+  Future<void> _flushDiskSave({bool serials = false, bool queue = false}) async {
+    if (serials) _serialsDirty = true;
+    if (queue) _queueDirty = true;
+    _diskSaveTimer?.cancel();
+    _diskSaveTimer = null;
+
+    if (_isWritingDisk || (!_serialsDirty && !_queueDirty)) return;
+    _isWritingDisk = true;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('cache_serials_snapshot_json', jsonEncode(_serials));
-      await prefs.setString('offline_dispatch_queue_json', jsonEncode(_queuedDispatches));
-    } catch (_) {}
+      final prefs = await _getPrefs();
+      while (_serialsDirty || _queueDirty) {
+        final writeSerials = _serialsDirty;
+        final writeQueue = _queueDirty;
+        _serialsDirty = false;
+        _queueDirty = false;
+
+        if (writeSerials) {
+          final encodedSerials = _serials.length > 150
+              ? await compute(_bgEncodeJson, Map<String, dynamic>.from(_serials))
+              : jsonEncode(_serials);
+          await prefs.setString('cache_serials_snapshot_json', encodedSerials);
+        }
+        if (writeQueue) {
+          final encodedQueue = jsonEncode(_queuedDispatches);
+          await prefs.setString('offline_dispatch_queue_json', encodedQueue);
+        }
+      }
+    } catch (_) {
+    } finally {
+      _isWritingDisk = false;
+    }
   }
 
   void _startHealthChecks() {
@@ -267,16 +340,21 @@ class OfflineManager {
       }
       _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     }
-    ApiService().updateCachedShop(shop);
-    SharedPreferences.getInstance().then((prefs) {
-      prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
+    _rebuildShopIndex();
+    ApiService().updateCachedShop(shop, persistToDisk: false);
+    _getPrefs().then((prefs) async {
+      final encoded = _shops.length > 80
+          ? await compute(_bgEncodeJson, _shops.map((s) => s.toJson()).toList())
+          : jsonEncode(_shops.map((s) => s.toJson()).toList());
+      await prefs.setString('cache_shops_json', encoded);
     }).catchError((_) {});
   }
 
   void removeShop(String id) {
     _shops.removeWhere((s) => s.id == id);
-    ApiService().removeCachedShop(id);
-    SharedPreferences.getInstance().then((prefs) {
+    _rebuildShopIndex();
+    ApiService().removeCachedShop(id, persistToDisk: false);
+    _getPrefs().then((prefs) {
       prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
     }).catchError((_) {});
   }
@@ -288,20 +366,44 @@ class OfflineManager {
     } else {
       _products.insert(0, product);
     }
-    ApiService().updateCachedProduct(product);
-    SharedPreferences.getInstance().then((prefs) {
-      prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
+    _rebuildProductIndex();
+    ApiService().updateCachedProduct(product, persistToDisk: false);
+    _getPrefs().then((prefs) async {
+      final encoded = _products.length > 80
+          ? await compute(_bgEncodeJson, _products.map((p) => p.toJson()).toList())
+          : jsonEncode(_products.map((p) => p.toJson()).toList());
+      await prefs.setString('cache_products_json', encoded);
     }).catchError((_) {});
   }
 
   void removeProduct(String id) {
     _products.removeWhere((p) => p.id == id);
+    _rebuildProductIndex();
     if (ApiService().cachedProducts != null) {
       ApiService().cachedProducts!.removeWhere((p) => p.id == id);
     }
-    SharedPreferences.getInstance().then((prefs) {
+    _getPrefs().then((prefs) {
       prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
     }).catchError((_) {});
+  }
+
+  void setCategories(List<Category> cats, {bool persistToDisk = true}) {
+    final offlineCats = _categories.where((c) => c.id.startsWith('offline_')).toList();
+    _categories = List<Category>.from(cats);
+    if (offlineCats.isNotEmpty) {
+      final ids = _categories.map((c) => c.id).toSet();
+      for (final oc in offlineCats) {
+        if (!ids.contains(oc.id)) {
+          _categories.add(oc);
+        }
+      }
+    }
+    _rebuildCategoryIndex();
+    if (persistToDisk) {
+      _getPrefs().then((prefs) {
+        prefs.setString('cache_categories_json', jsonEncode(_categories.map((c) => c.toJson()).toList()));
+      }).catchError((_) {});
+    }
   }
 
   void updateCategory(Category category) {
@@ -316,16 +418,18 @@ class OfflineManager {
       }
       _categories.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
     }
+    _rebuildCategoryIndex();
     ApiService().updateCachedCategory(category);
-    SharedPreferences.getInstance().then((prefs) {
+    _getPrefs().then((prefs) {
       prefs.setString('cache_categories_json', jsonEncode(_categories.map((c) => c.toJson()).toList()));
     }).catchError((_) {});
   }
 
   void removeCategory(String id) {
     _categories.removeWhere((c) => c.id == id);
+    _rebuildCategoryIndex();
     ApiService().removeCachedCategory(id);
-    SharedPreferences.getInstance().then((prefs) {
+    _getPrefs().then((prefs) {
       prefs.setString('cache_categories_json', jsonEncode(_categories.map((c) => c.toJson()).toList()));
     }).catchError((_) {});
   }
@@ -353,7 +457,7 @@ class OfflineManager {
       entry['dmg'] = false;
     }
     _serials[cleanSerial] = entry;
-    _saveToDisk();
+    _scheduleSaveToDisk(serials: true);
   }
 
   /// Atomically updates a temporary offline product ID to its genuine server ID across cache and serials
@@ -368,6 +472,7 @@ class OfflineManager {
     } else if (updatedProduct != null) {
       _products.insert(0, updatedProduct);
     }
+    _rebuildProductIndex();
     ApiService().invalidateProductCache();
 
     bool changedSerials = false;
@@ -381,10 +486,10 @@ class OfflineManager {
       }
     });
 
-    SharedPreferences.getInstance().then((prefs) {
+    _getPrefs().then((prefs) {
       prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
       if (changedSerials) {
-        prefs.setString('cache_serials_snapshot_json', jsonEncode(_serials));
+        _scheduleSaveToDisk(serials: true);
       }
     }).catchError((_) {});
   }
@@ -407,7 +512,7 @@ class OfflineManager {
       }
     }
     if (modified) {
-      _saveToDisk();
+      _scheduleSaveToDisk(queue: true);
     }
   }
 
@@ -424,9 +529,10 @@ class OfflineManager {
       _shops.insert(0, updatedShop);
     }
     _shops.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    _rebuildShopIndex();
     ApiService().invalidateShopCache();
 
-    SharedPreferences.getInstance().then((prefs) {
+    _getPrefs().then((prefs) {
       prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
     }).catchError((_) {});
   }
@@ -441,7 +547,7 @@ class OfflineManager {
       }
     }
     if (modified) {
-      _saveToDisk();
+      _scheduleSaveToDisk(queue: true);
     }
   }
 
@@ -456,11 +562,22 @@ class OfflineManager {
       onError: (_) {},
     );
 
-    // Auto-mark online whenever the WebSocket connects
-    WebSocketService().isConnectedNotifier.addListener(() {
+    if (_wsConnectedListener != null) {
+      WebSocketService().isConnectedNotifier.removeListener(_wsConnectedListener!);
+    }
+    _wsConnectedListener = () {
       if (WebSocketService().isConnected) {
         markOnline();
       }
+    };
+    // Auto-mark online whenever the WebSocket connects
+    WebSocketService().isConnectedNotifier.addListener(_wsConnectedListener!);
+  }
+
+  void _scheduleWsSync() {
+    _wsSyncDebounceTimer?.cancel();
+    _wsSyncDebounceTimer = Timer(const Duration(milliseconds: 1500), () {
+      unawaited(syncFromBackend(silent: true));
     });
   }
 
@@ -476,13 +593,13 @@ class OfflineManager {
             updateShop(s);
           } catch (_) {}
         }
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       } else if (event == 'shop_deleted') {
         final id = data?['id']?.toString();
         if (id != null) {
           removeShop(id);
         }
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       } else if (event == 'product_created' || event == 'product_updated') {
         if (data is Map<String, dynamic>) {
           try {
@@ -490,13 +607,13 @@ class OfflineManager {
             updateProduct(p);
           } catch (_) {}
         }
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       } else if (event == 'product_deleted') {
         final id = data?['id']?.toString();
         if (id != null) {
           removeProduct(id);
         }
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       } else if (event == 'stock_updated') {
         if (data is Map<String, dynamic>) {
           final pid = data['product_id']?.toString();
@@ -507,7 +624,7 @@ class OfflineManager {
           }
         }
         ApiService().clearSerialCaches();
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       } else if (event == 'serial_updated') {
         if (data is Map<String, dynamic>) {
           final sn = data['serial']?.toString().toUpperCase();
@@ -518,19 +635,19 @@ class OfflineManager {
             entry['d'] = (status == 'dispatched');
             entry['dmg'] = (status == 'damaged');
             _serials[sn] = entry;
-            _saveToDisk();
+            _scheduleSaveToDisk(serials: true);
           }
         }
         ApiService().clearSerialCaches();
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       } else if (event == 'serial_deleted') {
         final sn = data?['serial']?.toString().toUpperCase();
         if (sn != null) {
           _serials.remove(sn);
-          _saveToDisk();
+          _scheduleSaveToDisk(serials: true);
         }
         ApiService().clearSerialCaches();
-        syncFromBackend(silent: true);
+        _scheduleWsSync();
       }
     } catch (_) {}
   }
@@ -545,7 +662,7 @@ class OfflineManager {
     if (!silent) isSyncingNotifier.value = true;
 
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       final token = prefs.getString('access_token');
       final uri = Uri.parse('${api.baseUrl}/sync/snapshot');
 
@@ -558,19 +675,26 @@ class OfflineManager {
       final res = await http.get(uri, headers: headers).timeout(const Duration(seconds: 8));
 
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
+        final Map<String, dynamic> data =
+            res.body.length > 25000 ? await compute(_bgDecodeMap, res.body) : jsonDecode(res.body);
 
         // Update Products
         if (data['products'] is List) {
           final List pList = data['products'];
           final offlineProds = _products.where((p) => p.id.startsWith('offline_')).toList();
           _products = pList.map((p) => Product.fromJson(p)).toList();
-          for (final op in offlineProds) {
-            if (!_products.any((p) => p.id == op.id)) {
-              _products.add(op);
+          if (offlineProds.isNotEmpty) {
+            final ids = _products.map((p) => p.id).toSet();
+            for (final op in offlineProds) {
+              if (!ids.contains(op.id)) {
+                _products.add(op);
+              }
             }
           }
-          await prefs.setString('cache_products_json', jsonEncode(_products.map((p) => p.toJson()).toList()));
+          _rebuildProductIndex();
+          final pMaps = _products.map((p) => p.toJson()).toList();
+          final encodedProds = pMaps.length > 80 ? await compute(_bgEncodeJson, pMaps) : jsonEncode(pMaps);
+          await prefs.setString('cache_products_json', encodedProds);
           api.invalidateProductCache();
         }
 
@@ -579,11 +703,15 @@ class OfflineManager {
           final List cList = data['categories'];
           final offlineCats = _categories.where((c) => c.id.startsWith('offline_')).toList();
           _categories = cList.map((c) => Category.fromJson(c)).toList();
-          for (final oc in offlineCats) {
-            if (!_categories.any((c) => c.id == oc.id)) {
-              _categories.add(oc);
+          if (offlineCats.isNotEmpty) {
+            final ids = _categories.map((c) => c.id).toSet();
+            for (final oc in offlineCats) {
+              if (!ids.contains(oc.id)) {
+                _categories.add(oc);
+              }
             }
           }
+          _rebuildCategoryIndex();
           await prefs.setString('cache_categories_json', jsonEncode(_categories.map((c) => c.toJson()).toList()));
         }
 
@@ -592,12 +720,18 @@ class OfflineManager {
           final List sList = data['shops'];
           final offlineShops = _shops.where((s) => s.id.startsWith('offline_')).toList();
           _shops = sList.map((s) => Shop.fromJson(s)).toList();
-          for (final os in offlineShops) {
-            if (!_shops.any((s) => s.id == os.id)) {
-              _shops.add(os);
+          if (offlineShops.isNotEmpty) {
+            final ids = _shops.map((s) => s.id).toSet();
+            for (final os in offlineShops) {
+              if (!ids.contains(os.id)) {
+                _shops.add(os);
+              }
             }
           }
-          await prefs.setString('cache_shops_json', jsonEncode(_shops.map((s) => s.toJson()).toList()));
+          _rebuildShopIndex();
+          final sMaps = _shops.map((s) => s.toJson()).toList();
+          final encodedShops = sMaps.length > 80 ? await compute(_bgEncodeJson, sMaps) : jsonEncode(sMaps);
+          await prefs.setString('cache_shops_json', encodedShops);
           api.invalidateShopCache();
         }
 
@@ -610,7 +744,7 @@ class OfflineManager {
               _serials[k.toUpperCase()] = Map<String, dynamic>.from(v);
             }
           });
-          await _saveToDisk();
+          await _flushDiskSave(serials: true);
         }
 
         _setOnlineStatus(true);
@@ -841,7 +975,7 @@ class OfflineManager {
   void removeSerial(String serialNumber) {
     final cleanSerial = serialNumber.trim().toUpperCase();
     _serials.remove(cleanSerial);
-    _saveToDisk();
+    _scheduleSaveToDisk(serials: true);
   }
 
   // --- OFFLINE SERIAL LIFECYCLE LOOKUP ---
@@ -1011,7 +1145,12 @@ class OfflineManager {
   }
 
   // --- RECORD SERIAL IN LOCAL CACHE ---
-  void recordLocalDispatch(String serial, {String? productId, String? modelName}) {
+  void recordLocalDispatch(
+    String serial, {
+    String? productId,
+    String? modelName,
+    bool deferSave = false,
+  }) {
     final clean = serial.trim().toUpperCase();
     _serials[clean] = {
       'p': productId,
@@ -1020,14 +1159,17 @@ class OfflineManager {
       'd': true,
       'dmg': false,
     };
-    _saveToDisk();
+    if (deferSave) {
+      _serialsDirty = true;
+    } else {
+      _scheduleSaveToDisk(serials: true);
+    }
   }
 
   // --- OFFLINE DISPATCH QUEUE ---
   Future<void> queueDispatch(Map<String, dynamic> dispatchPayload) async {
     _queuedDispatches.add(dispatchPayload);
     pendingDispatchCountNotifier.value = _queuedDispatches.length;
-    await _saveToDisk();
 
     // Also mark each serial in local memory as dispatched right away to prevent reuse
     if (dispatchPayload['items'] is List) {
@@ -1036,12 +1178,13 @@ class OfflineManager {
           for (var s in item['serials']) {
             final sn = (s is Map ? s['serial_number'] : s)?.toString();
             if (sn != null) {
-              recordLocalDispatch(sn, productId: item['product_id']?.toString());
+              recordLocalDispatch(sn, productId: item['product_id']?.toString(), deferSave: true);
             }
           }
         }
       }
     }
+    await _flushDiskSave(serials: true, queue: true);
 
     // Enqueue into OfflineQueueService so it is fully inspectable in OfflineQueueScreen
     final shopId = dispatchPayload['shop_id']?.toString() ?? '';
@@ -1078,68 +1221,30 @@ class OfflineManager {
     if (_isSyncingDispatches) return;
     if (!isOnlineNotifier.value) return;
 
+    final int queuePending = await OfflineQueueService().totalPendingCount();
+    final bool hadLegacyQueue = _queuedDispatches.isNotEmpty;
+    if (queuePending == 0 && !hadLegacyQueue) return;
+
     _isSyncingDispatches = true;
     try {
       // 1. Drain all items from OfflineQueueService
-      try {
-        await OfflineQueueService().syncAll();
-      } catch (_) {}
-
-      // 2. Clear _queuedDispatches to prevent duplicate submission
-      _queuedDispatches.clear();
-      pendingDispatchCountNotifier.value = 0;
-      await _saveToDisk();
-
-      final api = ApiService();
-      final List<Map<String, dynamic>> remaining = [];
-
-      for (var dispatch in List<Map<String, dynamic>>.from(_queuedDispatches)) {
+      int syncedCount = 0;
+      if (queuePending > 0) {
         try {
-          final bool isMulti = dispatch.containsKey('items');
-          if (isMulti) {
-            final rawItems = dispatch['items'] as List;
-            final items = rawItems.map((e) => Map<String, dynamic>.from(e as Map)).toList();
-            await api.submitOutwardMultiBatch(
-              shopId: dispatch['shop_id'],
-              items: items,
-              billNumber: dispatch['bill_number'],
-              deliveryReference: dispatch['delivery_reference'],
-              remarks: dispatch['remarks'],
-              clientRequestId: dispatch['client_request_id'],
-            );
-          } else {
-            final serials = (dispatch['serial_numbers'] as List).map((e) => e.toString()).toList();
-            await api.submitOutwardBatch(
-              shopId: dispatch['shop_id'],
-              productId: dispatch['product_id'],
-              serialNumbers: serials,
-              unitTypes: dispatch['unit_types'] != null ? Map<String, String>.from(dispatch['unit_types']) : null,
-              billNumber: dispatch['bill_number'],
-              deliveryReference: dispatch['delivery_reference'],
-              remarks: dispatch['remarks'],
-            );
-          }
-          // Successfully synced!
-          continue;
-        } catch (e) {
-          final errStr = e.toString().toLowerCase();
-          if (errStr.contains('already been dispatched') || errStr.contains('duplicate')) {
-            // Already processed on server, safely mark as synced
-            debugPrint('[OfflineManager] Item already processed on server: $e');
-            continue;
-          }
-          debugPrint('Failed to sync queued dispatch: $e');
-          remaining.add(dispatch);
-        }
+          final res = await OfflineQueueService().syncAll();
+          syncedCount = (res['synced'] as int?) ?? 0;
+        } catch (_) {}
       }
 
-      _queuedDispatches = remaining;
-      pendingDispatchCountNotifier.value = remaining.length;
-      await _saveToDisk();
+      // 2. Clear _queuedDispatches to prevent duplicate submission (already mirrored into OfflineQueueService)
+      if (hadLegacyQueue) {
+        _queuedDispatches.clear();
+        pendingDispatchCountNotifier.value = 0;
+        await _flushDiskSave(queue: true);
+      }
 
-      if (remaining.isEmpty) {
+      if (syncedCount > 0 || hadLegacyQueue) {
         syncStatusNotifier.value = 'All offline dispatches synced';
-        unawaited(syncFromBackend(silent: true));
       }
     } finally {
       _isSyncingDispatches = false;

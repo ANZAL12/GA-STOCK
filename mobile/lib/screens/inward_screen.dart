@@ -1200,7 +1200,6 @@ class _InwardScreenState extends State<InwardScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: TextButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
             ),
@@ -1210,7 +1209,6 @@ class _InwardScreenState extends State<InwardScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: ElevatedButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF059669),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -1950,7 +1948,11 @@ class _InwardScreenState extends State<InwardScreen> {
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
-        if (didPop) return;
+        if (didPop) {
+          _scannerSub?.call();
+          _scannerSub = null;
+          return;
+        }
         final now = DateTime.now();
         // If a barcode scan occurred within the last 2000ms, swallow the pop request
         if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2000) {
@@ -1959,6 +1961,8 @@ class _InwardScreenState extends State<InwardScreen> {
         }
         final canPop = await _handleWillPop();
         if (canPop) {
+          _scannerSub?.call();
+          _scannerSub = null;
           if (!mounted) return;
           Navigator.of(context).pop();
         }
@@ -1974,11 +1978,12 @@ class _InwardScreenState extends State<InwardScreen> {
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: IconButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               icon: const Icon(Icons.arrow_back),
               onPressed: () async {
                 final canPop = await _handleWillPop();
                 if (canPop) {
+                  _scannerSub?.call();
+                  _scannerSub = null;
                   if (!mounted) return;
                   Navigator.of(context).pop();
                 }
@@ -1995,7 +2000,6 @@ class _InwardScreenState extends State<InwardScreen> {
                   descendantsAreFocusable: false,
                   skipTraversal: true,
                   child: TextButton(
-                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                     onPressed: () => setState(() => _stage = InwardStage.selectModel),
                     child: const Text('Change Model', style: TextStyle(color: Color(0xFF4F46E5), fontWeight: FontWeight.bold)),
                   ),
@@ -2005,7 +2009,6 @@ class _InwardScreenState extends State<InwardScreen> {
                 descendantsAreFocusable: false,
                 skipTraversal: true,
                 child: TextButton(
-                  focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                   onPressed: () async {
                     if (_scannedItems.isNotEmpty) {
                       final discard = await showDialog<bool>(
@@ -2256,13 +2259,10 @@ class _InwardScreenState extends State<InwardScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final filtered = _products.where((p) {
-      final q = _productSearch.toLowerCase();
-      return p.name.toLowerCase().contains(q) ||
-          p.brand.toLowerCase().contains(q) ||
-          p.model.toLowerCase().contains(q) ||
-          (p.sku?.toLowerCase().contains(q) ?? false);
-    }).toList();
+    final q = _productSearch.toLowerCase();
+    final filtered = q.isEmpty
+        ? _products
+        : _products.where((p) => p.searchKey.contains(q)).toList();
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -2506,6 +2506,30 @@ class _InwardScreenState extends State<InwardScreen> {
 
   // STAGE 3: Scanning & Batch Review View
   Widget _buildScanningView() {
+    int inCount = 0;
+    int outCount = 0;
+    int dualIndoorCount = 0;
+    int dualOutdoorCount = 0;
+    final selectedPid = _selectedProduct?.id;
+    final distinctModelIds = <String>{};
+
+    for (final it in _scannedItems) {
+      distinctModelIds.add(it.product.id);
+      final ut = it.unitType?.toLowerCase();
+      if (ut == 'indoor') {
+        inCount++;
+        if (selectedPid != null && it.product.id == selectedPid) {
+          dualIndoorCount++;
+        }
+      } else if (ut == 'outdoor') {
+        outCount++;
+        if (selectedPid != null && it.product.id == selectedPid) {
+          dualOutdoorCount++;
+        }
+      }
+    }
+    final distinctModels = distinctModelIds.length;
+
     return Focus(
       canRequestFocus: false,
       descendantsAreFocusable: false,
@@ -2513,18 +2537,18 @@ class _InwardScreenState extends State<InwardScreen> {
       child: Column(
       children: [
         // Mode Banner
-        _buildScanningHeader(),
+        _buildScanningHeader(
+          inCount: inCount,
+          outCount: outCount,
+          distinctModels: distinctModels,
+        ),
 
         const Divider(height: 1, color: Color(0xFFE2E8F0)),
 
         // Dual serial toggle (only for stock_in with dual serial)
         if (_inwardType == 'stock_in' && _selectedProduct != null && _selectedProduct!.hasDualSerial)
-          Builder(
-            builder: (context) {
-              final dualIndoorCount = _scannedItems.where((it) => it.product.id == _selectedProduct!.id && it.unitType?.toLowerCase() == 'indoor').length;
-              final dualOutdoorCount = _scannedItems.where((it) => it.product.id == _selectedProduct!.id && it.unitType?.toLowerCase() == 'outdoor').length;
-              return Container(
-                margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
                 padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
                   color: const Color(0xFFF1F5F9),
@@ -2619,9 +2643,7 @@ class _InwardScreenState extends State<InwardScreen> {
                     ),
                   ],
                 ),
-              );
-            },
-          ),
+              ),
 
         // Big Scan Barcode Action
         Padding(
@@ -2641,7 +2663,6 @@ class _InwardScreenState extends State<InwardScreen> {
                   width: double.infinity,
                   height: context.isLandscapeTablet ? 40 : (context.isTablet ? 64 : 52),
                   child: ElevatedButton.icon(
-                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1E1B4B),
                       foregroundColor: Colors.white,
@@ -2703,18 +2724,11 @@ class _InwardScreenState extends State<InwardScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Builder(
-                        builder: (context) {
-                          final inCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'indoor').length;
-                          final outCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'outdoor').length;
-                          final hasDual = (_selectedProduct?.hasDualSerial == true) || inCount > 0 || outCount > 0;
-                          return Text(
-                            hasDual
-                                ? 'Scanned Units (${_scannedItems.length}) • Indoor: $inCount | Outdoor: $outCount'
-                                : 'Scanned Units (${_scannedItems.length})',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
-                          );
-                        },
+                      Text(
+                        ((_selectedProduct?.hasDualSerial == true) || inCount > 0 || outCount > 0)
+                            ? 'Scanned Units (${_scannedItems.length}) • Indoor: $inCount | Outdoor: $outCount'
+                            : 'Scanned Units (${_scannedItems.length})',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF475569)),
                       ),
                       Text(
                         'Newest (#${_scannedItems.isNotEmpty ? _scannedItems.first.sequenceNumber : 0}) at top • #1 at bottom',
@@ -2986,12 +3000,13 @@ class _InwardScreenState extends State<InwardScreen> {
     );
   }
 
-  Widget _buildScanningHeader() {
+  Widget _buildScanningHeader({
+    required int inCount,
+    required int outCount,
+    required int distinctModels,
+  }) {
     if (_inwardType == 'stock_in' && _selectedProduct != null) {
       final p = _selectedProduct!;
-      final distinctModels = _scannedItems.map((e) => e.product.id).toSet().length;
-      final inCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'indoor').length;
-      final outCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'outdoor').length;
       final bool hasDual = p.hasDualSerial || inCount > 0 || outCount > 0;
       return Container(
         width: double.infinity,
@@ -3056,8 +3071,6 @@ class _InwardScreenState extends State<InwardScreen> {
       );
     } else {
       // Returned Product or Damaged Product Header
-      final inCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'indoor').length;
-      final outCount = _scannedItems.where((it) => it.unitType?.toLowerCase() == 'outdoor').length;
       final bool hasDual = inCount > 0 || outCount > 0;
       return Container(
         width: double.infinity,

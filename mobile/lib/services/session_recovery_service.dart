@@ -98,6 +98,9 @@ class SessionDraft {
   }
 }
 
+String _encodeDraftJson(Map<String, dynamic> map) => jsonEncode(map);
+dynamic _decodeDraftJson(String raw) => jsonDecode(raw);
+
 /// Service to automatically persist and recover unsubmitted scanning sessions
 /// across app crashes, unexpected terminations, or device restarts.
 class SessionRecoveryService {
@@ -110,7 +113,10 @@ class SessionRecoveryService {
 
   Timer? _saveDebounceTimer;
   SessionDraft? _pendingDraft;
+  SharedPreferences? _prefs;
   bool _initialized = false;
+
+  Future<SharedPreferences> _getPrefs() async => _prefs ??= await SharedPreferences.getInstance();
 
   Future<void> init() async {
     if (_initialized) return;
@@ -120,10 +126,10 @@ class SessionRecoveryService {
 
   Future<SessionDraft?> checkActiveDraft() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       final raw = prefs.getString(_prefKey);
       if (raw != null && raw.isNotEmpty) {
-        final decoded = jsonDecode(raw);
+        final decoded = raw.length > 15000 ? await compute(_decodeDraftJson, raw) : jsonDecode(raw);
         if (decoded is Map<String, dynamic>) {
           final draft = SessionDraft.fromJson(decoded);
           // Only offer recovery if at least 1 item was scanned
@@ -140,12 +146,12 @@ class SessionRecoveryService {
     return null;
   }
 
-  /// Automatically persists draft to local disk with 300ms debounce
+  /// Automatically persists draft to local disk with 450ms debounce
   void saveDraftDebounced(SessionDraft draft) {
     _pendingDraft = draft;
     activeDraftNotifier.value = draft;
     _saveDebounceTimer?.cancel();
-    _saveDebounceTimer = Timer(const Duration(milliseconds: 300), () async {
+    _saveDebounceTimer = Timer(const Duration(milliseconds: 450), () async {
       if (_pendingDraft != null) {
         await _writeToDisk(_pendingDraft!);
       }
@@ -161,12 +167,14 @@ class SessionRecoveryService {
 
   Future<void> _writeToDisk(SessionDraft draft) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       if (draft.items.isEmpty) {
         await prefs.remove(_prefKey);
         activeDraftNotifier.value = null;
       } else {
-        await prefs.setString(_prefKey, jsonEncode(draft.toJson()));
+        final jsonMap = draft.toJson();
+        final encoded = draft.items.length > 40 ? await compute(_encodeDraftJson, jsonMap) : jsonEncode(jsonMap);
+        await prefs.setString(_prefKey, encoded);
       }
     } catch (e) {
       debugPrint('[SessionRecoveryService] Error writing draft to disk: $e');
@@ -179,7 +187,7 @@ class SessionRecoveryService {
     _pendingDraft = null;
     activeDraftNotifier.value = null;
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       await prefs.remove(_prefKey);
       debugPrint('[SessionRecoveryService] Active draft cleared');
     } catch (_) {}

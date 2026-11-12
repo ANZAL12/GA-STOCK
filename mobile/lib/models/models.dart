@@ -39,6 +39,9 @@ class Product {
   final bool outOfStockReminder;
   final bool hasDualSerial;
 
+  late final String searchKey =
+      '${name.toLowerCase()} ${brand.toLowerCase()} ${model.toLowerCase()} ${sku?.toLowerCase() ?? ''} ${categoryName?.toLowerCase() ?? ''}';
+
   Product({
     required this.id,
     required this.name,
@@ -128,6 +131,8 @@ class Shop {
   final String city;
   final String? phone;
   final bool isActive;
+
+  late final String searchKey = '${name.toLowerCase()} ${city.toLowerCase()}';
 
   Shop({
     required this.id,

@@ -55,16 +55,26 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   late AnimationController _animController;
   late Animation<double> _scanLineAnimation;
 
-  bool _isTorchOn = false;
-  bool _isProcessing = false;
-  bool _isDuplicateWarning = false;
-  bool _holdToScanMode = true;
-  bool _isHoldingTrigger = false;
-  String? _lastScannedValue;
-  int _scannedCount = 0;
-  int get _currentCount => widget.itemCountProvider?.call() ?? _scannedCount;
+  final ValueNotifier<bool> _isTorchOnN = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _isProcessingN = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _isDuplicateWarningN = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _holdToScanModeN = ValueNotifier<bool>(true);
+  final ValueNotifier<bool> _isHoldingTriggerN = ValueNotifier<bool>(false);
+  final ValueNotifier<String?> _lastScannedValueN = ValueNotifier<String?>(null);
+  final ValueNotifier<int> _scannedCountN = ValueNotifier<int>(0);
+  late final Listenable _reticleListenable = Listenable.merge([
+    _isProcessingN,
+    _isDuplicateWarningN,
+    _holdToScanModeN,
+    _isHoldingTriggerN,
+  ]);
+
+  int get _currentCount => widget.itemCountProvider?.call() ?? _scannedCountN.value;
   final TextEditingController _manualTextController = TextEditingController();
   VoidCallback? _hardwareScannerSub;
+  final List<String> _hwPendingQueue = [];
+  bool _drainingHwQueue = false;
+  bool _isClosing = false;
 
   late final Set<String> _sessionScannedSerials;
   final Map<String, DateTime> _recentScanTimes = {};
@@ -80,8 +90,8 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   void initState() {
     super.initState();
     SoundService().init();
-    _lastScannedValue = widget.initialLastScanned;
-    _scannedCount = widget.itemCountProvider?.call() ?? widget.initialCount;
+    _lastScannedValueN.value = widget.initialLastScanned;
+    _scannedCountN.value = widget.itemCountProvider?.call() ?? widget.initialCount;
     _sessionScannedSerials = widget.existingSerials != null
         ? Set<String>.from(widget.existingSerials!.map((s) => s.trim().toUpperCase()))
         : <String>{};
@@ -93,7 +103,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
       CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
     );
 
-    if (!_holdToScanMode) {
+    if (!_holdToScanModeN.value) {
       _animController.repeat(reverse: true);
     }
 
@@ -101,10 +111,40 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
     // Hardware barcode scanner (Bluetooth / USB) instant integration
     _hardwareScannerSub = HardwareScannerService().registerListener((barcode) {
-      if (mounted) {
-        _processScannedValue(barcode);
+      if (mounted && !_isClosing) {
+        _enqueueHardwareScan(barcode);
       }
     });
+  }
+
+  void _enqueueHardwareScan(String barcode) {
+    _hwPendingQueue.add(barcode);
+    if (_drainingHwQueue) return;
+    _drainHwQueue();
+  }
+
+  Future<void> _drainHwQueue() async {
+    if (_drainingHwQueue) return;
+    _drainingHwQueue = true;
+    try {
+      while (_hwPendingQueue.isNotEmpty && mounted && !_isClosing) {
+        final next = _hwPendingQueue.removeAt(0);
+        await _processScannedValue(next, fromHardware: true);
+      }
+    } finally {
+      _drainingHwQueue = false;
+    }
+  }
+
+  void _closeScanner() {
+    if (_isClosing) return;
+    _isClosing = true;
+    _hwPendingQueue.clear();
+    _hardwareScannerSub?.call();
+    _hardwareScannerSub = null;
+    if (mounted) {
+      Navigator.pop(context);
+    }
   }
 
   void _initVolumeKeyListener() {
@@ -127,7 +167,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   }
 
   bool _handleHardwareKeyEvent(KeyEvent event) {
-    if (!_holdToScanMode) return false;
+    if (!_holdToScanModeN.value) return false;
     if (event.logicalKey == LogicalKeyboardKey.audioVolumeUp ||
         event.logicalKey == LogicalKeyboardKey.audioVolumeDown) {
       if (event is KeyDownEvent) {
@@ -142,9 +182,9 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
   }
 
   void _setTriggerHeld(bool isHeld) {
-    if (!mounted || !_holdToScanMode || _isHoldingTrigger == isHeld) return;
+    if (!mounted || !_holdToScanModeN.value || _isHoldingTriggerN.value == isHeld) return;
     HapticFeedback.lightImpact();
-    setState(() => _isHoldingTrigger = isHeld);
+    _isHoldingTriggerN.value = isHeld;
     if (isHeld) {
       if (!_animController.isAnimating) {
         _animController.repeat(reverse: true);
@@ -165,138 +205,143 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     _animController.dispose();
     _controller.dispose();
     _manualTextController.dispose();
+    _isTorchOnN.dispose();
+    _isProcessingN.dispose();
+    _isDuplicateWarningN.dispose();
+    _holdToScanModeN.dispose();
+    _isHoldingTriggerN.dispose();
+    _lastScannedValueN.dispose();
+    _scannedCountN.dispose();
     super.dispose();
   }
 
-  bool _isBarcodeInsideBox(
+  double? _computeNormalizedDistIfInsideBox(
     Barcode barcode,
     Size captureSize,
     Rect scanWindow,
     Size screenSize,
   ) {
-    // Strict constraint: Reject immediately if corner points are missing or dimensions invalid
-    if (barcode.corners.isEmpty || captureSize.width <= 0 || captureSize.height <= 0) {
-      return false;
+    // MobileScanner already applies `scanWindow` natively; if a device/format omits
+    // corner coordinates or reports Size.zero, accept rather than silently dropping the scan.
+    final corners = barcode.corners;
+    if (corners.isEmpty ||
+        captureSize.width <= 0 ||
+        captureSize.height <= 0 ||
+        screenSize.width <= 0 ||
+        screenSize.height <= 0) {
+      return 0.0;
     }
 
-    try {
-      final xs = barcode.corners.map((p) => p.dx);
-      final ys = barcode.corners.map((p) => p.dy);
-      final minX = xs.reduce(math.min);
-      final maxX = xs.reduce(math.max);
-      final minY = ys.reduce(math.min);
-      final maxY = ys.reduce(math.max);
-
-      final centerX = (minX + maxX) / 2.0;
-      final centerY = (minY + maxY) / 2.0;
-
-      final normX = centerX / captureSize.width;
-      final normY = centerY / captureSize.height;
-
-      // Normalize coordinates according to portrait phone orientation
-      // When camera buffer is landscape (width > height), buffer X maps to portrait Y and buffer Y to portrait X
-      final double horiz = captureSize.width < captureSize.height ? normX : normY;
-      final double vert = captureSize.width < captureSize.height ? normY : normX;
-
-      // Exact normalized boundary ratios from the on-screen viewfinder box
-      final double winLeftRatio = (scanWindow.left / screenSize.width).clamp(0.0, 1.0);
-      final double winRightRatio = (scanWindow.right / screenSize.width).clamp(0.0, 1.0);
-      final double winTopRatio = (scanWindow.top / screenSize.height).clamp(0.0, 1.0);
-      final double winBottomRatio = (scanWindow.bottom / screenSize.height).clamp(0.0, 1.0);
-
-      // Tight grace margin (+/- 3.5% padding) around the visual frame
-      const double margin = 0.035;
-      final double minHoriz = math.max(0.0, winLeftRatio - margin);
-      final double maxHoriz = math.min(1.0, winRightRatio + margin);
-      final double minVert = math.max(0.0, winTopRatio - margin);
-      final double maxVert = math.min(1.0, winBottomRatio + margin);
-
-      final bool inHoriz = horiz >= minHoriz && horiz <= maxHoriz;
-      final bool inVert = vert >= minVert && vert <= maxVert;
-
-      return inHoriz && inVert;
-    } catch (_) {
-      return false;
+    double minX = corners[0].dx;
+    double maxX = minX;
+    double minY = corners[0].dy;
+    double maxY = minY;
+    for (int i = 1; i < corners.length; i++) {
+      final p = corners[i];
+      if (p.dx < minX) minX = p.dx;
+      if (p.dx > maxX) maxX = p.dx;
+      if (p.dy < minY) minY = p.dy;
+      if (p.dy > maxY) maxY = p.dy;
     }
+
+    final normX = ((minX + maxX) * 0.5) / captureSize.width;
+    final normY = ((minY + maxY) * 0.5) / captureSize.height;
+
+    // Match buffer orientation against screen orientation so landscape tablets keep X->horiz and Y->vert
+    final bool portraitCapture = captureSize.width < captureSize.height;
+    final bool portraitScreen = screenSize.width < screenSize.height;
+    final bool sameOrientation = (portraitCapture == portraitScreen);
+    final double horiz = sameOrientation ? normX : normY;
+    final double vert = sameOrientation ? normY : normX;
+
+    // Exact normalized boundary ratios from the on-screen viewfinder box
+    final double winLeftRatio = (scanWindow.left / screenSize.width).clamp(0.0, 1.0);
+    final double winRightRatio = (scanWindow.right / screenSize.width).clamp(0.0, 1.0);
+    final double winTopRatio = (scanWindow.top / screenSize.height).clamp(0.0, 1.0);
+    final double winBottomRatio = (scanWindow.bottom / screenSize.height).clamp(0.0, 1.0);
+
+    // Grace margin (+/- 6% padding) around the visual frame
+    const double margin = 0.06;
+    final double minHoriz = math.max(0.0, winLeftRatio - margin);
+    final double maxHoriz = math.min(1.0, winRightRatio + margin);
+    final double minVert = math.max(0.0, winTopRatio - margin);
+    final double maxVert = math.min(1.0, winBottomRatio + margin);
+
+    if (horiz < minHoriz || horiz > maxHoriz || vert < minVert || vert > maxVert) {
+      return null;
+    }
+
+    // Distance squared from reticle center (0.5, 0.5)
+    return (horiz - 0.5) * (horiz - 0.5) + (vert - 0.5) * (vert - 0.5);
   }
 
   void _handleBarcode(BarcodeCapture capture, Rect scanWindow, Size screenSize) {
     // In hold-to-scan mode, reject scans unless the user is actively holding down the trigger
-    if (_holdToScanMode && !_isHoldingTrigger) {
+    if (_holdToScanModeN.value && !_isHoldingTriggerN.value) {
       return;
     }
 
-    if (_isProcessing) return;
+    if (_isProcessingN.value) return;
 
     final barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
 
-    // Filter to candidates strictly inside the preferred viewfinder area
-    final List<({Barcode barcode, double distFromCenter, String cleanVal})> candidates = [];
+    String? bestVal;
+    double bestDist = double.infinity;
 
     for (final barcode in barcodes) {
       final String? rawValue = barcode.rawValue;
-      if (rawValue == null || rawValue.trim().isEmpty) continue;
+      if (rawValue == null) continue;
+      final String trimmed = rawValue.trim();
+      if (trimmed.isEmpty) continue;
 
-      // Strict constraint: Reject barcodes located outside the preferred viewfinder area
-      if (!_isBarcodeInsideBox(barcode, capture.size, scanWindow, screenSize)) {
-        continue;
+      final double? dist = _computeNormalizedDistIfInsideBox(
+        barcode,
+        capture.size,
+        scanWindow,
+        screenSize,
+      );
+      if (dist != null && dist < bestDist) {
+        bestDist = dist;
+        bestVal = trimmed;
       }
-
-      final xs = barcode.corners.map((p) => p.dx);
-      final ys = barcode.corners.map((p) => p.dy);
-      final centerX = (xs.reduce(math.min) + xs.reduce(math.max)) / 2.0;
-      final centerY = (ys.reduce(math.min) + ys.reduce(math.max)) / 2.0;
-      final normX = centerX / capture.size.width;
-      final normY = centerY / capture.size.height;
-      final horiz = capture.size.width < capture.size.height ? normX : normY;
-      final vert = capture.size.width < capture.size.height ? normY : normX;
-
-      // Distance from reticle center (0.5, 0.5)
-      final dist = (horiz - 0.5) * (horiz - 0.5) + (vert - 0.5) * (vert - 0.5);
-
-      candidates.add((
-        barcode: barcode,
-        distFromCenter: dist,
-        cleanVal: rawValue.trim(),
-      ));
     }
 
-    if (candidates.isEmpty) return;
-
-    // Prioritize the barcode closest to the viewfinder center
-    candidates.sort((a, b) => a.distFromCenter.compareTo(b.distFromCenter));
-
-    final String topVal = candidates.first.cleanVal;
-    _processScannedValue(topVal);
+    if (bestVal != null) {
+      _processScannedValue(bestVal);
+    }
   }
 
-  Future<void> _processScannedValue(String rawVal) async {
+  Future<void> _processScannedValue(String rawVal, {bool fromHardware = false}) async {
     final String cleanVal = rawVal.trim().toUpperCase();
-    if (cleanVal.isEmpty) return;
-    if (_isProcessing) return;
+    if (cleanVal.isEmpty || _isClosing) return;
+    if (!fromHardware && _isProcessingN.value) return;
 
     final DateTime now = DateTime.now();
     _lastScanTime = now;
 
-    // 1. Prevent accidental repeat scanning of the same barcode within 2000ms
-    final lastTime = _recentScanTimes[cleanVal];
-    if (lastTime != null && now.difference(lastTime).inMilliseconds < 2000) {
-      return;
+    // 1. Prevent accidental optical repeat scanning of the same barcode within 2000ms for camera frames
+    if (!fromHardware) {
+      final lastTime = _recentScanTimes[cleanVal];
+      if (lastTime != null && now.difference(lastTime).inMilliseconds < 2000) {
+        return;
+      }
     }
 
-    // 2. Instant duplicate rejection: check if already in the session batch
-    final bool isAlreadyInBatch = _sessionScannedSerials.contains(cleanVal) ||
-        (widget.isDuplicate != null && widget.isDuplicate!(cleanVal));
+    // 2. Instant duplicate rejection: prefer live batch check `widget.isDuplicate` when provided
+    // so rejected/cancelled serials can be re-scanned without getting stuck in local session set.
+    final bool isAlreadyInBatch = widget.isDuplicate != null
+        ? widget.isDuplicate!(cleanVal)
+        : _sessionScannedSerials.contains(cleanVal);
 
     if (isAlreadyInBatch) {
       _recentScanTimes[cleanVal] = now;
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
-      if (!_isDuplicateWarning) {
-        setState(() => _isDuplicateWarning = true);
+      if (!_isDuplicateWarningN.value) {
+        _isDuplicateWarningN.value = true;
         Future.delayed(const Duration(milliseconds: 350), () {
-          if (mounted) setState(() => _isDuplicateWarning = false);
+          if (mounted) _isDuplicateWarningN.value = false;
         });
       }
       return;
@@ -309,11 +354,9 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     SoundService().playScannerBeep();
     HapticFeedback.mediumImpact();
 
-    final int countBefore = widget.itemCountProvider?.call() ?? _scannedCount;
+    final int countBefore = widget.itemCountProvider?.call() ?? _scannedCountN.value;
 
-    setState(() {
-      _isProcessing = true;
-    });
+    _isProcessingN.value = true;
 
     dynamic result;
     try {
@@ -324,41 +367,35 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
     if (!mounted) return;
 
-    final int countAfter = widget.itemCountProvider?.call() ?? _scannedCount;
-    final bool isSuccess = (result is bool)
-        ? result
-        : (result != false);
+    final int countAfter = widget.itemCountProvider?.call() ?? _scannedCountN.value;
+    final bool isSuccess = (result is bool) ? result : (result != false);
 
     if (isSuccess) {
-      setState(() {
-        _lastScannedValue = cleanVal;
-        _scannedCount = (countAfter > countBefore) ? countAfter : (_scannedCount + 1);
-      });
+      _scannedCountN.value = (countAfter > countBefore) ? countAfter : (_scannedCountN.value + 1);
+      _lastScannedValueN.value = cleanVal;
     } else {
       _sessionScannedSerials.remove(cleanVal);
       _recentScanTimes.remove(cleanVal);
       if (widget.itemCountProvider != null) {
-        setState(() {
-          _scannedCount = countAfter;
-        });
+        _scannedCountN.value = countAfter;
       }
     }
 
     // Super-fast cooldown (260ms) so moving to the next unique item scans instantly!
     Future.delayed(const Duration(milliseconds: 260), () {
-      if (mounted) setState(() => _isProcessing = false);
+      if (mounted) _isProcessingN.value = false;
     });
   }
 
   Color _getReticleBorderColor() {
-    if (_isDuplicateWarning) {
+    if (_isDuplicateWarningN.value) {
       return const Color(0xFFEF4444); // Bright Red when duplicate scanned
     }
-    if (_isProcessing) {
+    if (_isProcessingN.value) {
       return const Color(0xFF10B981); // Emerald green on successful read
     }
-    if (_holdToScanMode) {
-      return _isHoldingTrigger
+    if (_holdToScanModeN.value) {
+      return _isHoldingTriggerN.value
           ? const Color(0xFF38BDF8) // Bright Cyan when trigger active
           : const Color(0xFF64748B); // Slate muted when idle
     }
@@ -423,18 +460,21 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
 
   @override
   Widget build(BuildContext context) {
-    final bool isScanningActive = !_holdToScanMode || _isHoldingTrigger;
-
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        if (didPop) return;
+        if (didPop) {
+          _isClosing = true;
+          _hardwareScannerSub?.call();
+          _hardwareScannerSub = null;
+          return;
+        }
         final now = DateTime.now();
         if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
           debugPrint('[BarcodeScannerWidget] Swallowed pop attempt within 2500ms of scan');
           return;
         }
-        Navigator.pop(context);
+        _closeScanner();
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -448,404 +488,410 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
             descendantsAreFocusable: false,
             skipTraversal: true,
             child: IconButton(
-              focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
               icon: const Icon(Icons.arrow_back),
               onPressed: () {
                 final now = DateTime.now();
                 if (_lastScanTime != null && now.difference(_lastScanTime!).inMilliseconds < 2500) {
                   return;
                 }
-                Navigator.pop(context);
+                _closeScanner();
               },
             ),
           ),
-        actions: [
-          const FlushLagButton(compact: true, color: Colors.amberAccent),
-          Focus(
-            canRequestFocus: false,
-            descendantsAreFocusable: false,
-            child: IconButton(
-              icon: Icon(_isTorchOn ? Icons.flash_on : Icons.flash_off, color: Colors.white),
-              onPressed: () async {
-                await _controller.toggleTorch();
-                setState(() => _isTorchOn = !_isTorchOn);
-              },
-            ),
-          ),
-          Focus(
-            canRequestFocus: false,
-            descendantsAreFocusable: false,
-            child: IconButton(
-              icon: const Icon(Icons.flip_camera_android),
-              onPressed: () => _controller.switchCamera(),
-            ),
-          ),
-        ],
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final screenSize = constraints.biggest;
-          final scanWindow = Rect.fromCenter(
-            center: Offset(screenSize.width / 2, screenSize.height / 2),
-            width: _boxWidth,
-            height: _boxHeight,
-          );
-
-          return Stack(
-            alignment: Alignment.center,
-            children: [
-              // Camera stream with strict native scanWindow constraint
-              MobileScanner(
-                controller: _controller,
-                scanWindow: scanWindow,
-                fit: BoxFit.cover,
-                onDetect: (capture) => _handleBarcode(capture, scanWindow, screenSize),
-              ),
-
-              // Overlay cutout - darkens area outside the preferred box
-              ColorFiltered(
-                colorFilter: ColorFilter.mode(
-                  Colors.black.withValues(alpha: 0.72),
-                  BlendMode.srcOut,
+          actions: [
+            const FlushLagButton(compact: true, color: Colors.amberAccent),
+            Focus(
+              canRequestFocus: false,
+              descendantsAreFocusable: false,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: _isTorchOnN,
+                builder: (context, isTorchOn, _) => IconButton(
+                  icon: Icon(isTorchOn ? Icons.flash_on : Icons.flash_off, color: Colors.white),
+                  onPressed: () async {
+                    await _controller.toggleTorch();
+                    _isTorchOnN.value = !_isTorchOnN.value;
+                  },
                 ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Container(
-                      decoration: const BoxDecoration(
-                        color: Colors.black,
-                        backgroundBlendMode: BlendMode.dstOut,
-                      ),
+              ),
+            ),
+            Focus(
+              canRequestFocus: false,
+              descendantsAreFocusable: false,
+              child: IconButton(
+                icon: const Icon(Icons.flip_camera_android),
+                onPressed: () => _controller.switchCamera(),
+              ),
+            ),
+          ],
+        ),
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final screenSize = constraints.biggest;
+            final scanWindow = Rect.fromCenter(
+              center: Offset(screenSize.width / 2, screenSize.height / 2),
+              width: _boxWidth,
+              height: _boxHeight,
+            );
+
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                // Isolated camera stream so trigger/overlay updates never rebuild MobileScanner
+                RepaintBoundary(
+                  child: MobileScanner(
+                    controller: _controller,
+                    scanWindow: scanWindow,
+                    fit: BoxFit.cover,
+                    onDetect: (capture) => _handleBarcode(capture, scanWindow, screenSize),
+                  ),
+                ),
+
+                // Single-pass even-odd cutout overlay (eliminates ColorFiltered/BlendMode offscreen saveLayer)
+                RepaintBoundary(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      size: screenSize,
+                      painter: _ScannerOverlayPainter(scanWindow: scanWindow),
                     ),
-                    Align(
-                      alignment: Alignment.center,
-                      child: Container(
+                  ),
+                ),
+
+                // Reticle border with corner accents and live scanning indicator
+                RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _reticleListenable,
+                    builder: (context, _) {
+                      final bool holdMode = _holdToScanModeN.value;
+                      final bool holding = _isHoldingTriggerN.value;
+                      final bool processing = _isProcessingN.value;
+                      final bool isScanningActive = !holdMode || holding;
+                      final Color borderColor = _getReticleBorderColor();
+
+                      return Container(
                         width: _boxWidth,
                         height: _boxHeight,
                         decoration: BoxDecoration(
-                          color: Colors.red,
+                          border: Border.all(
+                            color: borderColor.withValues(alpha: 0.35),
+                            width: 1.5,
+                          ),
                           borderRadius: BorderRadius.circular(16),
                         ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Reticle border with corner accents and live scanning indicator
-              Container(
-                width: _boxWidth,
-                height: _boxHeight,
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: _getReticleBorderColor().withValues(alpha: 0.35),
-                    width: 1.5,
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Precision corner brackets
-                    CustomPaint(
-                      size: const Size(_boxWidth, _boxHeight),
-                      painter: _CornerBracketsPainter(
-                        color: _getReticleBorderColor(),
-                        cornerLength: 26.0,
-                        strokeWidth: isScanningActive ? 3.5 : 2.5,
-                      ),
-                    ),
-
-                    if (isScanningActive)
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: AnimatedBuilder(
-                          animation: _scanLineAnimation,
-                          builder: (context, child) {
-                        return Stack(
+                        child: Stack(
+                          alignment: Alignment.center,
                           children: [
-                            Positioned(
-                              top: _scanLineAnimation.value,
-                              left: 10,
-                              right: 10,
-                              child: Container(
-                                height: 2.5,
+                            // Precision corner brackets
+                            CustomPaint(
+                              size: const Size(_boxWidth, _boxHeight),
+                              painter: _CornerBracketsPainter(
+                                color: borderColor,
+                                cornerLength: 26.0,
+                                strokeWidth: isScanningActive ? 3.5 : 2.5,
+                              ),
+                            ),
+
+                            if (isScanningActive)
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(14),
+                                child: AnimatedBuilder(
+                                  animation: _scanLineAnimation,
+                                  builder: (context, child) {
+                                    final Color lineColor = processing
+                                        ? const Color(0xFF10B981)
+                                        : const Color(0xFF38BDF8);
+                                    return Stack(
+                                      children: [
+                                        Positioned(
+                                          top: _scanLineAnimation.value,
+                                          left: 10,
+                                          right: 10,
+                                          child: Container(
+                                            height: 2.5,
+                                            decoration: BoxDecoration(
+                                              gradient: LinearGradient(
+                                                colors: [
+                                                  Colors.transparent,
+                                                  lineColor,
+                                                  Colors.transparent,
+                                                ],
+                                              ),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: lineColor.withValues(alpha: 0.8),
+                                                  blurRadius: 6,
+                                                  spreadRadius: 1.5,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    );
+                                  },
+                                ),
+                              ),
+
+                            if (holdMode && !holding)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                                 decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    colors: [
-                                      Colors.transparent,
-                                      _isProcessing
-                                          ? const Color(0xFF10B981)
-                                          : const Color(0xFF38BDF8),
-                                      Colors.transparent,
-                                    ],
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: (_isProcessing
-                                              ? const Color(0xFF10B981)
-                                              : const Color(0xFF38BDF8))
-                                          .withValues(alpha: 0.8),
-                                      blurRadius: 6,
-                                      spreadRadius: 1.5,
+                                  color: Colors.black.withValues(alpha: 0.6),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(color: Colors.white12),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.touch_app, size: 16, color: Colors.white70),
+                                    SizedBox(width: 6),
+                                    Text(
+                                      'Hold button below to scan',
+                                      style: TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                      ),
                                     ),
                                   ],
                                 ),
                               ),
-                            ),
                           ],
-                        );
-                      },
-                    ),
-                  ),
-                if (_holdToScanMode && !_isHoldingTrigger)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.6),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white12),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.touch_app, size: 16, color: Colors.white70),
-                        SizedBox(width: 6),
-                        Text(
-                          'Hold button below to scan',
-                          style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                          ),
                         ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
-              ],
-            ),
-          ),
-
-          // Top Header (Last Scanned Card popped from upside + Prompt & Mode Switch)
-          Positioned(
-            top: 12,
-            left: 16,
-            right: 16,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Prominently pop out the scanned serial number card from UPSIDE (the top)
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  transitionBuilder: (child, anim) => SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0.0, -0.6),
-                      end: Offset.zero,
-                    ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
-                    child: FadeTransition(opacity: anim, child: child),
-                  ),
-                  child: (_lastScannedValue != null && _lastScannedValue!.isNotEmpty)
-                      ? Padding(
-                          key: ValueKey<String>(_lastScannedValue!),
-                          padding: const EdgeInsets.only(bottom: 8),
-                          child: _buildLastScannedCard(),
-                        )
-                      : const SizedBox.shrink(),
                 ),
 
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.75),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: Colors.white24),
-                  ),
-                  child: Text(
-                    widget.prompt,
-                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                // Hold-to-scan Switch Toggle Pill
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.82),
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(
-                      color: _holdToScanMode ? const Color(0xFF818CF8) : Colors.white24,
-                      width: 1.2,
-                    ),
-                    boxShadow: [
-                      if (_holdToScanMode)
-                        BoxShadow(
-                          color: const Color(0xFF818CF8).withValues(alpha: 0.25),
-                          blurRadius: 8,
-                          spreadRadius: 1,
-                        ),
-                    ],
-                  ),
-                  child: Row(
+                // Top Header (Last Scanned Card popped from upside + Prompt & Mode Switch)
+                Positioned(
+                  top: 12,
+                  left: 16,
+                  right: 16,
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        _holdToScanMode ? Icons.touch_app : Icons.bolt,
-                        size: 18,
-                        color: _holdToScanMode ? const Color(0xFF818CF8) : Colors.amberAccent,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _holdToScanMode ? 'Hold to Scan Mode' : 'Continuous Auto Scan',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        height: 28,
-                        child: Switch(
-                          value: _holdToScanMode,
-                          activeThumbColor: const Color(0xFF818CF8),
-                          activeTrackColor: const Color(0xFF312E81),
-                          inactiveThumbColor: Colors.white70,
-                          inactiveTrackColor: Colors.white24,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          onChanged: (val) {
-                            HapticFeedback.selectionClick();
-                            setState(() {
-                              _holdToScanMode = val;
-                              _isHoldingTrigger = false;
-                            });
-                            if (!val) {
-                              if (!_animController.isAnimating) {
-                                _animController.repeat(reverse: true);
-                              }
-                            } else {
-                              _animController.stop();
-                              _animController.reset();
-                            }
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Bottom Controls (Trigger + Manual Input)
-          Positioned(
-            bottom: 24,
-            left: 20,
-            right: 20,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_holdToScanMode) ...[
-                  Listener(
-                    behavior: HitTestBehavior.opaque,
-                    onPointerDown: (_) => _setTriggerHeld(true),
-                    onPointerUp: (_) => _setTriggerHeld(false),
-                    onPointerCancel: (_) => _setTriggerHeld(false),
-                    child: AnimatedScale(
-                      scale: _isHoldingTrigger ? 0.96 : 1.0,
-                      duration: const Duration(milliseconds: 100),
-                      child: Container(
-                        height: 58,
-                        constraints: const BoxConstraints(maxWidth: 320),
-                        decoration: BoxDecoration(
-                          gradient: _isHoldingTrigger
-                              ? const LinearGradient(
-                                  colors: [Color(0xFF10B981), Color(0xFF059669)],
-                                )
-                              : const LinearGradient(
-                                  colors: [Color(0xFF4F46E5), Color(0xFF3730A3)],
-                                ),
-                          borderRadius: BorderRadius.circular(29),
-                          boxShadow: [
-                            BoxShadow(
-                              color: (_isHoldingTrigger
-                                      ? const Color(0xFF10B981)
-                                      : const Color(0xFF4F46E5))
-                                  .withValues(alpha: _isHoldingTrigger ? 0.6 : 0.35),
-                              blurRadius: _isHoldingTrigger ? 18 : 10,
-                              spreadRadius: _isHoldingTrigger ? 2 : 0,
-                              offset: const Offset(0, 4),
+                      // Prominently pop out the scanned serial number card from UPSIDE (the top)
+                      RepaintBoundary(
+                        child: ValueListenableBuilder<String?>(
+                          valueListenable: _lastScannedValueN,
+                          builder: (context, lastVal, _) => AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 300),
+                            transitionBuilder: (child, anim) => SlideTransition(
+                              position: Tween<Offset>(
+                                begin: const Offset(0.0, -0.6),
+                                end: Offset.zero,
+                              ).animate(CurvedAnimation(parent: anim, curve: Curves.easeOutCubic)),
+                              child: FadeTransition(opacity: anim, child: child),
                             ),
-                          ],
+                            child: (lastVal != null && lastVal.isNotEmpty)
+                                ? Padding(
+                                    key: ValueKey<String>(lastVal),
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: _buildLastScannedCard(lastVal),
+                                  )
+                                : const SizedBox.shrink(),
+                          ),
                         ),
-                        child: Center(
+                      ),
+
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Text(
+                          widget.prompt,
+                          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      // Hold-to-scan Switch Toggle Pill
+                      ValueListenableBuilder<bool>(
+                        valueListenable: _holdToScanModeN,
+                        builder: (context, holdMode, _) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.82),
+                            borderRadius: BorderRadius.circular(24),
+                            border: Border.all(
+                              color: holdMode ? const Color(0xFF818CF8) : Colors.white24,
+                              width: 1.2,
+                            ),
+                            boxShadow: [
+                              if (holdMode)
+                                BoxShadow(
+                                  color: const Color(0xFF818CF8).withValues(alpha: 0.25),
+                                  blurRadius: 8,
+                                  spreadRadius: 1,
+                                ),
+                            ],
+                          ),
                           child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
+                            mainAxisSize: MainAxisSize.min,
                             children: [
                               Icon(
-                                _isHoldingTrigger ? Icons.sensors : Icons.touch_app,
-                                color: Colors.white,
-                                size: 24,
+                                holdMode ? Icons.touch_app : Icons.bolt,
+                                size: 18,
+                                color: holdMode ? const Color(0xFF818CF8) : Colors.amberAccent,
                               ),
-                              const SizedBox(width: 10),
+                              const SizedBox(width: 8),
                               Text(
-                                _isHoldingTrigger ? 'SCANNING (HOLDING)...' : 'HOLD TO SCAN',
+                                holdMode ? 'Hold to Scan Mode' : 'Continuous Auto Scan',
                                 style: const TextStyle(
                                   color: Colors.white,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 1.2,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              SizedBox(
+                                height: 28,
+                                child: Switch(
+                                  value: holdMode,
+                                  activeThumbColor: const Color(0xFF818CF8),
+                                  activeTrackColor: const Color(0xFF312E81),
+                                  inactiveThumbColor: Colors.white70,
+                                  inactiveTrackColor: Colors.white24,
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  onChanged: (val) {
+                                    HapticFeedback.selectionClick();
+                                    _holdToScanModeN.value = val;
+                                    _isHoldingTriggerN.value = false;
+                                    if (!val) {
+                                      if (!_animController.isAnimating) {
+                                        _animController.repeat(reverse: true);
+                                      }
+                                    } else {
+                                      _animController.stop();
+                                      _animController.reset();
+                                    }
+                                  },
                                 ),
                               ),
                             ],
                           ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
-                  const SizedBox(height: 10),
-                  TextButton.icon(
-                    onPressed: _showManualInputDialog,
-                    icon: const Icon(Icons.keyboard, color: Colors.white70, size: 18),
-                    label: const Text(
-                      'Type Serial Manually',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        decoration: TextDecoration.underline,
+                ),
+
+                // Bottom Controls (Trigger + Manual Input)
+                Positioned(
+                  bottom: 24,
+                  left: 20,
+                  right: 20,
+                  child: RepaintBoundary(
+                    child: ValueListenableBuilder<bool>(
+                      valueListenable: _holdToScanModeN,
+                      builder: (context, holdMode, _) => Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (holdMode) ...[
+                            ValueListenableBuilder<bool>(
+                              valueListenable: _isHoldingTriggerN,
+                              builder: (context, holding, _) => Listener(
+                                behavior: HitTestBehavior.opaque,
+                                onPointerDown: (_) => _setTriggerHeld(true),
+                                onPointerUp: (_) => _setTriggerHeld(false),
+                                onPointerCancel: (_) => _setTriggerHeld(false),
+                                child: AnimatedScale(
+                                  scale: holding ? 0.96 : 1.0,
+                                  duration: const Duration(milliseconds: 100),
+                                  child: Container(
+                                    height: 58,
+                                    constraints: const BoxConstraints(maxWidth: 320),
+                                    decoration: BoxDecoration(
+                                      gradient: holding
+                                          ? const LinearGradient(
+                                              colors: [Color(0xFF10B981), Color(0xFF059669)],
+                                            )
+                                          : const LinearGradient(
+                                              colors: [Color(0xFF4F46E5), Color(0xFF3730A3)],
+                                            ),
+                                      borderRadius: BorderRadius.circular(29),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: (holding
+                                                  ? const Color(0xFF10B981)
+                                                  : const Color(0xFF4F46E5))
+                                              .withValues(alpha: holding ? 0.6 : 0.35),
+                                          blurRadius: holding ? 18 : 10,
+                                          spreadRadius: holding ? 2 : 0,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Center(
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            holding ? Icons.sensors : Icons.touch_app,
+                                            color: Colors.white,
+                                            size: 24,
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Text(
+                                            holding ? 'SCANNING (HOLDING)...' : 'HOLD TO SCAN',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w700,
+                                              letterSpacing: 1.2,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            TextButton.icon(
+                              onPressed: _showManualInputDialog,
+                              icon: const Icon(Icons.keyboard, color: Colors.white70, size: 18),
+                              label: const Text(
+                                'Type Serial Manually',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                  decoration: TextDecoration.underline,
+                                ),
+                              ),
+                            ),
+                          ] else ...[
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: const Color(0xFF1E293B),
+                                padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
+                                elevation: 4,
+                              ),
+                              icon: const Icon(Icons.keyboard, size: 20, color: Color(0xFF3C3489)),
+                              label: const Text('Type Serial Manually', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                              onPressed: _showManualInputDialog,
+                            ),
+                          ],
+                        ],
                       ),
                     ),
                   ),
-                ] else ...[
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: const Color(0xFF1E293B),
-                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(25)),
-                      elevation: 4,
-                    ),
-                    icon: const Icon(Icons.keyboard, size: 20, color: Color(0xFF3C3489)),
-                    label: const Text('Type Serial Manually', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                    onPressed: _showManualInputDialog,
-                  ),
-                ],
+                ),
               ],
-            ),
-          ),
-        ],
-      );
-    },
-  ),
-  ),
-);
+            );
+          },
+        ),
+      ),
+    );
   }
 
-  Widget _buildLastScannedCard() {
-    if (_lastScannedValue == null || _lastScannedValue!.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
+  Widget _buildLastScannedCard(String lastScannedValue) {
     return Container(
       constraints: const BoxConstraints(maxWidth: 360),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -894,29 +940,39 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                         letterSpacing: 0.8,
                       ),
                     ),
-                    if (_currentCount > 0) ...[
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Colors.white12,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          '#$_currentCount',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 9,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
+                    ValueListenableBuilder<int>(
+                      valueListenable: _scannedCountN,
+                      builder: (context, _, _) {
+                        final count = _currentCount;
+                        if (count <= 0) return const SizedBox.shrink();
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.white12,
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '#$count',
+                                style: const TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
                   ],
                 ),
                 const SizedBox(height: 2),
                 SelectableText(
-                  _lastScannedValue!,
+                  lastScannedValue,
                   style: const TextStyle(
                     color: Colors.white,
                     fontSize: 15,
@@ -931,6 +987,28 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
         ],
       ),
     );
+  }
+}
+
+class _ScannerOverlayPainter extends CustomPainter {
+  final Rect scanWindow;
+
+  const _ScannerOverlayPainter({required this.scanWindow});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(Offset.zero & size)
+      ..addRRect(RRect.fromRectAndRadius(scanWindow, const Radius.circular(16)));
+
+    final paint = Paint()..color = const Color(0xB8000000);
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScannerOverlayPainter oldDelegate) {
+    return oldDelegate.scanWindow != scanWindow;
   }
 }
 
@@ -954,38 +1032,31 @@ class _CornerBracketsPainter extends CustomPainter {
       ..style = PaintingStyle.stroke;
 
     const double r = 16.0;
+    const Radius rad = Radius.circular(r);
 
-    // Top-Left
-    final pathTL = Path()
+    final path = Path()
+      // Top-Left
       ..moveTo(0, cornerLength)
       ..lineTo(0, r)
-      ..arcToPoint(const Offset(r, 0), radius: const Radius.circular(r))
-      ..lineTo(cornerLength, 0);
-    canvas.drawPath(pathTL, paint);
-
-    // Top-Right
-    final pathTR = Path()
+      ..arcToPoint(const Offset(r, 0), radius: rad)
+      ..lineTo(cornerLength, 0)
+      // Top-Right
       ..moveTo(size.width - cornerLength, 0)
       ..lineTo(size.width - r, 0)
-      ..arcToPoint(Offset(size.width, r), radius: const Radius.circular(r))
-      ..lineTo(size.width, cornerLength);
-    canvas.drawPath(pathTR, paint);
-
-    // Bottom-Left
-    final pathBL = Path()
+      ..arcToPoint(Offset(size.width, r), radius: rad)
+      ..lineTo(size.width, cornerLength)
+      // Bottom-Left
       ..moveTo(0, size.height - cornerLength)
       ..lineTo(0, size.height - r)
-      ..arcToPoint(Offset(r, size.height), radius: const Radius.circular(r))
-      ..lineTo(cornerLength, size.height);
-    canvas.drawPath(pathBL, paint);
-
-    // Bottom-Right
-    final pathBR = Path()
+      ..arcToPoint(Offset(r, size.height), radius: rad)
+      ..lineTo(cornerLength, size.height)
+      // Bottom-Right
       ..moveTo(size.width - cornerLength, size.height)
       ..lineTo(size.width - r, size.height)
-      ..arcToPoint(Offset(size.width, size.height - r), radius: const Radius.circular(r))
+      ..arcToPoint(Offset(size.width, size.height - r), radius: rad)
       ..lineTo(size.width, size.height - cornerLength);
-    canvas.drawPath(pathBR, paint);
+
+    canvas.drawPath(path, paint);
   }
 
   @override

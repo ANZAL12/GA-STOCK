@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart' hide Category;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../models/models.dart';
 import 'offline_manager.dart';
 import 'offline_queue_service.dart';
+
+List<dynamic> _apiBgDecodeList(String raw) => jsonDecode(raw) as List<dynamic>;
+String _apiBgEncodeJson(Object? data) => jsonEncode(data);
 
 class ApiService {
   static final ApiService _instance = ApiService._internal();
@@ -16,6 +19,9 @@ class ApiService {
   static const String defaultBaseUrl = 'http://100.66.97.14:8000/api/v1';
 
   http.Client _client = http.Client();
+  SharedPreferences? _prefs;
+
+  Future<SharedPreferences> _getPrefs() async => _prefs ??= await SharedPreferences.getInstance();
 
   void _resetClient() {
     try {
@@ -84,7 +90,7 @@ class ApiService {
   }
 
   Future<void> init() async {
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
 
     // 1. Base URL
     final savedUrl = prefs.getString('base_url');
@@ -113,29 +119,35 @@ class ApiService {
       } catch (_) {}
     }
 
-    // 4. Load persisted catalogs from disk for 0ms cold start
+    // 4. Load persisted catalogs from disk for 0ms cold start (offload large JSON to background isolate)
     final productsJson = prefs.getString('cache_products_json');
-    if (productsJson != null) {
+    if (productsJson != null && productsJson.isNotEmpty) {
       try {
-        final List list = jsonDecode(productsJson);
+        final List list = productsJson.length > 25000
+            ? await compute(_apiBgDecodeList, productsJson)
+            : jsonDecode(productsJson);
         _cachedProducts = list.map((p) => Product.fromJson(p)).toList();
         _productsCacheTime = DateTime.now();
       } catch (_) {}
     }
 
     final categoriesJson = prefs.getString('cache_categories_json');
-    if (categoriesJson != null) {
+    if (categoriesJson != null && categoriesJson.isNotEmpty) {
       try {
-        final List list = jsonDecode(categoriesJson);
+        final List list = categoriesJson.length > 25000
+            ? await compute(_apiBgDecodeList, categoriesJson)
+            : jsonDecode(categoriesJson);
         _cachedCategories = list.map((c) => Category.fromJson(c)).toList();
         _categoriesCacheTime = DateTime.now();
       } catch (_) {}
     }
 
     final shopsJson = prefs.getString('cache_shops_json');
-    if (shopsJson != null) {
+    if (shopsJson != null && shopsJson.isNotEmpty) {
       try {
-        final List list = jsonDecode(shopsJson);
+        final List list = shopsJson.length > 25000
+            ? await compute(_apiBgDecodeList, shopsJson)
+            : jsonDecode(shopsJson);
         _cachedShops = list.map((s) => Shop.fromJson(s)).toList();
         _shopsCacheTime = DateTime.now();
       } catch (_) {}
@@ -374,7 +386,7 @@ class ApiService {
   }
 
   /// Live update of single product in cache (e.g. from WebSocket push)
-  void updateCachedProduct(Product product) {
+  void updateCachedProduct(Product product, {bool persistToDisk = true}) {
     if (_cachedProducts == null) {
       _cachedProducts = [product];
     } else {
@@ -385,9 +397,12 @@ class ApiService {
         _cachedProducts!.insert(0, product);
       }
     }
+    if (!persistToDisk) return;
     // Update disk cache asynchronously
-    SharedPreferences.getInstance().then((prefs) {
-      prefs.setString('cache_products_json', jsonEncode(_cachedProducts!.map((p) => p.toJson()).toList()));
+    _getPrefs().then((prefs) async {
+      final rawMaps = _cachedProducts!.map((p) => p.toJson()).toList();
+      final encoded = rawMaps.length > 80 ? await compute(_apiBgEncodeJson, rawMaps) : jsonEncode(rawMaps);
+      await prefs.setString('cache_products_json', encoded);
     }).catchError((_) {});
   }
 
@@ -398,8 +413,10 @@ class ApiService {
     if (idx != -1) {
       _cachedProducts![idx] = _cachedProducts![idx].copyWith(currentStockQty: newQty);
       _productsCacheTime = DateTime.now();
-      SharedPreferences.getInstance().then((prefs) {
-        prefs.setString('cache_products_json', jsonEncode(_cachedProducts!.map((p) => p.toJson()).toList()));
+      _getPrefs().then((prefs) async {
+        final rawMaps = _cachedProducts!.map((p) => p.toJson()).toList();
+        final encoded = rawMaps.length > 80 ? await compute(_apiBgEncodeJson, rawMaps) : jsonEncode(rawMaps);
+        await prefs.setString('cache_products_json', encoded);
       }).catchError((_) {});
     } else {
       _refreshProductsInBackground();
@@ -412,7 +429,7 @@ class ApiService {
   }
 
   /// Live update of single shop in cache (e.g. from WebSocket push)
-  void updateCachedShop(Shop shop) {
+  void updateCachedShop(Shop shop, {bool persistToDisk = true}) {
     if (_cachedShops == null) {
       if (shop.isActive) {
         _cachedShops = [shop];
@@ -425,19 +442,22 @@ class ApiService {
       }
     }
     _shopsCacheTime = DateTime.now();
-    if (_cachedShops != null) {
-      SharedPreferences.getInstance().then((prefs) {
-        prefs.setString('cache_shops_json', jsonEncode(_cachedShops!.map((s) => s.toJson()).toList()));
+    if (persistToDisk && _cachedShops != null) {
+      _getPrefs().then((prefs) async {
+        final rawMaps = _cachedShops!.map((s) => s.toJson()).toList();
+        final encoded = rawMaps.length > 80 ? await compute(_apiBgEncodeJson, rawMaps) : jsonEncode(rawMaps);
+        await prefs.setString('cache_shops_json', encoded);
       }).catchError((_) {});
     }
   }
 
   /// Remove shop from cache on permanent delete
-  void removeCachedShop(String shopId) {
+  void removeCachedShop(String shopId, {bool persistToDisk = true}) {
     if (_cachedShops == null) return;
     _cachedShops!.removeWhere((s) => s.id == shopId);
     _shopsCacheTime = DateTime.now();
-    SharedPreferences.getInstance().then((prefs) {
+    if (!persistToDisk) return;
+    _getPrefs().then((prefs) {
       prefs.setString('cache_shops_json', jsonEncode(_cachedShops!.map((s) => s.toJson()).toList()));
     }).catchError((_) {});
   }
@@ -510,12 +530,14 @@ class ApiService {
         Uri.parse('$_baseUrl/products?active_only=true'),
       );
       if (res.statusCode == 200) {
-        final List list = jsonDecode(res.body);
+        final List list = res.body.length > 25000
+            ? await compute(_apiBgDecodeList, res.body)
+            : jsonDecode(res.body);
         final prods = list.map((p) => Product.fromJson(p)).toList();
         _cachedProducts = prods;
         _productsCacheTime = DateTime.now();
 
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await _getPrefs();
         await prefs.setString('cache_products_json', res.body);
         return prods;
       }
@@ -562,12 +584,14 @@ class ApiService {
         Uri.parse('$_baseUrl/shops?active_only=true'),
       );
       if (res.statusCode == 200) {
-        final List list = jsonDecode(res.body);
+        final List list = res.body.length > 25000
+            ? await compute(_apiBgDecodeList, res.body)
+            : jsonDecode(res.body);
         final shops = list.map((s) => Shop.fromJson(s)).toList();
         _cachedShops = shops;
         _shopsCacheTime = DateTime.now();
 
-        final prefs = await SharedPreferences.getInstance();
+        final prefs = await _getPrefs();
         await prefs.setString('cache_shops_json', res.body);
         return shops;
       }
@@ -717,12 +741,10 @@ class ApiService {
         _cachedCategories = cats;
         _categoriesCacheTime = DateTime.now();
 
-        for (final c in cats) {
-          OfflineManager().updateCategory(c);
-        }
+        OfflineManager().setCategories(cats, persistToDisk: false);
 
         try {
-          final prefs = await SharedPreferences.getInstance();
+          final prefs = await _getPrefs();
           await prefs.setString('cache_categories_json', res.body);
         } catch (_) {}
 

@@ -75,11 +75,6 @@ class OfflineBanner extends StatelessWidget {
               );
             }
 
-            // If online with pending dispatches, auto-sync queued dispatches quietly in background
-            if (offlineManager.isOnline && pendingCount > 0) {
-              offlineManager.syncPendingDispatches();
-            }
-
             return const SizedBox.shrink();
           },
         );
