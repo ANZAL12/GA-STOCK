@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.audit import router as audit_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.backup import router as backup_router
 from app.api.v1.categories import router as categories_router
 from app.api.v1.devices import router as devices_router
 from app.api.v1.inward import router as inward_router
@@ -34,6 +35,7 @@ api_router.include_router(websocket_router)
 api_router.include_router(sync_router)
 api_router.include_router(print_router)
 api_router.include_router(tally_router)
+api_router.include_router(backup_router)
 
 
 @api_router.get("/health", tags=["system"])

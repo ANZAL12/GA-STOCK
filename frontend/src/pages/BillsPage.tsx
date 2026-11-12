@@ -55,6 +55,7 @@ export const BillsPage: React.FC = () => {
   const [serialSearch, setSerialSearch] = useState("");
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [printingPdf, setPrintingPdf] = useState(false);
+  const [pullingTallyBills, setPullingTallyBills] = useState(false);
 
   // Cancellation State (Admin Only)
   const [billToCancel, setBillToCancel] = useState<{
@@ -110,6 +111,22 @@ export const BillsPage: React.FC = () => {
       console.error("Failed to load bills", e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePullTallyBills = async () => {
+    setPullingTallyBills(true);
+    try {
+      const res = await apiRequest<{ status: string; message: string }>("/tally/sync", {
+        method: "POST",
+      });
+      await fetchBills();
+      setActionSuccessNotice(res.message || "Tally bills pulled successfully.");
+      setTimeout(() => setActionSuccessNotice(null), 5000);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to pull bills from Tally.");
+    } finally {
+      setPullingTallyBills(false);
     }
   };
 
@@ -358,13 +375,26 @@ export const BillsPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={fetchBills}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-xs transition-colors self-start sm:self-auto"
-        >
-          <RotateCcw size={14} className={loading ? "animate-spin" : ""} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handlePullTallyBills}
+              disabled={pullingTallyBills}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#302970] shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <RotateCcw size={14} className={pullingTallyBills ? "animate-spin" : ""} />
+              {pullingTallyBills ? "Pulling Bills..." : "Pull Tally Bills"}
+            </button>
+          )}
+          <button
+            onClick={fetchBills}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-xs transition-colors"
+          >
+            <RotateCcw size={14} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Action Success Toast Banner */}

@@ -61,12 +61,22 @@ async def get_tally_status(
     """Check Tally connection status and sync state."""
     cfg = await TallySyncService.get_or_create_config(db)
 
-    # Fast probe to see if Tally is currently reachable
-    is_connected, msg, companies = await TallyHttpClient.test_connection(
-        cfg.host, cfg.port, cfg.tally_url, timeout=2.5
-    )
+    # Fast probe across all configured Tally endpoints (TALLY_HOSTS + active config)
+    endpoints = TallySyncService.get_configured_endpoints(cfg)
+    probes = await TallyHttpClient.probe_endpoints(endpoints, timeout=2.5)
+    reachable = [p for p in probes if p[3]]
+    is_connected = len(reachable) > 0
 
-    company_names = [c["name"] for c in companies]
+    company_names: List[str] = []
+    for _, _, _, _, _, ep_companies in reachable:
+        for c in ep_companies:
+            cname = (c.get("name") or "").strip()
+            if cname and cname != "0" and not cname.isdigit() and cname not in company_names:
+                company_names.append(cname)
+
+    active_host = reachable[0][0] if reachable else cfg.host
+    active_port = reachable[0][1] if reachable else cfg.port
+    active_url = reachable[0][2] if reachable else cfg.tally_url
 
     # Auto-reconcile vouchers dispatched via OutwardBatch but not yet flagged is_processed
     reconcile_res = await db.execute(
@@ -104,9 +114,9 @@ async def get_tally_status(
 
     return TallyStatusResponse(
         is_connected=is_connected,
-        host=cfg.host,
-        port=cfg.port,
-        tally_url=cfg.tally_url,
+        host=active_host,
+        port=active_port,
+        tally_url=active_url,
         active_company=cfg.company_name,
         is_enabled=cfg.is_enabled,
         auto_sync=cfg.auto_sync,
@@ -179,16 +189,26 @@ async def list_companies(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> List[TallyCompanyResponse]:
-    """Fetch available companies currently open in TallyPrime."""
+    """Fetch available companies currently open across configured TallyPrime hosts."""
     cfg = await TallySyncService.get_or_create_config(db)
-    is_connected, _, companies = await TallyHttpClient.test_connection(
-        cfg.host, cfg.port, cfg.tally_url, timeout=5.0
-    )
-    if not is_connected:
+    endpoints = TallySyncService.get_configured_endpoints(cfg)
+    probes = await TallyHttpClient.probe_endpoints(endpoints, timeout=5.0)
+    reachable = [p for p in probes if p[3]]
+    if not reachable:
+        tried = ", ".join(TallyHttpClient.get_url(h, p, u) for h, p, u in endpoints)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Cannot reach Tally at {cfg.host}:{cfg.port}. Please ensure TallyPrime is running with port {cfg.port} enabled.",
+            detail=f"Cannot reach Tally at {tried}. Please ensure TallyPrime is running with HTTP port enabled.",
         )
+
+    merged_companies: List[Dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for _, _, _, _, _, ep_companies in reachable:
+        for c in ep_companies:
+            cname = (c.get("name") or "").strip()
+            if cname and cname not in seen_names:
+                seen_names.add(cname)
+                merged_companies.append(c)
 
     return [
         TallyCompanyResponse(
@@ -197,7 +217,7 @@ async def list_companies(
             ending_at=c.get("ending_at"),
             is_active=(c["name"] == cfg.company_name),
         )
-        for c in companies
+        for c in merged_companies
     ]
 
 
@@ -631,14 +651,23 @@ async def trigger_masters_sync(
     db: Annotated[AsyncSession, Depends(get_db)],
     company_name: Optional[str] = Query(None, description="Override company name"),
 ) -> dict:
-    """Sync all stock groups as categories and stock items as products from Tally."""
+    """Manually pull stock groups (categories), stock items (products), shops (ledgers) & stock qty from Tally."""
+    worker = TallyBackgroundWorker.get_instance()
     try:
-        res = await TallySyncService.sync_masters_from_tally(db, company_name=company_name)
+        res = await worker.run_manual_masters_sync(company_name=company_name)
+        shops_total = res.get("shops_created", 0) + res.get("shops_updated", 0)
+        cats_total = res.get("categories_created", 0) + res.get("categories_updated", 0)
+        prods_total = res.get("products_created", 0) + res.get("products_updated", 0)
         return {
             "status": "SUCCESS",
-            "message": f"Synced {res['categories_created'] + res['categories_updated']} categories and {res['products_created'] + res['products_updated']} models from Tally.",
+            "message": f"Pulled {cats_total} categories, {prods_total} items, {shops_total} shops, and updated stock qty for {res.get('tally_stock_synced', 0)} items from Tally.",
             "details": res,
         }
+    except RuntimeError as re_err:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(re_err),
+        )
     except Exception as ex:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

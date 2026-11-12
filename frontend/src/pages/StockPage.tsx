@@ -36,6 +36,9 @@ export const StockPage: React.FC = () => {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
   const [loading, setLoading] = useState(true);
+  const [pullingTally, setPullingTally] = useState(false);
+  const [tallyNotice, setTallyNotice] = useState<string | null>(null);
+  const [tallyError, setTallyError] = useState<string | null>(null);
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -435,6 +438,23 @@ export const StockPage: React.FC = () => {
     }
   };
 
+  const handlePullTallyMasters = async () => {
+    setPullingTally(true);
+    setTallyError(null);
+    try {
+      const res = await apiRequest<{ status: string; message: string }>("/tally/sync-masters", {
+        method: "POST",
+      });
+      await fetchStock();
+      setTallyNotice(res.message || "Pulled items and categories from Tally.");
+      setTimeout(() => setTallyNotice(null), 5000);
+    } catch (err) {
+      setTallyError(err instanceof Error ? err.message : "Failed to pull items from Tally.");
+    } finally {
+      setPullingTally(false);
+    }
+  };
+
   useEffect(() => {
     fetchStock();
   }, []);
@@ -724,7 +744,44 @@ export const StockPage: React.FC = () => {
             Real-time stock counts by model • Pre-go-live and tracked serials
           </p>
         </div>
+
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handlePullTallyMasters}
+            disabled={pullingTally}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white text-slate-700 border border-slate-200 text-xs font-semibold hover:bg-slate-50 shadow-xs transition-all cursor-pointer self-start sm:self-auto disabled:opacity-50"
+            title="Pull stock groups (categories), stock items, and quantities from Tally"
+          >
+            <RotateCcw size={14} className={pullingTally ? "animate-spin text-[#3C3489]" : "text-[#3C3489]"} />
+            <span>{pullingTally ? "Pulling from Tally..." : "Pull Tally Items"}</span>
+          </button>
+        )}
       </div>
+
+      {tallyNotice && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+            {tallyNotice}
+          </span>
+          <button type="button" onClick={() => setTallyNotice(null)} className="text-emerald-600 hover:text-emerald-800">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {tallyError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <AlertCircle size={16} className="text-rose-600 shrink-0" />
+            {tallyError}
+          </span>
+          <button type="button" onClick={() => setTallyError(null)} className="text-rose-600 hover:text-rose-800">
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       {/* Filter Tabs & Search */}
       <div className="space-y-3">

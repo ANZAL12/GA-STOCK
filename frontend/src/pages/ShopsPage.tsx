@@ -28,6 +28,9 @@ export const ShopsPage: React.FC = () => {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
   const [cleaningUp, setCleaningUp] = useState(false);
+  const [pullingTallyShops, setPullingTallyShops] = useState(false);
+  const [tallyNotice, setTallyNotice] = useState<string | null>(null);
+  const [tallyError, setTallyError] = useState<string | null>(null);
 
   // Shop Edit Modal (for existing shops)
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
@@ -60,6 +63,23 @@ export const ShopsPage: React.FC = () => {
       setShops(data);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handlePullTallyShops = async () => {
+    setPullingTallyShops(true);
+    setTallyError(null);
+    try {
+      const res = await apiRequest<{ status: string; message: string }>("/tally/sync-masters", {
+        method: "POST",
+      });
+      await fetchShops();
+      setTallyNotice(res.message || "Pulled shops from Tally.");
+      setTimeout(() => setTallyNotice(null), 5000);
+    } catch (err) {
+      setTallyError(err instanceof Error ? err.message : "Failed to pull shops from Tally.");
+    } finally {
+      setPullingTallyShops(false);
     }
   };
 
@@ -251,6 +271,18 @@ export const ShopsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={handlePullTallyShops}
+              disabled={pullingTallyShops}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white text-slate-700 border border-slate-200 text-xs font-semibold hover:bg-slate-50 shadow-xs transition-all cursor-pointer disabled:opacity-50"
+              title="Pull Sundry Debtor shops and GSTINs from Tally"
+            >
+              <RotateCcw size={14} className={pullingTallyShops ? "animate-spin text-[#3C3489]" : "text-[#3C3489]"} />
+              <span>{pullingTallyShops ? "Pulling Shops..." : "Pull Tally Shops"}</span>
+            </button>
+          )}
           {isAdmin && unusedDeactivatedCount > 0 && (
             <button
               onClick={handleCleanupUnused}
@@ -264,6 +296,27 @@ export const ShopsPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {tallyNotice && (
+        <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2">
+          <span>{tallyNotice}</span>
+          <button type="button" onClick={() => setTallyNotice(null)} className="text-emerald-700 hover:text-emerald-900">
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {tallyError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <AlertCircle size={16} className="text-rose-600 shrink-0" />
+            {tallyError}
+          </span>
+          <button type="button" onClick={() => setTallyError(null)} className="text-rose-700 hover:text-rose-900">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Filter Tabs & Search */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">

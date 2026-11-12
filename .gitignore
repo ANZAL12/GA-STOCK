@@ -103,3 +103,4 @@ logs/
 temp/
 tmp/
 *.tmp
+.tally_alter_cache.json

@@ -13,6 +13,7 @@ import { UsersPage } from "./pages/UsersPage";
 import { DevicesPage } from "./pages/DevicesPage";
 import { ImportSerialsPage } from "./pages/ImportSerialsPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { BackupPage } from "./pages/BackupPage";
 
 export const App: React.FC = () => {
   return (
@@ -37,6 +38,7 @@ export const App: React.FC = () => {
             <Route path="/users" element={<UsersPage />} />
             <Route path="/devices" element={<DevicesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/backup" element={<BackupPage />} />
           </Route>
 
           {/* Fallback */}
