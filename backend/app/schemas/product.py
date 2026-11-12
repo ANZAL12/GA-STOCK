@@ -59,6 +59,10 @@ class ProductResponse(BaseModel):
     current_stock_qty: int
     has_had_inward: bool
     is_active: bool
+    tally_guid: Optional[str] = None
+    tally_part_number: Optional[str] = None
+    tally_stock_qty: Optional[int] = None
+    source: str = "TALLY"
     created_at: datetime
     updated_at: datetime
 

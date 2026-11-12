@@ -1,13 +1,34 @@
 from datetime import date, datetime
 import uuid
-from typing import Optional
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _safe_uuid(v: Any) -> Optional[uuid.UUID]:
+    if not v:
+        return None
+    if isinstance(v, uuid.UUID):
+        return v
+    try:
+        return uuid.UUID(str(v).strip())
+    except Exception:
+        return None
 
 
 class OutwardCheckSerialRequest(BaseModel):
-    product_id: Optional[uuid.UUID] = None
-    shop_id: Optional[uuid.UUID] = None
+    product_id: Optional[Union[uuid.UUID, str]] = None
+    shop_id: Optional[Union[uuid.UUID, str]] = None
     serial_number: str = Field(..., min_length=1, max_length=100)
+
+    @field_validator("product_id", mode="before")
+    @classmethod
+    def validate_product_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
+
+    @field_validator("shop_id", mode="before")
+    @classmethod
+    def validate_shop_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
 
 
 class OutwardCheckSerialResponse(BaseModel):
@@ -33,18 +54,19 @@ class OutwardCheckSerialResponse(BaseModel):
 
 
 class OutwardCheckRefRequest(BaseModel):
-    shop_id: uuid.UUID
+    shop_id: Optional[Union[uuid.UUID, str]] = None
     delivery_reference: str
     transaction_date: date = Field(default_factory=date.today)
+
+    @field_validator("shop_id", mode="before")
+    @classmethod
+    def validate_shop_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
 
 
 class OutwardCheckRefResponse(BaseModel):
     has_warning: bool
     message: Optional[str] = None
-
-
-from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class OutwardSerialInput(BaseModel):
@@ -54,14 +76,30 @@ class OutwardSerialInput(BaseModel):
 
 
 class OutwardBatchCreate(BaseModel):
-    product_id: uuid.UUID
-    shop_id: uuid.UUID
+    product_id: Optional[Union[uuid.UUID, str]] = None
+    shop_id: Optional[Union[uuid.UUID, str]] = None
     bill_number: Optional[str] = Field(None, max_length=100)
     delivery_reference: Optional[str] = Field(None, max_length=100)
     transaction_date: date = Field(default_factory=date.today)
     serials: list[OutwardSerialInput] = Field(default_factory=list, description="List of scanned serials with confirmation flags")
     unit_types: Optional[dict[str, str]] = Field(default=None, description="Optional mapping of serial to unit_type")
     remarks: Optional[str] = None
+    tally_voucher_id: Optional[Union[uuid.UUID, str]] = None
+
+    @field_validator("product_id", mode="before")
+    @classmethod
+    def validate_product_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
+
+    @field_validator("shop_id", mode="before")
+    @classmethod
+    def validate_shop_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
+
+    @field_validator("tally_voucher_id", mode="before")
+    @classmethod
+    def validate_tally_voucher_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -80,9 +118,17 @@ class OutwardBatchCreate(BaseModel):
 
 
 class OutwardProductBatchItem(BaseModel):
-    product_id: uuid.UUID
+    product_id: Optional[Union[uuid.UUID, str]] = None
+    product_name: Optional[str] = None
+    product_model: Optional[str] = None
+    product_brand: Optional[str] = None
     serials: list[OutwardSerialInput] = Field(default_factory=list, description="List of scanned serials with confirmation flags")
     unit_types: Optional[dict[str, str]] = Field(default=None, description="Optional mapping of serial to unit_type")
+
+    @field_validator("product_id", mode="before")
+    @classmethod
+    def validate_product_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -101,13 +147,25 @@ class OutwardProductBatchItem(BaseModel):
 
 
 class OutwardMultiBatchCreate(BaseModel):
-    shop_id: uuid.UUID
+    shop_id: Optional[Union[uuid.UUID, str]] = None
+    shop_name: Optional[str] = None
     bill_number: Optional[str] = Field(None, max_length=100)
     delivery_reference: Optional[str] = Field(None, max_length=100)
     transaction_date: date = Field(default_factory=date.today)
     remarks: Optional[str] = None
     items: list[OutwardProductBatchItem] = Field(..., min_length=1)
     client_request_id: Optional[str] = Field(None, max_length=100)
+    tally_voucher_id: Optional[Union[uuid.UUID, str]] = None
+
+    @field_validator("shop_id", mode="before")
+    @classmethod
+    def validate_shop_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
+
+    @field_validator("tally_voucher_id", mode="before")
+    @classmethod
+    def validate_tally_voucher_id(cls, v: Any) -> Optional[uuid.UUID]:
+        return _safe_uuid(v)
 
 
 class OutwardLineResponse(BaseModel):
@@ -182,6 +240,16 @@ class BillDetailResponse(BaseModel):
     shop_id: uuid.UUID
     shop_name: str
     shop_city: Optional[str] = None
+    shop_gstin: Optional[str] = None
+    shop_address: Optional[str] = None
+    shop_state: Optional[str] = None
+    shop_pincode: Optional[str] = None
+    shop_phone: Optional[str] = None
+    shop_contact_person: Optional[str] = None
+    vehicle_number: Optional[str] = None
+    transporter_name: Optional[str] = None
+    delivery_note: Optional[str] = None
+    destination: Optional[str] = None
     transaction_date: date
     created_at: datetime
     dispatched_by_name: str
@@ -201,6 +269,14 @@ class BillListItem(BaseModel):
     shop_id: uuid.UUID
     shop_name: str
     shop_city: Optional[str] = None
+    shop_gstin: Optional[str] = None
+    shop_address: Optional[str] = None
+    shop_state: Optional[str] = None
+    shop_phone: Optional[str] = None
+    vehicle_number: Optional[str] = None
+    transporter_name: Optional[str] = None
+    delivery_note: Optional[str] = None
+    destination: Optional[str] = None
     transaction_date: date
     created_at: datetime
     dispatched_by_name: str

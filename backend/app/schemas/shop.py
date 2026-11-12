@@ -7,13 +7,25 @@ from pydantic import BaseModel, ConfigDict, Field
 class ShopCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     city: Optional[str] = Field(None, max_length=100)
-    phone: Optional[str] = Field(None, max_length=30)
+    phone: Optional[str] = Field(None, max_length=50)
+    gstin: Optional[str] = Field(None, max_length=50)
+    address: Optional[str] = Field(None, max_length=500)
+    state: Optional[str] = Field(None, max_length=100)
+    pincode: Optional[str] = Field(None, max_length=20)
+    contact_person: Optional[str] = Field(None, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
 
 
 class ShopUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     city: Optional[str] = Field(None, max_length=100)
-    phone: Optional[str] = Field(None, max_length=30)
+    phone: Optional[str] = Field(None, max_length=50)
+    gstin: Optional[str] = Field(None, max_length=50)
+    address: Optional[str] = Field(None, max_length=500)
+    state: Optional[str] = Field(None, max_length=100)
+    pincode: Optional[str] = Field(None, max_length=20)
+    contact_person: Optional[str] = Field(None, max_length=100)
+    email: Optional[str] = Field(None, max_length=100)
     is_active: Optional[bool] = None
 
 
@@ -24,6 +36,14 @@ class ShopResponse(BaseModel):
     name: str
     city: Optional[str] = None
     phone: Optional[str] = None
+    gstin: Optional[str] = None
+    address: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    contact_person: Optional[str] = None
+    email: Optional[str] = None
+    tally_guid: Optional[str] = None
+    source: str = "TALLY"
     is_active: bool
     created_at: datetime
     updated_at: datetime

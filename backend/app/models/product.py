@@ -48,7 +48,11 @@ class Product(Base, PrimaryKeyMixin, TimestampMixin):
     current_stock_qty: Mapped[int]  = mapped_column(Integer, nullable=False, default=0)
     has_had_inward:    Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_active:         Mapped[bool]          = mapped_column(Boolean, nullable=False, default=True)
+    tally_guid:        Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    tally_part_number: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    tally_stock_qty:   Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
+    source:            Mapped[str]           = mapped_column(String(50), nullable=False, default="TALLY")
 
     def __repr__(self) -> str:
         return f"<Product {self.name!r}>"

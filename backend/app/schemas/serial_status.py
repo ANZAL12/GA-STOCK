@@ -114,6 +114,7 @@ class ExcelSerialImportItem(BaseModel):
     model_name: Optional[str] = None
     unit_type: Optional[str] = None
     row_index: Optional[int] = None
+    status: Optional[str] = None
 
 
 class ExcelSerialImportRequest(BaseModel):
@@ -123,6 +124,7 @@ class ExcelSerialImportRequest(BaseModel):
     inward_reference: Optional[str] = None
     remarks: Optional[str] = None
     skip_existing: bool = True
+    target_status: Optional[str] = "available"
 
 
 class ExcelSerialImportResponse(BaseModel):

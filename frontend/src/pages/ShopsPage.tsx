@@ -2,23 +2,24 @@ import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
-import type { Shop, ShopDispatchedSerial, ShopExcelColumnsResponse, ShopExcelImportResponse } from "../types";
+import type { Shop, ShopDispatchedSerial } from "../types";
 import { Badge } from "../components/Badge";
 import { Modal } from "../components/Modal";
 import { 
-  Plus, 
   Search, 
   MapPin, 
   Phone, 
   Edit2, 
   Archive, 
-  Trash2,
-  RotateCcw,
-  AlertCircle,
-  ChevronRight,
-  Sparkles,
-  FileSpreadsheet,
-  CheckCircle2
+  Trash2, 
+  RotateCcw, 
+  AlertCircle, 
+  ChevronRight, 
+  Sparkles, 
+  Copy, 
+  Check, 
+  Mail, 
+  User as UserIcon
 } from "lucide-react";
 
 export const ShopsPage: React.FC = () => {
@@ -28,28 +29,30 @@ export const ShopsPage: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
   const [cleaningUp, setCleaningUp] = useState(false);
 
-  // Shop Add / Edit Modal
+  // Shop Edit Modal (for existing shops)
   const [isShopModalOpen, setIsShopModalOpen] = useState(false);
   const [editingShop, setEditingShop] = useState<Shop | null>(null);
-  const [shopForm, setShopForm] = useState({ name: "", is_active: true });
+  const [shopForm, setShopForm] = useState({
+    name: "",
+    city: "",
+    phone: "",
+    gstin: "",
+    address: "",
+    state: "",
+    pincode: "",
+    contact_person: "",
+    email: "",
+    is_active: true,
+  });
   const [shopFormError, setShopFormError] = useState<string | null>(null);
   const [shopSubmitting, setShopSubmitting] = useState(false);
 
-  // Dispatched Serials Drawer / Modal
+  // Complete Shop Details & Dispatched Serials Modal
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
   const [dispatchedSerials, setDispatchedSerials] = useState<ShopDispatchedSerial[]>([]);
   const [serialsLoading, setSerialsLoading] = useState(false);
-
-  // Excel Import Modal State
-  const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
-  const [excelFile, setExcelFile] = useState<File | null>(null);
-  const [excelPreview, setExcelPreview] = useState<ShopExcelColumnsResponse | null>(null);
-  const [selectedColumn, setSelectedColumn] = useState("");
-  const [customColumn, setCustomColumn] = useState("");
-  const [isAnalyzingExcel, setIsAnalyzingExcel] = useState(false);
-  const [isImportingExcel, setIsImportingExcel] = useState(false);
-  const [excelError, setExcelError] = useState<string | null>(null);
-  const [excelResult, setExcelResult] = useState<ShopExcelImportResponse | null>(null);
+  const [copiedGstin, setCopiedGstin] = useState(false);
+  const [copiedPhone, setCopiedPhone] = useState(false);
 
   const fetchShops = async () => {
     try {
@@ -70,125 +73,57 @@ export const ShopsPage: React.FC = () => {
     }
   });
 
-  const openAddShop = () => {
-    setEditingShop(null);
-    setShopForm({ name: "", is_active: true });
-    setShopFormError(null);
-    setIsShopModalOpen(true);
-  };
-
   const openEditShop = (s: Shop, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingShop(s);
-    setShopForm({ name: s.name, is_active: s.is_active });
+    setShopForm({
+      name: s.name,
+      city: s.city || "",
+      phone: s.phone || "",
+      gstin: s.gstin || "",
+      address: s.address || "",
+      state: s.state || "",
+      pincode: s.pincode || "",
+      contact_person: s.contact_person || "",
+      email: s.email || "",
+      is_active: s.is_active,
+    });
     setShopFormError(null);
     setIsShopModalOpen(true);
   };
 
   const handleShopSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!editingShop) return;
     setShopSubmitting(true);
     setShopFormError(null);
 
     try {
-      if (editingShop) {
-        const updated = await apiRequest<Shop>(`/shops/${editingShop.id}`, {
-          method: "PUT",
-          body: JSON.stringify({
-            name: shopForm.name.trim(),
-            is_active: shopForm.is_active,
-          }),
-        });
-        setShops((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-      } else {
-        const created = await apiRequest<Shop>("/shops", {
-          method: "POST",
-          body: JSON.stringify({
-            name: shopForm.name.trim(),
-          }),
-        });
-        setShops((prev) => [created, ...prev.filter((s) => s.id !== created.id)]);
+      const updated = await apiRequest<Shop>(`/shops/${editingShop.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: shopForm.name.trim(),
+          city: shopForm.city.trim() || null,
+          phone: shopForm.phone.trim() || null,
+          gstin: shopForm.gstin.trim() || null,
+          address: shopForm.address.trim() || null,
+          state: shopForm.state.trim() || null,
+          pincode: shopForm.pincode.trim() || null,
+          contact_person: shopForm.contact_person.trim() || null,
+          email: shopForm.email.trim() || null,
+          is_active: shopForm.is_active,
+        }),
+      });
+      setShops((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+      if (selectedShop && selectedShop.id === updated.id) {
+        setSelectedShop(updated);
       }
       setIsShopModalOpen(false);
       await fetchShops();
     } catch (err: any) {
-      setShopFormError(err.message || "Failed to save shop.");
+      setShopFormError(err.message || "Failed to save shop details.");
     } finally {
       setShopSubmitting(false);
-    }
-  };
-
-  // Excel Import Handlers
-  const openExcelImport = () => {
-    setExcelFile(null);
-    setExcelPreview(null);
-    setSelectedColumn("");
-    setCustomColumn("");
-    setExcelError(null);
-    setExcelResult(null);
-    setIsExcelModalOpen(true);
-  };
-
-  const handleExcelFileSelect = async (file: File) => {
-    setExcelFile(file);
-    setExcelError(null);
-    setExcelResult(null);
-    setExcelPreview(null);
-    setSelectedColumn("");
-    setCustomColumn("");
-    setIsAnalyzingExcel(true);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await apiRequest<ShopExcelColumnsResponse>("/shops/import-excel/preview", {
-        method: "POST",
-        body: formData,
-      });
-      setExcelPreview(res);
-      if (res.suggested_column) {
-        setSelectedColumn(res.suggested_column);
-      } else if (res.columns.length > 0) {
-        setSelectedColumn(res.columns[0]);
-      }
-    } catch (err: any) {
-      setExcelError(err.message || "Failed to analyze Excel file.");
-    } finally {
-      setIsAnalyzingExcel(false);
-    }
-  };
-
-  const handleExcelImportSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!excelFile) {
-      setExcelError("Please select an Excel or CSV file.");
-      return;
-    }
-    const columnToUse = (customColumn.trim() || selectedColumn).trim();
-    if (!columnToUse) {
-      setExcelError("Please select or specify the column name containing the shops.");
-      return;
-    }
-
-    setIsImportingExcel(true);
-    setExcelError(null);
-    setExcelResult(null);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", excelFile);
-      formData.append("column_name", columnToUse);
-
-      const res = await apiRequest<ShopExcelImportResponse>("/shops/import-excel", {
-        method: "POST",
-        body: formData,
-      });
-      setExcelResult(res);
-      await fetchShops();
-    } catch (err: any) {
-      setExcelError(err.message || "Failed to import shops from file.");
-    } finally {
-      setIsImportingExcel(false);
     }
   };
 
@@ -254,9 +189,11 @@ export const ShopsPage: React.FC = () => {
     }
   };
 
-  const openDispatchedSerials = async (s: Shop) => {
+  const openShopDetails = async (s: Shop) => {
     setSelectedShop(s);
     setSerialsLoading(true);
+    setCopiedGstin(false);
+    setCopiedPhone(false);
     try {
       const serials = await apiRequest<ShopDispatchedSerial[]>(`/shops/${s.id}/dispatched-serials`);
       setDispatchedSerials(serials);
@@ -267,17 +204,33 @@ export const ShopsPage: React.FC = () => {
     }
   };
 
+  const copyToClipboard = (text: string, type: "gstin" | "phone") => {
+    navigator.clipboard.writeText(text);
+    if (type === "gstin") {
+      setCopiedGstin(true);
+      setTimeout(() => setCopiedGstin(false), 2000);
+    } else {
+      setCopiedPhone(true);
+      setTimeout(() => setCopiedPhone(false), 2000);
+    }
+  };
+
   const filtered = shops
     .filter((s) => {
       if (filterStatus === "active") return s.is_active;
       if (filterStatus === "deactivated") return !s.is_active;
       return true;
     })
-    .filter(
-      (s) =>
-        s.name.toLowerCase().includes(search.toLowerCase()) ||
-        (s.city ? s.city.toLowerCase().includes(search.toLowerCase()) : false)
-    );
+    .filter((s) => {
+      const q = search.toLowerCase();
+      return (
+        s.name.toLowerCase().includes(q) ||
+        (s.city && s.city.toLowerCase().includes(q)) ||
+        (s.gstin && s.gstin.toLowerCase().includes(q)) ||
+        (s.address && s.address.toLowerCase().includes(q)) ||
+        (s.phone && s.phone.toLowerCase().includes(q))
+      );
+    });
 
   const activeCount = shops.filter((s) => s.is_active).length;
   const deactivatedCount = shops.filter((s) => !s.is_active).length;
@@ -293,7 +246,7 @@ export const ShopsPage: React.FC = () => {
             Destination Shops
           </h1>
           <p className="text-xs text-slate-500 font-medium mt-0.5">
-            Registered retail shops for outward stock dispatch • Real-time status & delivery logs
+            Registered retail shops & dispatch locations • Complete customer profile & delivery logs
           </p>
         </div>
 
@@ -309,27 +262,6 @@ export const ShopsPage: React.FC = () => {
               <span>{cleaningUp ? "Cleaning..." : `Clean ${unusedDeactivatedCount} Test Shop${unusedDeactivatedCount > 1 ? "s" : ""}`}</span>
             </button>
           )}
-
-          {isAdmin && (
-            <>
-              <button
-                onClick={openExcelImport}
-                className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold hover:bg-slate-50 hover:border-slate-300 shadow-sm transition-all cursor-pointer"
-                title="Import shops from an Excel or CSV file"
-              >
-                <FileSpreadsheet size={16} className="text-emerald-600" />
-                <span>Import from Excel</span>
-              </button>
-
-              <button
-                onClick={openAddShop}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-sm shadow-[#3C3489]/25 transition-all cursor-pointer"
-              >
-                <Plus size={16} />
-                <span>Add Destination Shop</span>
-              </button>
-            </>
-          )}
         </div>
       </div>
 
@@ -341,7 +273,7 @@ export const ShopsPage: React.FC = () => {
             onClick={() => setFilterStatus("all")}
             className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
               filterStatus === "all"
-                ? "bg-white text-slate-900 font-semibold shadow-sm"
+                ? "bg-white text-slate-900 font-semibold shadow-xs"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
@@ -351,7 +283,7 @@ export const ShopsPage: React.FC = () => {
             onClick={() => setFilterStatus("active")}
             className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
               filterStatus === "active"
-                ? "bg-white text-emerald-700 font-semibold shadow-sm"
+                ? "bg-white text-emerald-700 font-semibold shadow-xs"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
@@ -362,7 +294,7 @@ export const ShopsPage: React.FC = () => {
             onClick={() => setFilterStatus("deactivated")}
             className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
               filterStatus === "deactivated"
-                ? "bg-white text-rose-700 font-semibold shadow-sm"
+                ? "bg-white text-rose-700 font-semibold shadow-xs"
                 : "text-slate-600 hover:text-slate-900"
             }`}
           >
@@ -378,56 +310,94 @@ export const ShopsPage: React.FC = () => {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by shop name..."
+            placeholder="Search by name, GSTIN, city..."
             className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] text-slate-800 placeholder-slate-400"
           />
         </div>
       </div>
 
-      {/* Shops Grid */}
+      {/* Shops Grid with Complete Details on Each Card */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {filtered.map((shop) => (
           <div
             key={shop.id}
-            onClick={() => openDispatchedSerials(shop)}
-            className={`bg-white border rounded-2xl p-5 shadow-sm space-y-4 cursor-pointer transition-all hover:shadow-md flex flex-col justify-between group ${
-              shop.is_active ? "border-slate-200 hover:border-slate-300" : "border-slate-200/80 bg-slate-50/50 opacity-90"
+            onClick={() => openShopDetails(shop)}
+            className={`bg-white border rounded-2xl p-5 shadow-xs space-y-4 cursor-pointer transition-all hover:shadow-md flex flex-col justify-between group ${
+              shop.is_active ? "border-slate-200/90 hover:border-indigo-400/80" : "border-slate-200/80 bg-slate-50/50 opacity-90"
             }`}
           >
-            <div className="space-y-2">
-              <div className="flex items-start justify-between gap-3">
-                {shop.city ? (
-                  <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                    <MapPin size={11} className="text-slate-400" />
-                    {shop.city}
-                  </span>
-                ) : <span />}
+            <div className="space-y-3">
+              {/* Card Header: Location & Status */}
+              <div className="flex items-start justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {shop.city && (
+                    <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                      <MapPin size={11} className="text-slate-400" />
+                      {shop.city}
+                    </span>
+                  )}
+                  {shop.state && shop.state !== shop.city && (
+                    <span className="text-[10px] font-medium text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full">
+                      {shop.state}
+                    </span>
+                  )}
+                </div>
 
                 {shop.is_active ? (
-                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                     Active
                   </span>
                 ) : (
-                  <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
+                  <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-0.5 rounded-full">
                     Deactivated
                   </span>
                 )}
               </div>
 
+              {/* Shop Name & GSTIN */}
               <div>
-                <h3 className="font-bold text-base text-slate-900 tracking-tight group-hover:text-[#3C3489] transition-colors">
+                <h3 className="font-bold text-base text-slate-900 tracking-tight group-hover:text-[#3C3489] transition-colors leading-snug">
                   {shop.name}
                 </h3>
+                {shop.gstin ? (
+                  <div className="mt-1.5 inline-flex items-center gap-1.5 bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 rounded-md">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 font-mono">
+                      GSTIN: {shop.gstin}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Complete Delivery Address */}
+              {shop.address && (
+                <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed flex items-start gap-1.5 pt-0.5">
+                  <MapPin size={13} className="text-slate-400 shrink-0 mt-0.5" />
+                  <span>
+                    {shop.address}
+                    {shop.pincode ? ` - ${shop.pincode}` : ""}
+                  </span>
+                </p>
+              )}
+
+              {/* Phone & Contact Person */}
+              <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap pt-0.5">
                 {shop.phone && (
-                  <p className="text-xs text-slate-400 flex items-center gap-1 mt-1">
-                    <Phone size={12} />
+                  <span className="flex items-center gap-1 font-medium text-slate-700">
+                    <Phone size={12} className="text-emerald-600" />
                     {shop.phone}
-                  </p>
+                  </span>
+                )}
+                {shop.contact_person && (
+                  <span className="text-slate-500 text-[11px] flex items-center gap-1">
+                    <UserIcon size={11} className="text-slate-400" />
+                    <span>{shop.contact_person}</span>
+                  </span>
                 )}
               </div>
             </div>
 
+            {/* Bottom Bar: Dispatched Counts & Actions */}
             <div className="border-t border-slate-100 pt-3 flex items-center justify-between">
               <div>
                 <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
@@ -441,7 +411,6 @@ export const ShopsPage: React.FC = () => {
               <div className="flex items-center gap-1">
                 {isAdmin && (
                   <>
-                    {/* Edit */}
                     <button
                       onClick={(e) => openEditShop(shop, e)}
                       className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
@@ -449,13 +418,11 @@ export const ShopsPage: React.FC = () => {
                     >
                       <Edit2 size={14} />
                     </button>
-
-                    {/* Toggle Active / Deactivate */}
                     {shop.is_active ? (
                       <button
                         onClick={(e) => handleToggleActive(shop, e)}
                         className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
-                        title="Deactivate Shop (hide from scanner)"
+                        title="Deactivate Shop"
                       >
                         <Archive size={14} />
                       </button>
@@ -468,8 +435,6 @@ export const ShopsPage: React.FC = () => {
                         <RotateCcw size={14} />
                       </button>
                     )}
-
-                    {/* Permanent Delete */}
                     <button
                       onClick={(e) => handleDelete(shop, e)}
                       className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
@@ -489,61 +454,195 @@ export const ShopsPage: React.FC = () => {
 
         {filtered.length === 0 && (
           <div className="col-span-full py-12 text-center text-xs text-slate-400 bg-white border border-slate-200 rounded-2xl">
-            No shops found matching your filter or search query.
+            No shops found matching your search.
           </div>
         )}
       </div>
 
-      {/* Dispatched Serials Drawer / Modal (§11) */}
+      {/* Complete Shop Details & Dispatched Serials Modal */}
       <Modal
         isOpen={Boolean(selectedShop)}
         onClose={() => setSelectedShop(null)}
-        title={selectedShop ? `Dispatched Serials • ${selectedShop.name}` : ""}
-        subtitle={selectedShop ? `${selectedShop.city} • ${dispatchedSerials.length} total units dispatched` : ""}
+        title={selectedShop ? selectedShop.name : "Shop Details"}
+        subtitle="Complete Shop Profile & Dispatch History"
         maxWidth="2xl"
       >
-        {serialsLoading ? (
-          <div className="py-12 text-center text-xs text-slate-400">
-            <div className="w-6 h-6 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-            Loading dispatched history...
-          </div>
-        ) : dispatchedSerials.length === 0 ? (
-          <div className="py-10 text-center text-xs text-slate-400">
-            No serials have been dispatched to this shop yet.
-          </div>
-        ) : (
-          <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-2">
-            <div className="divide-y divide-slate-100">
-              {dispatchedSerials.map((s, idx) => (
-                <div key={idx} className="py-3 flex items-start justify-between gap-4 text-xs">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-slate-900">{s.serial_text}</span>
-                      <Badge label={s.status_label} />
-                    </div>
-                    <p className="font-medium text-slate-700 mt-0.5">{s.product_name}</p>
-                    <p className="text-[11px] text-slate-400">{s.brand} • {s.model}</p>
-                  </div>
-
-                  <div className="text-right shrink-0 text-slate-400">
-                    <div>{new Date(s.transaction_date).toLocaleDateString("en-IN", { month: "short", day: "numeric", year: "numeric" })}</div>
-                    {s.delivery_reference && (
-                      <div className="text-[11px] text-slate-500 font-mono mt-0.5">Ref: {s.delivery_reference}</div>
+        {selectedShop && (
+          <div className="space-y-5">
+            {/* Complete Shop Details Card */}
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4.5 space-y-3.5">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <h4 className="font-bold text-lg text-slate-900 leading-tight">
+                    {selectedShop.name}
+                  </h4>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    {selectedShop.city && (
+                      <span className="text-xs font-semibold text-slate-600 bg-white border border-slate-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                        <MapPin size={11} className="text-slate-400" />
+                        {selectedShop.city}
+                      </span>
+                    )}
+                    {selectedShop.is_active ? (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-full">
+                        Active
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-rose-700 bg-rose-100/80 px-2 py-0.5 rounded-full">
+                        Deactivated
+                      </span>
                     )}
                   </div>
                 </div>
-              ))}
+
+                {selectedShop.gstin && (
+                  <div className="flex items-center gap-2 bg-white border border-indigo-200 px-3 py-1.5 rounded-xl shadow-2xs">
+                    <div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400 block leading-none">
+                        GSTIN
+                      </span>
+                      <span className="text-xs font-mono font-bold text-indigo-700">
+                        {selectedShop.gstin}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(selectedShop.gstin || "", "gstin")}
+                      className="p-1 rounded text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer"
+                      title="Copy GSTIN"
+                    >
+                      {copiedGstin ? <Check size={14} className="text-emerald-600" /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Grid of Profile Details */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs pt-2 border-t border-slate-200/70">
+                {/* Full Address */}
+                <div className="space-y-1">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                    Delivery Address
+                  </span>
+                  <p className="text-slate-800 font-medium leading-relaxed">
+                    {selectedShop.address || selectedShop.city || "No detailed address recorded"}
+                  </p>
+                  {(selectedShop.state || selectedShop.pincode) && (
+                    <p className="text-slate-500">
+                      {[selectedShop.state, selectedShop.pincode ? `PIN: ${selectedShop.pincode}` : null].filter(Boolean).join(" • ")}
+                    </p>
+                  )}
+                </div>
+
+                {/* Contact & Phone */}
+                <div className="space-y-1.5">
+                  <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                    Contact Information
+                  </span>
+                  {selectedShop.phone ? (
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-slate-900 flex items-center gap-1.5">
+                        <Phone size={13} className="text-emerald-600" />
+                        <a href={`tel:${selectedShop.phone}`} className="hover:underline text-slate-900">
+                          {selectedShop.phone}
+                        </a>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(selectedShop.phone || "", "phone")}
+                        className="p-0.5 text-slate-400 hover:text-slate-700 cursor-pointer"
+                        title="Copy phone"
+                      >
+                        {copiedPhone ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-slate-400 italic">No phone recorded</p>
+                  )}
+
+                  {selectedShop.contact_person && (
+                    <p className="text-slate-600 flex items-center gap-1.5">
+                      <UserIcon size={12} className="text-slate-400" />
+                      <span>Contact: <strong className="text-slate-800">{selectedShop.contact_person}</strong></span>
+                    </p>
+                  )}
+
+                  {selectedShop.email && (
+                    <p className="text-slate-600 flex items-center gap-1.5">
+                      <Mail size={12} className="text-slate-400" />
+                      <a href={`mailto:${selectedShop.email}`} className="text-indigo-600 hover:underline">
+                        {selectedShop.email}
+                      </a>
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Dispatched History Section */}
+            <div>
+              <div className="flex items-center justify-between pb-2.5 border-b border-slate-100">
+                <h5 className="font-bold text-xs uppercase tracking-wider text-slate-700">
+                  Dispatched Serials History ({dispatchedSerials.length})
+                </h5>
+                <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full">
+                  Total Dispatched: {selectedShop.total_dispatched_count} units
+                </span>
+              </div>
+
+              {serialsLoading ? (
+                <div className="py-12 text-center text-xs text-slate-400">
+                  <div className="w-6 h-6 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                  Loading dispatched history...
+                </div>
+              ) : dispatchedSerials.length === 0 ? (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  No serials have been dispatched to this shop yet.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[50vh] overflow-y-auto pr-1 mt-2">
+                  <div className="divide-y divide-slate-100">
+                    {dispatchedSerials.map((s, idx) => (
+                      <div key={idx} className="py-3 flex items-start justify-between gap-4 text-xs">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-slate-900">{s.serial_text}</span>
+                            <Badge label={s.is_matched ? "VERIFIED" : "DISPATCHED"} />
+                          </div>
+                          <p className="font-medium text-slate-700 mt-0.5">{s.product_name}</p>
+                          <p className="text-[11px] text-slate-400">{s.brand} • {s.model}</p>
+                        </div>
+
+                        <div className="text-right shrink-0 text-slate-400">
+                          <div>
+                            {new Date(s.transaction_date).toLocaleDateString("en-IN", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            })}
+                          </div>
+                          {s.delivery_reference && (
+                            <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                              Ref: {s.delivery_reference}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
       </Modal>
 
-      {/* Shop Add / Edit Modal */}
+      {/* Shop Edit Modal (for existing shops) */}
       <Modal
         isOpen={isShopModalOpen}
         onClose={() => setIsShopModalOpen(false)}
-        title={editingShop ? "Edit Destination Shop" : "Add Destination Shop"}
-        subtitle="Manage dispatch locations"
+        title="Edit Destination Shop"
+        subtitle="Manage dispatch location details"
         maxWidth="md"
       >
         {shopFormError && (
@@ -563,31 +662,103 @@ export const ShopsPage: React.FC = () => {
               required
               value={shopForm.name}
               onChange={(e) => setShopForm({ ...shopForm, name: e.target.value })}
-              placeholder="e.g. Sree Electronics"
               className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
             />
           </div>
 
-          {editingShop && (
-            <div className="pt-2">
-              <label className="flex items-center gap-2.5 cursor-pointer p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={shopForm.is_active}
-                  onChange={(e) => setShopForm({ ...shopForm, is_active: e.target.checked })}
-                  className="rounded text-[#3C3489] focus:ring-[#3C3489] h-4 w-4 cursor-pointer"
-                />
-                <div>
-                  <span className="text-xs font-semibold text-slate-800 block">
-                    Shop is Active
-                  </span>
-                  <span className="text-[11px] text-slate-500 block">
-                    Active shops appear on mobile scanners for outward dispatches.
-                  </span>
-                </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                GSTIN
               </label>
+              <input
+                type="text"
+                value={shopForm.gstin}
+                onChange={(e) => setShopForm({ ...shopForm, gstin: e.target.value })}
+                placeholder="22AAAAA0000A1Z5"
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 font-mono uppercase focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
             </div>
-          )}
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                Phone
+              </label>
+              <input
+                type="text"
+                value={shopForm.phone}
+                onChange={(e) => setShopForm({ ...shopForm, phone: e.target.value })}
+                placeholder="9876543210"
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+              Address
+            </label>
+            <textarea
+              rows={2}
+              value={shopForm.address}
+              onChange={(e) => setShopForm({ ...shopForm, address: e.target.value })}
+              className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                City
+              </label>
+              <input
+                type="text"
+                value={shopForm.city}
+                onChange={(e) => setShopForm({ ...shopForm, city: e.target.value })}
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                State
+              </label>
+              <input
+                type="text"
+                value={shopForm.state}
+                onChange={(e) => setShopForm({ ...shopForm, state: e.target.value })}
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                Pincode
+              </label>
+              <input
+                type="text"
+                value={shopForm.pincode}
+                onChange={(e) => setShopForm({ ...shopForm, pincode: e.target.value })}
+                className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <label className="flex items-center gap-2.5 cursor-pointer p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition-colors">
+              <input
+                type="checkbox"
+                checked={shopForm.is_active}
+                onChange={(e) => setShopForm({ ...shopForm, is_active: e.target.checked })}
+                className="rounded text-[#3C3489] focus:ring-[#3C3489] h-4 w-4 cursor-pointer"
+              />
+              <div>
+                <span className="text-xs font-semibold text-slate-800 block">
+                  Shop is Active
+                </span>
+                <span className="text-[11px] text-slate-500 block">
+                  Active shops appear on mobile scanners for outward dispatches.
+                </span>
+              </div>
+            </label>
+          </div>
 
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
             <button
@@ -600,233 +771,12 @@ export const ShopsPage: React.FC = () => {
             <button
               type="submit"
               disabled={shopSubmitting}
-              className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50"
+              className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
             >
-              {shopSubmitting ? "Saving..." : "Save Shop"}
+              {shopSubmitting ? "Saving..." : "Save Details"}
             </button>
           </div>
         </form>
-      </Modal>
-
-      {/* Excel / CSV Shop Import Modal */}
-      <Modal
-        isOpen={isExcelModalOpen}
-        onClose={() => setIsExcelModalOpen(false)}
-        title="Import Shops from Excel / CSV"
-        subtitle="Extract and register destination shops from a specific column in your spreadsheet"
-        maxWidth="lg"
-      >
-        {excelError && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
-            <AlertCircle size={15} />
-            <span>{excelError}</span>
-          </div>
-        )}
-
-        {excelResult ? (
-          <div className="space-y-4 py-2">
-            <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800">
-              <div className="flex items-center gap-2.5 mb-1.5">
-                <CheckCircle2 size={18} className="text-emerald-600" />
-                <h4 className="font-bold text-sm text-emerald-900">
-                  Import Completed Successfully
-                </h4>
-              </div>
-              <p className="text-xs text-emerald-700 leading-relaxed">
-                Extracted from column <span className="font-bold">"{excelResult.column_used}"</span> across{" "}
-                <span className="font-bold">{excelResult.total_rows_scanned}</span> rows.
-              </p>
-              <div className="grid grid-cols-2 gap-3 mt-3.5 pt-3 border-t border-emerald-200/60">
-                <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200">
-                  <span className="text-[11px] text-slate-500 font-medium block">Newly Created</span>
-                  <span className="text-base font-bold text-emerald-700">
-                    +{excelResult.newly_created_count} shops
-                  </span>
-                </div>
-                <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200">
-                  <span className="text-[11px] text-slate-500 font-medium block">Already Existing</span>
-                  <span className="text-base font-bold text-slate-600">
-                    {excelResult.already_existing_count} skipped
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {excelResult.new_shops.length > 0 && (
-              <div>
-                <span className="text-xs font-semibold text-slate-700 block mb-2">
-                  Newly Registered Shops ({excelResult.new_shops.length}):
-                </span>
-                <div className="max-h-44 overflow-y-auto p-2.5 rounded-xl border border-slate-200 bg-slate-50/50 flex flex-wrap gap-1.5">
-                  {excelResult.new_shops.map((s, idx) => (
-                    <span
-                      key={idx}
-                      className="text-xs px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-800 font-medium shadow-xs"
-                    >
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="pt-3 border-t border-slate-100 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setIsExcelModalOpen(false)}
-                className="px-5 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        ) : (
-          <form onSubmit={handleExcelImportSubmit} className="space-y-4">
-            {/* Step 1: File Upload */}
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1.5">
-                1. Select Excel or CSV File *
-              </label>
-              <div className="relative border-2 border-dashed border-slate-200 hover:border-[#3C3489]/50 rounded-2xl p-5 text-center transition-colors bg-slate-50/40">
-                <input
-                  type="file"
-                  accept=".xlsx,.xlsm,.xltx,.xltm,.csv"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) handleExcelFileSelect(f);
-                  }}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                />
-                <div className="flex flex-col items-center justify-center gap-1.5 pointer-events-none">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                    <FileSpreadsheet size={22} />
-                  </div>
-                  {excelFile ? (
-                    <div>
-                      <span className="text-xs font-bold text-slate-800 block">
-                        {excelFile.name}
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        {(excelFile.size / 1024).toFixed(1)} KB • Click or drop to replace
-                      </span>
-                    </div>
-                  ) : (
-                    <div>
-                      <span className="text-xs font-semibold text-slate-700 block">
-                        Drop your spreadsheet here or click to browse
-                      </span>
-                      <span className="text-[11px] text-slate-400">
-                        Supports Excel (.xlsx, .xlsm) and CSV (.csv)
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Analyzing Indicator */}
-            {isAnalyzingExcel && (
-              <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center gap-2.5 text-xs text-indigo-700">
-                <div className="w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-                <span>Scanning columns and detecting headers...</span>
-              </div>
-            )}
-
-            {/* Step 2: Column Selection */}
-            {excelPreview && (
-              <div className="space-y-3 pt-1">
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                      2. Column Containing Shop Names *
-                    </label>
-                    {excelPreview.suggested_column && (
-                      <span className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full font-medium">
-                        Auto-detected: {excelPreview.suggested_column}
-                      </span>
-                    )}
-                  </div>
-
-                  <select
-                    value={selectedColumn}
-                    onChange={(e) => {
-                      setSelectedColumn(e.target.value);
-                      setCustomColumn("");
-                    }}
-                    className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-                  >
-                    <option value="">-- Choose Column Header --</option>
-                    {excelPreview.columns.map((c, idx) => (
-                      <option key={idx} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                    Or type exact column name if not listed above:
-                  </label>
-                  <input
-                    type="text"
-                    value={customColumn}
-                    onChange={(e) => setCustomColumn(e.target.value)}
-                    placeholder="e.g. Party Name or Customer"
-                    className="w-full px-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-                  />
-                </div>
-
-                {/* Sample Preview Chips */}
-                {excelPreview.sample_preview && excelPreview.sample_preview.length > 0 && (
-                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
-                    <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-wider block mb-1.5">
-                      Sample Values Found in Column:
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {excelPreview.sample_preview.map((val, idx) => (
-                        <span
-                          key={idx}
-                          className="text-[11px] px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 font-medium"
-                        >
-                          {val}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Modal Actions */}
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsExcelModalOpen(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={!excelFile || isImportingExcel || isAnalyzingExcel || (!selectedColumn && !customColumn)}
-                className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {isImportingExcel ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Importing Shops...</span>
-                  </>
-                ) : (
-                  <>
-                    <FileSpreadsheet size={14} />
-                    <span>Import Shops</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </form>
-        )}
       </Modal>
 
     </div>

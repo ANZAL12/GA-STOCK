@@ -31,6 +31,9 @@ import {
   Pencil,
   Check,
   Trash2,
+  MapPin,
+  Phone,
+  User,
 } from "lucide-react";
 
 export const BillsPage: React.FC = () => {
@@ -690,7 +693,14 @@ export const BillsPage: React.FC = () => {
                     <td className="py-3 px-4">
                       <div>
                         <span className="font-semibold text-slate-900 block leading-tight">{bill.shop_name}</span>
-                        <span className="text-[11px] text-slate-400 font-medium">{bill.shop_city}</span>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                          {bill.shop_city && <span className="text-[11px] text-slate-400 font-medium">{bill.shop_city}</span>}
+                          {bill.shop_gstin && (
+                            <span className="text-[9px] font-mono font-semibold px-1 py-0.5 bg-slate-100 text-slate-600 rounded border border-slate-200">
+                              GSTIN: {bill.shop_gstin}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </td>
 
@@ -720,11 +730,21 @@ export const BillsPage: React.FC = () => {
 
                     {/* Delivery Reference */}
                     <td className="py-3 px-4 text-slate-500 text-[11px] whitespace-nowrap">
-                      {bill.delivery_reference ? (
-                        <span className="inline-flex items-center gap-1 font-mono text-slate-700">
-                          <Truck size={12} className="text-slate-400" />
-                          {bill.delivery_reference}
-                        </span>
+                      {bill.vehicle_number ||
+                      (bill.delivery_reference &&
+                        !bill.delivery_reference.toLowerCase().startsWith("tally:") &&
+                        bill.delivery_reference.toLowerCase() !== bill.bill_number.toLowerCase()) ? (
+                        <div className="space-y-0.5">
+                          <span className="inline-flex items-center gap-1 font-mono text-slate-700 font-medium">
+                            <Truck size={12} className="text-slate-400" />
+                            {bill.vehicle_number || bill.delivery_reference}
+                          </span>
+                          {bill.transporter_name && (
+                            <span className="block text-[10px] text-slate-400 font-normal">
+                              {bill.transporter_name}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-slate-300">-</span>
                       )}
@@ -1085,7 +1105,15 @@ export const BillsPage: React.FC = () => {
               </div>
 
               {/* Modal Body */}
-              <div className="flex-1 overflow-y-auto p-5 sm:p-6 space-y-6 min-h-0">
+              <div className="relative flex-1 overflow-y-auto p-5 sm:p-6 space-y-6 min-h-0">
+                {/* Cancelled Watermark in Modal */}
+                {selectedBill.is_cancelled && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center overflow-hidden z-10 select-none">
+                    <span className="text-rose-500/10 font-black text-6xl sm:text-8xl tracking-widest rotate-[-30deg] border-8 border-rose-500/10 rounded-3xl px-8 py-4">
+                      CANCELLED
+                    </span>
+                  </div>
+                )}
                 {/* Cancelled Banner if applicable */}
                 {selectedBill.is_cancelled && (
                   <div className="bg-rose-50 border border-rose-200 p-4 rounded-xl flex items-start gap-3 text-rose-900">
@@ -1097,7 +1125,7 @@ export const BillsPage: React.FC = () => {
                       <p className="text-xs text-rose-700">
                         Cancelled by <span className="font-semibold text-rose-900">{selectedBill.cancelled_by_name || "Admin"}</span>
                         {selectedBill.cancelled_at ? ` on ${new Date(selectedBill.cancelled_at).toLocaleString()}` : ""}.
-                        All matched serial numbers in this bill were automatically returned to warehouse stock for their respective models.
+                        Dispatched serial numbers remain in dispatched status until physically scanned as Return by godown staff.
                       </p>
                       {selectedBill.cancel_reason && (
                         <p className="text-xs text-rose-600 font-medium italic">
@@ -1122,6 +1150,104 @@ export const BillsPage: React.FC = () => {
                     </button>
                   </div>
                 )}
+
+                {/* Consignee / Buyer & Transport Details */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                  {/* Left: Consignee / Buyer */}
+                  <div className="space-y-1.5 md:border-r md:pr-4 border-slate-200">
+                    <div className="flex items-center gap-1.5 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                      <Store size={14} className="text-[#3C3489]" />
+                      <span>Consignee / Buyer</span>
+                    </div>
+                    <div className="text-sm font-bold text-slate-900">{selectedBill.shop_name}</div>
+
+                    {selectedBill.shop_gstin && (
+                      <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700 font-mono font-semibold text-[11px]">
+                        <span>GSTIN / UIN: {selectedBill.shop_gstin}</span>
+                      </div>
+                    )}
+
+                    {selectedBill.shop_address && (
+                      <div className="text-slate-600 flex items-start gap-1.5 mt-1">
+                        <MapPin size={13} className="text-slate-400 shrink-0 mt-0.5" />
+                        <span>{selectedBill.shop_address}</span>
+                      </div>
+                    )}
+
+                    {(selectedBill.shop_city || selectedBill.shop_state || selectedBill.shop_pincode) && (
+                      <div className="text-slate-500 text-[11px] pl-4">
+                        {[selectedBill.shop_city, selectedBill.shop_state, selectedBill.shop_pincode].filter(Boolean).join(", ")}
+                      </div>
+                    )}
+
+                    {(selectedBill.shop_phone || selectedBill.shop_contact_person) && (
+                      <div className="text-slate-600 flex flex-wrap items-center gap-3 pt-0.5 text-[11px]">
+                        {selectedBill.shop_contact_person && (
+                          <span className="flex items-center gap-1">
+                            <User size={12} className="text-slate-400" />
+                            {selectedBill.shop_contact_person}
+                          </span>
+                        )}
+                        {selectedBill.shop_phone && (
+                          <span className="flex items-center gap-1">
+                            <Phone size={12} className="text-slate-400" />
+                            {selectedBill.shop_phone}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: Transport & Dispatch Meta */}
+                  <div className="space-y-1.5 border-t md:border-t-0 pt-3 md:pt-0 border-slate-200">
+                    <div className="flex items-center gap-1.5 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                      <Truck size={14} className="text-[#3C3489]" />
+                      <span>Transport & Dispatch</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-0.5">
+                      <div>
+                        <span className="text-[10px] text-slate-400 font-medium block">Vehicle / Reg No.</span>
+                        <p className="font-semibold text-slate-900">
+                          {selectedBill.vehicle_number ||
+                            (selectedBill.delivery_reference &&
+                            !selectedBill.delivery_reference.toLowerCase().startsWith("tally:") &&
+                            selectedBill.delivery_reference.toLowerCase() !== selectedBill.bill_number.toLowerCase()
+                              ? selectedBill.delivery_reference
+                              : "Direct / Local")}
+                        </p>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] text-slate-400 font-medium block">Transporter</span>
+                        <p className="font-semibold text-slate-900">
+                          {selectedBill.transporter_name || "—"}
+                        </p>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] text-slate-400 font-medium block">Delivery Note / LR</span>
+                        <p className="font-semibold text-slate-900">
+                          {selectedBill.delivery_note || "—"}
+                        </p>
+                      </div>
+
+                      <div>
+                        <span className="text-[10px] text-slate-400 font-medium block">Destination</span>
+                        <p className="font-semibold text-slate-900">
+                          {selectedBill.destination || selectedBill.shop_city || selectedBill.shop_name}
+                        </p>
+                      </div>
+                    </div>
+
+                    {selectedBill.remarks && (
+                      <div className="pt-1.5 border-t border-slate-200 text-slate-600 text-[11px]">
+                        <span className="font-medium text-slate-500">Remarks: </span>
+                        {selectedBill.remarks}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {/* 1. Summary Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1351,7 +1477,7 @@ export const BillsPage: React.FC = () => {
               <div className="shrink-0 bg-slate-50 border-t border-slate-200 px-5 sm:px-6 py-3.5 flex items-center justify-between gap-3 flex-wrap">
                 <span className="text-xs text-slate-500">
                   {selectedBill.is_cancelled
-                    ? "This bill has been cancelled. All serials were returned to stock."
+                    ? "This bill has been cancelled in TallyPrime / Admin. Serials pending physical return scan by godown staff."
                     : "Ready to print or share delivery challan with dealer."}
                 </span>
                 <div className="flex items-center gap-2">

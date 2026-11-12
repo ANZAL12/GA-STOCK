@@ -6,8 +6,6 @@ import '../services/offline_manager.dart';
 import '../services/websocket_service.dart';
 import '../services/session_recovery_service.dart';
 import '../widgets/responsive_utils.dart';
-import '../widgets/add_shop_dialog.dart';
-import '../widgets/add_product_dialog.dart';
 import '../widgets/offline_banner.dart';
 import 'login_screen.dart';
 import 'inward_screen.dart';
@@ -190,11 +188,13 @@ class _HomeScreenState extends State<HomeScreen> {
       iconColor: const Color(0xFF0284C7),
       iconBg: const Color(0xFFE0F2FE),
       badgeText: 'Live Sync',
-      onTap: () {
-        Navigator.push(
+      onTap: () async {
+        await Navigator.push(
           context,
           MaterialPageRoute(builder: (_) => const TallyBillsScreen()),
         );
+        _refreshQueueCount();
+        if (mounted) setState(() {});
       },
     );
 
@@ -225,48 +225,6 @@ class _HomeScreenState extends State<HomeScreen> {
           context,
           MaterialPageRoute(builder: (_) => const GodownReportPrintScreen()),
         );
-      },
-    );
-
-    final cardAddShop = _buildActionCard(
-      isTablet: isTablet,
-      title: 'Add New Shop',
-      assetIconPath: 'assets/images/shop_icon.png',
-      iconColor: const Color(0xFF0284C7),
-      iconBg: const Color(0xFFF0F9FF),
-      badgeText: 'Quick Add',
-      onTap: () async {
-        final newShop = await showAddShopDialog(context);
-        if (newShop != null && context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Shop "${newShop.name}" added successfully!'),
-              backgroundColor: const Color(0xFF059669),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
-      },
-    );
-
-    final cardAddModel = _buildActionCard(
-      isTablet: isTablet,
-      title: 'Add Product Model',
-      icon: Icons.add_shopping_cart_rounded,
-      iconColor: const Color(0xFF4F46E5),
-      iconBg: const Color(0xFFEEF2FF),
-      badgeText: 'New Model',
-      onTap: () async {
-        final newProd = await showAddProductDialog(context);
-        if (newProd != null && context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Model "${newProd.brand} ${newProd.model}" created successfully!'),
-              backgroundColor: const Color(0xFF059669),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-        }
       },
     );
 
@@ -492,17 +450,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
                   ),
-                  const SizedBox(height: 20),
-                  IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(child: cardAddShop),
-                        const SizedBox(width: 20),
-                        Expanded(child: cardAddModel),
-                      ],
-                    ),
-                  ),
                 ] else ...[
                   cardInward,
                   const SizedBox(height: 14),
@@ -517,10 +464,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   cardPrint,
                   const SizedBox(height: 14),
                   cardReportPrint,
-                  const SizedBox(height: 14),
-                  cardAddShop,
-                  const SizedBox(height: 14),
-                  cardAddModel,
                   if (cardQueue != null) ...[
                     const SizedBox(height: 14),
                     cardQueue,
@@ -863,14 +806,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 'Start Dispatch Scan (${tv.items.length} items)',
                 style: TextStyle(fontSize: isTablet ? 14 : 13, fontWeight: FontWeight.bold),
               ),
-              onPressed: () {
+              onPressed: () async {
                 ApiService().clearLatestTallyBill();
-                Navigator.push(
+                await Navigator.push(
                   context,
                   MaterialPageRoute(
                     builder: (_) => OutwardScreen(fromTallyVoucher: tv),
                   ),
                 );
+                _refreshQueueCount();
+                if (mounted) setState(() {});
               },
             ),
           ),

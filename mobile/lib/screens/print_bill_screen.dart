@@ -124,7 +124,7 @@ class _PrintBillScreenState extends State<PrintBillScreen> {
       context,
       title: isCancelled ? 'Print CANCELLED Bill on Office PC' : 'Print on Office PC',
       message: isCancelled
-          ? 'Notice: Bill #$billNumber was CANCELLED and all its serials returned to inventory.\n\nAre you sure you want to send this CANCELLED voucher to the Office PC printer?'
+          ? 'Notice: Bill #$billNumber was CANCELLED.\n\nAre you sure you want to send this CANCELLED voucher to the Office PC printer?'
           : 'Are you sure you want to send Bill #$billNumber to the Office PC printer?',
       documentName: 'Bill #$billNumber${isCancelled ? ' (CANCELLED)' : ''}',
     );
@@ -556,7 +556,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
       context,
       title: isCancelled ? 'Print CANCELLED Challan on Office PC' : 'Print on Office PC',
       message: isCancelled
-          ? 'Notice: Challan #${widget.billNumber} has been CANCELLED and all serials returned to inventory.\n\nAre you sure you want to send this CANCELLED voucher to the Office PC printer?'
+          ? 'Notice: Challan #${widget.billNumber} has been CANCELLED.\n\nAre you sure you want to send this CANCELLED voucher to the Office PC printer?'
           : 'Are you sure you want to print Challan #${widget.billNumber} on the Office PC printer?',
       documentName: 'Challan #${widget.billNumber}${isCancelled ? ' (CANCELLED)' : ''}',
       printerName: _selectedOfficePrinter ?? 'Default Office PC Printer',
@@ -680,9 +680,16 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
   pw.Widget _pdfHeader(BillDetail bill, pw.MemoryImage? logoImage) {
     const black = PdfColors.black;
 
-    final destinationVal = bill.shopCity.trim().isNotEmpty
-        ? bill.shopCity.trim()
-        : bill.shopName;
+    final destinationVal = (bill.destination != null && bill.destination!.trim().isNotEmpty)
+        ? bill.destination!.trim()
+        : (bill.shopCity.trim().isNotEmpty ? bill.shopCity.trim() : bill.shopName);
+
+    final rawRef = (bill.deliveryReference ?? '').trim();
+    final isRefBillNo = rawRef.toLowerCase() == bill.billNumber.trim().toLowerCase() ||
+        rawRef.toLowerCase().startsWith('tally:');
+    final vehicleVal = (bill.vehicleNumber != null && bill.vehicleNumber!.trim().isNotEmpty)
+        ? bill.vehicleNumber!.trim()
+        : ((!isRefBillNo && rawRef.isNotEmpty) ? rawRef : 'Direct / Local');
 
     return pw.Container(
       decoration: pw.BoxDecoration(
@@ -707,7 +714,7 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                 pw.SizedBox(height: 1.5),
                 pw.Text(
                   bill.isCancelled
-                      ? '(THIS BILL HAS BEEN CANCELLED - ALL SERIALS RETURNED TO INVENTORY)'
+                      ? '(THIS BILL HAS BEEN CANCELLED - RETURN SCAN PENDING)'
                       : '(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)',
                   style: pw.TextStyle(
                     fontSize: 7.5,
@@ -813,10 +820,45 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                                 color: black,
                               ),
                             ),
-                            if (bill.shopCity.trim().isNotEmpty) ...[
+                            if (bill.shopGstin != null && bill.shopGstin!.trim().isNotEmpty) ...[
                               pw.SizedBox(height: 1),
                               pw.Text(
-                                'Location: ${bill.shopCity.trim()}',
+                                'GSTIN / UIN: ${bill.shopGstin!.trim()}',
+                                style: pw.TextStyle(
+                                  fontSize: 7.2,
+                                  fontWeight: pw.FontWeight.bold,
+                                  color: black,
+                                ),
+                              ),
+                            ],
+                            if (bill.shopAddress != null && bill.shopAddress!.trim().isNotEmpty) ...[
+                              pw.SizedBox(height: 1),
+                              pw.Text(
+                                'Address: ${bill.shopAddress!.trim()}',
+                                style: const pw.TextStyle(fontSize: 7.2, color: black),
+                              ),
+                            ],
+                            if (bill.shopCity.trim().isNotEmpty ||
+                                (bill.shopState != null && bill.shopState!.trim().isNotEmpty) ||
+                                (bill.shopPincode != null && bill.shopPincode!.trim().isNotEmpty)) ...[
+                              pw.SizedBox(height: 1),
+                              pw.Text(
+                                'Location: ${[
+                                  if (bill.shopCity.trim().isNotEmpty) bill.shopCity.trim(),
+                                  if (bill.shopState != null && bill.shopState!.trim().isNotEmpty) bill.shopState!.trim(),
+                                  if (bill.shopPincode != null && bill.shopPincode!.trim().isNotEmpty) bill.shopPincode!.trim(),
+                                ].join(', ')}',
+                                style: const pw.TextStyle(fontSize: 7.2, color: black),
+                              ),
+                            ],
+                            if ((bill.shopPhone != null && bill.shopPhone!.trim().isNotEmpty) ||
+                                (bill.shopContactPerson != null && bill.shopContactPerson!.trim().isNotEmpty)) ...[
+                              pw.SizedBox(height: 1),
+                              pw.Text(
+                                [
+                                  if (bill.shopPhone != null && bill.shopPhone!.trim().isNotEmpty) 'Ph: ${bill.shopPhone!.trim()}',
+                                  if (bill.shopContactPerson != null && bill.shopContactPerson!.trim().isNotEmpty) 'Contact: ${bill.shopContactPerson!.trim()}',
+                                ].join(' | '),
                                 style: const pw.TextStyle(fontSize: 7.2, color: black),
                               ),
                             ],
@@ -847,7 +889,11 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
                           _pdfMetaRow('Cancelled By:', bill.cancelledByName!, boldVal: true, valColor: PdfColors.red900),
                         if (bill.isCancelled && bill.cancelReason != null && bill.cancelReason!.isNotEmpty)
                           _pdfMetaRow('Cancel Reason:', bill.cancelReason!, boldVal: false, valColor: PdfColors.red900),
-                        _pdfMetaRow('Vehicle / Ref:', bill.deliveryReference ?? 'Direct / Local', boldVal: true),
+                        _pdfMetaRow('Vehicle / Reg No.:', vehicleVal, boldVal: true),
+                        if (bill.transporterName != null && bill.transporterName!.trim().isNotEmpty)
+                          _pdfMetaRow('Transporter:', bill.transporterName!.trim(), boldVal: false),
+                        if (bill.deliveryNote != null && bill.deliveryNote!.trim().isNotEmpty)
+                          _pdfMetaRow('Delivery Note / LR:', bill.deliveryNote!.trim(), boldVal: false),
                         _pdfMetaRow('Mode of Transport:', 'Road / Local Delivery', boldVal: false),
                         _pdfMetaRow('Destination:', destinationVal, boldVal: false),
                       ],
@@ -1847,10 +1893,42 @@ class _BillDetailScreenState extends State<BillDetailScreen> {
               _infoRow(Icons.comment_outlined, 'Cancel Reason', bill.cancelReason!),
           ],
           _infoRow(Icons.store_outlined, 'Shop', bill.shopCity.trim().isNotEmpty ? '${bill.shopName} – ${bill.shopCity.trim()}' : bill.shopName),
+          if (bill.shopGstin != null && bill.shopGstin!.trim().isNotEmpty)
+            _infoRow(Icons.badge_outlined, 'GSTIN / UIN', bill.shopGstin!.trim()),
+          if (bill.shopAddress != null && bill.shopAddress!.trim().isNotEmpty)
+            _infoRow(Icons.location_on_outlined, 'Address', bill.shopAddress!.trim()),
+          if ((bill.shopState != null && bill.shopState!.trim().isNotEmpty) || (bill.shopPincode != null && bill.shopPincode!.trim().isNotEmpty))
+            _infoRow(
+              Icons.map_outlined,
+              'State / PIN',
+              [
+                if (bill.shopState != null && bill.shopState!.trim().isNotEmpty) bill.shopState!.trim(),
+                if (bill.shopPincode != null && bill.shopPincode!.trim().isNotEmpty) bill.shopPincode!.trim(),
+              ].join(' - '),
+            ),
+          if (bill.shopPhone != null && bill.shopPhone!.trim().isNotEmpty)
+            _infoRow(Icons.phone_outlined, 'Phone', bill.shopPhone!.trim()),
+          if (bill.shopContactPerson != null && bill.shopContactPerson!.trim().isNotEmpty)
+            _infoRow(Icons.person_pin_outlined, 'Contact Person', bill.shopContactPerson!.trim()),
           _infoRow(Icons.calendar_today_outlined, 'Date', bill.transactionDate),
           _infoRow(Icons.person_outline, 'Dispatched By', bill.dispatchedByName),
-          if (bill.deliveryReference != null)
-            _infoRow(Icons.local_shipping_outlined, 'Vehicle / Ref', bill.deliveryReference!),
+          if ((bill.vehicleNumber != null && bill.vehicleNumber!.trim().isNotEmpty) ||
+              (bill.deliveryReference != null &&
+                  !bill.deliveryReference!.toLowerCase().startsWith('tally:') &&
+                  bill.deliveryReference!.trim().toLowerCase() != bill.billNumber.trim().toLowerCase()))
+            _infoRow(
+              Icons.local_shipping_outlined,
+              'Vehicle / Ref',
+              (bill.vehicleNumber != null && bill.vehicleNumber!.trim().isNotEmpty)
+                  ? bill.vehicleNumber!.trim()
+                  : bill.deliveryReference!,
+            ),
+          if (bill.transporterName != null && bill.transporterName!.trim().isNotEmpty)
+            _infoRow(Icons.local_shipping, 'Transporter', bill.transporterName!.trim()),
+          if (bill.deliveryNote != null && bill.deliveryNote!.trim().isNotEmpty)
+            _infoRow(Icons.description_outlined, 'Delivery Note / LR', bill.deliveryNote!.trim()),
+          if (bill.destination != null && bill.destination!.trim().isNotEmpty)
+            _infoRow(Icons.place_outlined, 'Destination', bill.destination!.trim()),
           if (bill.remarks != null)
             _infoRow(Icons.notes_outlined, 'Remarks', bill.remarks!),
         ],
@@ -2625,7 +2703,7 @@ class _BillPdfViewerScreenState extends State<BillPdfViewerScreen> {
                 context,
                 title: isCancelled ? 'Print CANCELLED Challan on Office PC' : 'Print Challan on Office PC',
                 message: isCancelled
-                    ? 'Notice: Challan #${widget.bill.billNumber} was CANCELLED and serials returned to inventory.\n\nAre you sure you want to send this CANCELLED challan to the Office PC printer?'
+                    ? 'Notice: Challan #${widget.bill.billNumber} was CANCELLED.\n\nAre you sure you want to send this CANCELLED challan to the Office PC printer?'
                     : 'Are you sure you want to send Challan #${widget.bill.billNumber} to the Office PC printer?',
                 documentName: 'Challan #${widget.bill.billNumber}${isCancelled ? ' (CANCELLED)' : ''}',
               );

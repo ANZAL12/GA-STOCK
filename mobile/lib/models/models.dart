@@ -38,6 +38,9 @@ class Product {
   final int currentStockQty;
   final bool outOfStockReminder;
   final bool hasDualSerial;
+  final String? tallyGuid;
+  final String? tallyPartNumber;
+  final String source;
 
   Product({
     required this.id,
@@ -53,6 +56,9 @@ class Product {
     required this.currentStockQty,
     required this.outOfStockReminder,
     this.hasDualSerial = false,
+    this.tallyGuid,
+    this.tallyPartNumber,
+    this.source = 'TALLY',
   });
 
   Product copyWith({
@@ -102,6 +108,9 @@ class Product {
       currentStockQty: json['current_stock_qty'] ?? 0,
       outOfStockReminder: json['out_of_stock_reminder'] ?? false,
       hasDualSerial: json['has_dual_serial'] ?? false,
+      tallyGuid: json['tally_guid'],
+      tallyPartNumber: json['tally_part_number'],
+      source: json['source'] ?? 'TALLY',
     );
   }
 
@@ -119,6 +128,9 @@ class Product {
     'current_stock_qty': currentStockQty,
     'out_of_stock_reminder': outOfStockReminder,
     'has_dual_serial': hasDualSerial,
+    'tally_guid': tallyGuid,
+    'tally_part_number': tallyPartNumber,
+    'source': source,
   };
 }
 
@@ -178,6 +190,9 @@ class Category {
   final bool hasDualSerial;
   final bool isActive;
   final int productCount;
+  final String? tallyGuid;
+  final String? tallyParentGroup;
+  final String source;
 
   Category({
     required this.id,
@@ -185,6 +200,9 @@ class Category {
     this.hasDualSerial = false,
     this.isActive = true,
     this.productCount = 0,
+    this.tallyGuid,
+    this.tallyParentGroup,
+    this.source = 'TALLY',
   });
 
   factory Category.fromJson(Map<String, dynamic> json) {
@@ -194,6 +212,9 @@ class Category {
       hasDualSerial: json['has_dual_serial'] ?? false,
       isActive: json['is_active'] ?? true,
       productCount: json['product_count'] ?? 0,
+      tallyGuid: json['tally_guid'],
+      tallyParentGroup: json['tally_parent_group'],
+      source: json['source'] ?? 'TALLY',
     );
   }
 
@@ -203,6 +224,9 @@ class Category {
     'has_dual_serial': hasDualSerial,
     'is_active': isActive,
     'product_count': productCount,
+    'tally_guid': tallyGuid,
+    'tally_parent_group': tallyParentGroup,
+    'source': source,
   };
 }
 
@@ -319,6 +343,11 @@ class BillListItem {
   final String shopId;
   final String shopName;
   final String shopCity;
+  final String? shopGstin;
+  final String? shopAddress;
+  final String? shopState;
+  final String? shopPhone;
+  final String? vehicleNumber;
   final String transactionDate;
   final String createdAt;
   final String dispatchedByName;
@@ -337,6 +366,11 @@ class BillListItem {
     required this.shopId,
     required this.shopName,
     required this.shopCity,
+    this.shopGstin,
+    this.shopAddress,
+    this.shopState,
+    this.shopPhone,
+    this.vehicleNumber,
     required this.transactionDate,
     required this.createdAt,
     required this.dispatchedByName,
@@ -357,6 +391,11 @@ class BillListItem {
       shopId: json['shop_id'] ?? '',
       shopName: json['shop_name'] ?? '',
       shopCity: json['shop_city'] ?? '',
+      shopGstin: json['shop_gstin']?.toString(),
+      shopAddress: json['shop_address']?.toString(),
+      shopState: json['shop_state']?.toString(),
+      shopPhone: json['shop_phone']?.toString(),
+      vehicleNumber: json['vehicle_number']?.toString(),
       transactionDate: json['transaction_date'] ?? '',
       createdAt: json['created_at'] ?? '',
       dispatchedByName: json['dispatched_by_name'] ?? '',
@@ -456,6 +495,16 @@ class BillDetail {
   final String shopId;
   final String shopName;
   final String shopCity;
+  final String? shopGstin;
+  final String? shopAddress;
+  final String? shopState;
+  final String? shopPincode;
+  final String? shopPhone;
+  final String? shopContactPerson;
+  final String? vehicleNumber;
+  final String? transporterName;
+  final String? deliveryNote;
+  final String? destination;
   final String transactionDate;
   final String createdAt;
   final String dispatchedByName;
@@ -474,6 +523,16 @@ class BillDetail {
     required this.shopId,
     required this.shopName,
     required this.shopCity,
+    this.shopGstin,
+    this.shopAddress,
+    this.shopState,
+    this.shopPincode,
+    this.shopPhone,
+    this.shopContactPerson,
+    this.vehicleNumber,
+    this.transporterName,
+    this.deliveryNote,
+    this.destination,
     required this.transactionDate,
     required this.createdAt,
     required this.dispatchedByName,
@@ -494,6 +553,16 @@ class BillDetail {
       shopId: json['shop_id'] ?? '',
       shopName: json['shop_name'] ?? '',
       shopCity: json['shop_city'] ?? '',
+      shopGstin: json['shop_gstin']?.toString(),
+      shopAddress: json['shop_address']?.toString(),
+      shopState: json['shop_state']?.toString(),
+      shopPincode: json['shop_pincode']?.toString(),
+      shopPhone: json['shop_phone']?.toString(),
+      shopContactPerson: json['shop_contact_person']?.toString(),
+      vehicleNumber: json['vehicle_number']?.toString(),
+      transporterName: json['transporter_name']?.toString(),
+      deliveryNote: json['delivery_note']?.toString(),
+      destination: json['destination']?.toString(),
       transactionDate: json['transaction_date'] ?? '',
       createdAt: json['created_at'] ?? '',
       dispatchedByName: json['dispatched_by_name'] ?? '',
@@ -625,6 +694,10 @@ class TallySalesVoucher {
   final String? stateName;
   final String? companyName;
   final String? shopId;
+  final String? vehicleNumber;
+  final String? transporterName;
+  final String? deliveryNote;
+  final String? destination;
   final bool isCancelled;
   final bool isDeleted;
   final bool isProcessed;
@@ -649,6 +722,10 @@ class TallySalesVoucher {
     this.stateName,
     this.companyName,
     this.shopId,
+    this.vehicleNumber,
+    this.transporterName,
+    this.deliveryNote,
+    this.destination,
     required this.isCancelled,
     required this.isDeleted,
     required this.isProcessed,
@@ -682,6 +759,10 @@ class TallySalesVoucher {
       stateName: json['state_name'],
       companyName: json['company_name'],
       shopId: json['shop_id']?.toString(),
+      vehicleNumber: json['vehicle_number']?.toString(),
+      transporterName: json['transporter_name']?.toString(),
+      deliveryNote: json['delivery_note']?.toString(),
+      destination: json['destination']?.toString(),
       isCancelled: json['is_cancelled'] ?? false,
       isDeleted: json['is_deleted'] ?? false,
       isProcessed: json['is_processed'] ?? false,

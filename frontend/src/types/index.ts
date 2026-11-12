@@ -24,6 +24,9 @@ export interface Category {
   name: string;
   has_dual_serial?: boolean;
   is_active: boolean;
+  tally_guid?: string | null;
+  tally_parent_group?: string | null;
+  source?: string;
   created_at: string;
   product_count: number;
 }
@@ -47,6 +50,10 @@ export interface Product {
   is_active: boolean;
   out_of_stock_reminder: boolean;
   stock_status_label: string;
+  tally_guid?: string | null;
+  tally_part_number?: string | null;
+  tally_stock_qty?: number | null;
+  source?: string;
   created_at: string;
   updated_at: string;
 }
@@ -73,6 +80,14 @@ export interface Shop {
   name: string;
   city?: string | null;
   phone?: string | null;
+  gstin?: string | null;
+  address?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+  contact_person?: string | null;
+  email?: string | null;
+  tally_guid?: string | null;
+  source?: string;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -296,6 +311,16 @@ export interface BillDetail {
   shop_id: string;
   shop_name: string;
   shop_city: string;
+  shop_gstin?: string | null;
+  shop_address?: string | null;
+  shop_state?: string | null;
+  shop_pincode?: string | null;
+  shop_phone?: string | null;
+  shop_contact_person?: string | null;
+  vehicle_number?: string | null;
+  transporter_name?: string | null;
+  delivery_note?: string | null;
+  destination?: string | null;
   transaction_date: string;
   created_at: string;
   dispatched_by_name: string;
@@ -315,6 +340,14 @@ export interface BillListItem {
   shop_id: string;
   shop_name: string;
   shop_city: string;
+  shop_gstin?: string | null;
+  shop_address?: string | null;
+  shop_state?: string | null;
+  shop_phone?: string | null;
+  vehicle_number?: string | null;
+  transporter_name?: string | null;
+  delivery_note?: string | null;
+  destination?: string | null;
   transaction_date: string;
   created_at: string;
   dispatched_by_name: string;
@@ -404,13 +437,17 @@ export interface ExcelSerialImportItem {
   model_name?: string | null;
   unit_type?: string | null;
   row_index?: number | null;
+  status?: string | null;
 }
 
 export interface ExcelSerialImportRequest {
   items: ExcelSerialImportItem[];
   default_product_id?: string | null;
   inward_reference?: string | null;
+  batch_reference?: string | null;
+  remarks?: string | null;
   skip_existing?: boolean;
+  target_status?: string | null;
 }
 
 export interface ExcelSerialImportResponse {

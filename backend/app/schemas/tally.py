@@ -105,9 +105,14 @@ class TallySalesVoucherResponse(BaseModel):
     party_name: str
     party_ledger_name: Optional[str] = None
     buyer_name: Optional[str] = None
+    shop_id: Optional[uuid.UUID] = None
     address: Optional[str] = None
     state_name: Optional[str] = None
     company_name: Optional[str] = None
+    vehicle_number: Optional[str] = None
+    transporter_name: Optional[str] = None
+    delivery_note: Optional[str] = None
+    destination: Optional[str] = None
     is_cancelled: bool = False
     is_deleted: bool = False
     is_processed: bool = False

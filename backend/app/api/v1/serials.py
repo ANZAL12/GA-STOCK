@@ -900,12 +900,15 @@ async def import_bulk_serials(
         if u_type in ("single", "single_unit", "none", "-", ""):
             u_type = None
 
+        item_status = (it.status or req.target_status or "available").strip().lower()
+
         if sn_clean not in seen_in_payload:
             seen_in_payload.add(sn_clean)
             cleaned_items.append(ExcelSerialImportItem(
                 serial_number=sn_clean,
                 product_id=prod_id,
                 unit_type=u_type,
+                status=item_status,
             ))
 
     if not cleaned_items and not skipped_invalid:
@@ -984,9 +987,29 @@ async def import_bulk_serials(
         cat = cat_res.scalar_one_or_none()
         has_dual = cat.has_dual_serial if cat else False
 
-        units_count = (len(p_items) // 2) if has_dual else len(p_items)
-        if units_count == 0 and has_dual:
-            units_count = len(p_items)  # fallback if odd/single unit uploaded for dual model
+        STATUS_MAP = {
+            "available": (SerialStatus.available, HistoryAction.inward_recorded),
+            "in_stock": (SerialStatus.available, HistoryAction.inward_recorded),
+            "dispatched": (SerialStatus.dispatched, HistoryAction.dispatched_matched),
+            "outwarded": (SerialStatus.dispatched, HistoryAction.dispatched_matched),
+            "returned": (SerialStatus.returned, HistoryAction.returned),
+            "damaged": (SerialStatus.damaged, HistoryAction.status_changed),
+            "lost": (SerialStatus.lost, HistoryAction.status_changed),
+            "under_repair": (SerialStatus.under_repair, HistoryAction.status_changed),
+        }
+
+        # Calculate how many available items are being added to live stock
+        available_items = [
+            it for it in p_items
+            if STATUS_MAP.get((it.status or req.target_status or "available").lower(), (SerialStatus.available, None))[0] == SerialStatus.available
+        ]
+        available_units = (len(available_items) // 2) if has_dual else len(available_items)
+        if available_units == 0 and has_dual and available_items:
+            available_units = len(available_items)
+
+        total_units_count = (len(p_items) // 2) if has_dual else len(p_items)
+        if total_units_count == 0 and has_dual:
+            total_units_count = len(p_items)
 
         # Create InwardBatch for audit and godown records
         batch = InwardBatch(
@@ -994,7 +1017,7 @@ async def import_bulk_serials(
             inward_type="stock_in",
             transaction_date=date.today(),
             invoice_reference=batch_ref,
-            quantity=units_count,
+            quantity=total_units_count,
             received_by_user_id=admin.id,
             remarks=remarks_text,
         )
@@ -1003,11 +1026,14 @@ async def import_bulk_serials(
         created_batch_ids.append(str(batch.id))
 
         for it in p_items:
+            raw_st = (it.status or req.target_status or "available").strip().lower()
+            sn_status, hist_act = STATUS_MAP.get(raw_st, (SerialStatus.available, HistoryAction.inward_recorded))
             sn_unit_type = it.unit_type if (has_dual and it.unit_type in ("indoor", "outdoor")) else None
+
             sn_obj = SerialNumber(
                 serial_number=it.serial_number,
                 product_id=product.id,
-                status=SerialStatus.available,
+                status=sn_status,
                 last_shop_id=None,
                 unit_type=sn_unit_type,
             )
@@ -1023,19 +1049,20 @@ async def import_bulk_serials(
             history = SerialHistory(
                 serial_number_id=sn_obj.id,
                 serial_text=it.serial_number,
-                action=HistoryAction.inward_recorded,
+                action=hist_act,
                 from_status=None,
-                to_status=SerialStatus.available,
+                to_status=sn_status,
                 inward_batch_id=batch.id,
                 user_id=admin.id,
-                remarks=f"Excel Import [{batch_ref}]: Added to godown stock",
+                remarks=f"Serial Import [{batch_ref}]: Recorded as {sn_status.value.upper()}",
             )
             db.add(history)
             imported_all.append(it.serial_number)
 
-        # Update product current stock count
-        product.current_stock_qty += units_count
-        product.has_had_inward = True
+        # Update product current stock count ONLY for available (in-stock) units
+        if available_units > 0:
+            product.current_stock_qty += available_units
+            product.has_had_inward = True
 
         products_updated.append({
             "product_id": str(product.id),
@@ -1044,8 +1071,9 @@ async def import_bulk_serials(
             "model": product.model,
             "new_stock_qty": product.current_stock_qty,
             "new_stock": product.current_stock_qty,
-            "added_count": units_count,
-            "units_added": units_count,
+            "added_count": available_units,
+            "units_added": available_units,
+            "total_serials_imported": len(p_items),
         })
 
     # 4. Audit Log

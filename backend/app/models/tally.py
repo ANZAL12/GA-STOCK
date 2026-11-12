@@ -59,6 +59,12 @@ class TallySalesVoucher(Base, PrimaryKeyMixin, TimestampMixin):
     state_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
 
+    # Dispatch / Transport Details
+    vehicle_number: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)
+    transporter_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    delivery_note: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    destination: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
     is_cancelled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 

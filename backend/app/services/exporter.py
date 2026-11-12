@@ -662,8 +662,26 @@ def export_bill_to_pdf(bill: dict[str, Any]) -> bytes:
         Spacer(1, 2),
         Paragraph(f"<b>{shop_name}</b>", bold_9),
     ]
-    if dest_str:
-        left_consignee.append(Paragraph(dest_str, norm_7))
+    if bill.get("shop_gstin"):
+        left_consignee.append(Paragraph(f"<b>GSTIN / UIN:</b> {bill['shop_gstin'].strip()}", norm_7))
+    if bill.get("shop_address"):
+        left_consignee.append(Paragraph(f"Address: {bill['shop_address'].strip()}", norm_7))
+    loc_parts = []
+    if bill.get("shop_city"):
+        loc_parts.append(bill["shop_city"].strip())
+    if bill.get("shop_state"):
+        loc_parts.append(f"State: {bill['shop_state'].strip()}")
+    if bill.get("shop_pincode"):
+        loc_parts.append(f"PIN: {bill['shop_pincode'].strip()}")
+    if loc_parts:
+        left_consignee.append(Paragraph(f"Location: {', '.join(loc_parts)}", norm_7))
+    contact_parts = []
+    if bill.get("shop_phone"):
+        contact_parts.append(f"Ph: {bill['shop_phone'].strip()}")
+    if bill.get("shop_contact_person"):
+        contact_parts.append(f"Attn: {bill['shop_contact_person'].strip()}")
+    if contact_parts:
+        left_consignee.append(Paragraph(" • ".join(contact_parts), norm_7))
     if rem_str:
         left_consignee.append(Paragraph(rem_str, norm_7))
 
@@ -679,22 +697,36 @@ def export_bill_to_pdf(bill: dict[str, Any]) -> bytes:
     bill_num = bill.get("bill_number", "-")
     txn_date = bill.get("transaction_date", "-")
     disp_name = bill.get("dispatched_by_name") or bill.get("dispatcher_name") or "-"
-    vehicle = bill.get("delivery_reference") or "Direct / Local"
-    destination = shop_city if shop_city else shop_name
+    raw_ref = (bill.get("delivery_reference") or "").strip()
+    is_ref_bill_no = raw_ref.lower() == str(bill_num).strip().lower() or raw_ref.lower().startswith("tally:")
+    veh_val = bill.get("vehicle_number") or (raw_ref if not is_ref_bill_no and raw_ref else None) or "Direct / Local"
+    destination = bill.get("destination") or (shop_city if shop_city else shop_name)
 
     right_meta = [
         Paragraph(f"Challan / Bill No.:  <b>{bill_num}</b>", norm_75),
-        Spacer(1, 2.5),
+        Spacer(1, 2),
         Paragraph(f"Dated:  <b>{txn_date}</b>", norm_75),
-        Spacer(1, 2.5),
+        Spacer(1, 2),
         Paragraph(f"Dispatched By:  <b>{disp_name}</b>", norm_75),
-        Spacer(1, 2.5),
-        Paragraph(f"Vehicle / Ref:  <b>{vehicle}</b>", norm_75),
-        Spacer(1, 2.5),
-        Paragraph("Mode of Transport:  Road / Local Delivery", norm_75),
-        Spacer(1, 2.5),
-        Paragraph(f"Destination:  {destination}", norm_75),
+        Spacer(1, 2),
+        Paragraph(f"Vehicle / Reg No.:  <b>{veh_val}</b>", norm_75),
+        Spacer(1, 2),
     ]
+    if bill.get("transporter_name"):
+        right_meta.extend([
+            Paragraph(f"Transporter:  {bill['transporter_name'].strip()}", norm_75),
+            Spacer(1, 2),
+        ])
+    if bill.get("delivery_note"):
+        right_meta.extend([
+            Paragraph(f"Delivery Note:  {bill['delivery_note'].strip()}", norm_75),
+            Spacer(1, 2),
+        ])
+    right_meta.extend([
+        Paragraph("Mode of Transport:  Road / Local Delivery", norm_75),
+        Spacer(1, 2),
+        Paragraph(f"Destination:  {destination}", norm_75),
+    ])
 
     title_block = [
         Paragraph("DELIVERY CHALLAN", title_style),

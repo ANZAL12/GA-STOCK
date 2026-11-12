@@ -18,6 +18,7 @@ from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
 from app.models.serial import SerialNumber
 from app.models.shop import Shop
+from app.models.tally import TallySalesVoucher
 from app.models.user import User
 from app.schemas.outward import (
     BillBatchSummary,
@@ -246,7 +247,7 @@ async def check_reference(
     for the same shop on the same day.
     """
     clean_ref = req.delivery_reference.strip()
-    if not clean_ref:
+    if not clean_ref or not req.shop_id:
         return OutwardCheckRefResponse(has_warning=False)
 
     existing = await db.execute(
@@ -273,22 +274,46 @@ async def check_serial_get(
     serial_number: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    product_id: Optional[uuid.UUID] = None,
-    shop_id: Optional[uuid.UUID] = None,
+    product_id: Optional[str] = None,
+    shop_id: Optional[str] = None,
 ) -> OutwardCheckSerialResponse:
-    dummy_shop_id = shop_id or uuid.uuid4()
-    req = OutwardCheckSerialRequest(product_id=product_id, shop_id=dummy_shop_id, serial_number=serial_number)
+    parsed_product_id: Optional[uuid.UUID] = None
+    if product_id and product_id.strip():
+        try:
+            parsed_product_id = uuid.UUID(product_id.strip())
+        except Exception:
+            parsed_product_id = None
+
+    parsed_shop_id: Optional[uuid.UUID] = None
+    if shop_id and shop_id.strip():
+        try:
+            parsed_shop_id = uuid.UUID(shop_id.strip())
+        except Exception:
+            parsed_shop_id = None
+
+    dummy_shop_id = parsed_shop_id or uuid.uuid4()
+    req = OutwardCheckSerialRequest(product_id=parsed_product_id, shop_id=dummy_shop_id, serial_number=serial_number)
     return await check_serial(req=req, current_user=current_user, db=db)
 
 
 @router.get("/check-reference", response_model=OutwardCheckRefResponse)
 async def check_reference_get(
-    shop_id: uuid.UUID,
     reference: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    shop_id: Optional[str] = None,
 ) -> OutwardCheckRefResponse:
-    req = OutwardCheckRefRequest(shop_id=shop_id, delivery_reference=reference)
+    parsed_shop_id: Optional[uuid.UUID] = None
+    if shop_id and shop_id.strip():
+        try:
+            parsed_shop_id = uuid.UUID(shop_id.strip())
+        except Exception:
+            parsed_shop_id = None
+
+    if not parsed_shop_id:
+        return OutwardCheckRefResponse(has_warning=False)
+
+    req = OutwardCheckRefRequest(shop_id=parsed_shop_id, delivery_reference=reference)
     return await check_reference(req=req, current_user=current_user, db=db)
 
 
@@ -337,18 +362,46 @@ async def create_outward_batch(
     device_id = device.id if device else None
 
     # 3. Check Shop exists and is active
-    shop_res = await db.execute(select(Shop).where(Shop.id == req.shop_id))
-    shop = shop_res.scalar_one_or_none()
+    shop = None
+    if req.shop_id:
+        shop_res = await db.execute(select(Shop).where(Shop.id == req.shop_id))
+        shop = shop_res.scalar_one_or_none()
+
+    if not shop and req.tally_voucher_id:
+        tv_res = await db.execute(select(TallySalesVoucher).where(TallySalesVoucher.id == req.tally_voucher_id))
+        tv = tv_res.scalar_one_or_none()
+        if tv and tv.party_name:
+            p_clean = tv.party_name.strip()
+            s_res = await db.execute(select(Shop).where(func.lower(Shop.name) == func.lower(p_clean)))
+            shop = s_res.scalar_one_or_none()
+            if not shop:
+                city_val = tv.state_name
+                if not city_val and tv.address:
+                    city_val = tv.address.split(",")[0][:90].strip()
+                shop = Shop(
+                    name=p_clean,
+                    city=city_val or "Local",
+                    address=tv.address,
+                    state=tv.state_name,
+                    source="TALLY",
+                    is_active=True,
+                )
+                db.add(shop)
+                await db.flush()
+
     if not shop:
         raise HTTPException(status_code=404, detail="Selected shop not found.")
     if not shop.is_active:
         raise HTTPException(status_code=400, detail="Selected shop is deactivated.")
 
     # 4. Lock Product row
-    prod_res = await db.execute(
-        select(Product).where(Product.id == req.product_id).with_for_update()
-    )
-    product = prod_res.scalar_one_or_none()
+    product = None
+    if req.product_id:
+        prod_res = await db.execute(
+            select(Product).where(Product.id == req.product_id).with_for_update()
+        )
+        product = prod_res.scalar_one_or_none()
+
     if not product:
         raise HTTPException(status_code=404, detail="Selected product not found.")
     if not product.is_active:
@@ -690,8 +743,48 @@ async def create_outward_batch(
     )
     db.add(audit)
 
+    # Auto-mark matching Tally Sales Voucher as processed
+    vouchers_to_broadcast = []
+    vouchers_to_mark = []
+
+    if getattr(req, "tally_voucher_id", None):
+        t_id_res = await db.execute(
+            select(TallySalesVoucher).where(TallySalesVoucher.id == req.tally_voucher_id)
+        )
+        for vch in t_id_res.scalars().all():
+            vouchers_to_mark.append(vch)
+
+    if batch.bill_number:
+        clean_bill_no = batch.bill_number.strip().lower()
+        t_res = await db.execute(
+            select(TallySalesVoucher).where(
+                func.trim(func.lower(TallySalesVoucher.voucher_number)) == clean_bill_no
+            )
+        )
+        for vch in t_res.scalars().all():
+            if vch not in vouchers_to_mark:
+                vouchers_to_mark.append(vch)
+
+    for t_vch in vouchers_to_mark:
+        if not t_vch.is_processed:
+            t_vch.is_processed = True
+            t_vch.processed_at = datetime.now()
+            t_vch.processed_by_id = current_user.id
+            t_vch.notes = f"Dispatched via GA STOCK Outward (Bill: {batch.bill_number or 'Direct'})"
+            vouchers_to_broadcast.append(t_vch)
+
     await db.commit()
     await db.refresh(batch)
+
+    for t_vch_to_broadcast in vouchers_to_broadcast:
+        try:
+            await ws_manager.broadcast("tally_bill_processed", {
+                "id": str(t_vch_to_broadcast.id),
+                "voucher_number": t_vch_to_broadcast.voucher_number,
+                "is_processed": True,
+            })
+        except Exception:
+            pass
 
     resp = OutwardBatchResponse(
         id=batch.id,
@@ -848,8 +941,47 @@ async def create_outward_multi_batch(
     device_id = device.id if device else None
 
     # 3. Check Shop exists and is active
-    shop_res = await db.execute(select(Shop).where(Shop.id == req.shop_id))
-    shop = shop_res.scalar_one_or_none()
+    shop = None
+    if req.shop_id:
+        shop_res = await db.execute(select(Shop).where(Shop.id == req.shop_id))
+        shop = shop_res.scalar_one_or_none()
+
+    if not shop and req.tally_voucher_id:
+        tv_res = await db.execute(select(TallySalesVoucher).where(TallySalesVoucher.id == req.tally_voucher_id))
+        tv = tv_res.scalar_one_or_none()
+        if tv and tv.party_name:
+            p_clean = tv.party_name.strip()
+            s_res = await db.execute(select(Shop).where(func.lower(Shop.name) == func.lower(p_clean)))
+            shop = s_res.scalar_one_or_none()
+            if not shop:
+                city_val = tv.state_name
+                if not city_val and tv.address:
+                    city_val = tv.address.split(",")[0][:90].strip()
+                shop = Shop(
+                    name=p_clean,
+                    city=city_val or "Local",
+                    address=tv.address,
+                    state=tv.state_name,
+                    source="TALLY",
+                    is_active=True,
+                )
+                db.add(shop)
+                await db.flush()
+
+    if not shop and req.shop_name:
+        p_clean = req.shop_name.strip()
+        s_res = await db.execute(select(Shop).where(func.lower(Shop.name) == func.lower(p_clean)))
+        shop = s_res.scalar_one_or_none()
+        if not shop:
+            shop = Shop(
+                name=p_clean,
+                city="Local",
+                source="TALLY",
+                is_active=True,
+            )
+            db.add(shop)
+            await db.flush()
+
     if not shop:
         raise HTTPException(status_code=404, detail="Selected shop not found.")
     if not shop.is_active:
@@ -860,6 +992,26 @@ async def create_outward_multi_batch(
     cleaned_items_per_batch: list[tuple[uuid.UUID, list[tuple[str, bool, Optional[str]]]]] = []
 
     for item in req.items:
+        # Resolve product_id if None or string fallback
+        resolved_pid = item.product_id
+        if not resolved_pid and item.product_model:
+            m_res = await db.execute(select(Product).where(func.lower(Product.model) == func.lower(item.product_model.strip())))
+            p_cand = m_res.scalars().first()
+            if p_cand:
+                resolved_pid = p_cand.id
+        if not resolved_pid and item.product_name:
+            n_res = await db.execute(select(Product).where(func.lower(Product.name) == func.lower(item.product_name.strip())))
+            p_cand = n_res.scalars().first()
+            if p_cand:
+                resolved_pid = p_cand.id
+        if not resolved_pid:
+            first_p = (await db.execute(select(Product).where(Product.is_active == True))).scalars().first()
+            if first_p:
+                resolved_pid = first_p.id
+
+        if not resolved_pid:
+            raise HTTPException(status_code=400, detail="Could not resolve product model for outward dispatch.")
+
         unit_map = item.unit_types or {}
         batch_cleaned: list[tuple[str, bool, Optional[str]]] = []
         for s in item.serials:
@@ -878,9 +1030,9 @@ async def create_outward_multi_batch(
         if not batch_cleaned:
             raise HTTPException(
                 status_code=400,
-                detail=f"No valid serial numbers provided for model with ID {item.product_id}.",
+                detail=f"No valid serial numbers provided for model with ID {resolved_pid}.",
             )
-        cleaned_items_per_batch.append((item.product_id, batch_cleaned))
+        cleaned_items_per_batch.append((resolved_pid, batch_cleaned))
 
     if not global_seen_serials:
         raise HTTPException(status_code=400, detail="No valid serial numbers provided in dispatch.")
@@ -1275,8 +1427,48 @@ async def create_outward_multi_batch(
     )
     db.add(audit)
 
+    # Auto-mark matching Tally Sales Voucher as processed
+    vouchers_to_broadcast = []
+    vouchers_to_mark = []
+
+    if getattr(req, "tally_voucher_id", None):
+        t_id_res = await db.execute(
+            select(TallySalesVoucher).where(TallySalesVoucher.id == req.tally_voucher_id)
+        )
+        for vch in t_id_res.scalars().all():
+            vouchers_to_mark.append(vch)
+
+    if req.bill_number and req.bill_number.strip():
+        clean_bill_no = req.bill_number.strip().lower()
+        t_res = await db.execute(
+            select(TallySalesVoucher).where(
+                func.trim(func.lower(TallySalesVoucher.voucher_number)) == clean_bill_no
+            )
+        )
+        for vch in t_res.scalars().all():
+            if vch not in vouchers_to_mark:
+                vouchers_to_mark.append(vch)
+
+    for t_vch in vouchers_to_mark:
+        if not t_vch.is_processed:
+            t_vch.is_processed = True
+            t_vch.processed_at = datetime.now()
+            t_vch.processed_by_id = current_user.id
+            t_vch.notes = f"Dispatched via GA STOCK Outward (Bill: {req.bill_number or 'Direct'})"
+            vouchers_to_broadcast.append(t_vch)
+
     # 13. Single Atomic Commit
     await db.commit()
+
+    for t_vch_to_broadcast in vouchers_to_broadcast:
+        try:
+            await ws_manager.broadcast("tally_bill_processed", {
+                "id": str(t_vch_to_broadcast.id),
+                "voucher_number": t_vch_to_broadcast.voucher_number,
+                "is_processed": True,
+            })
+        except Exception:
+            pass
 
     # 14. Broadcast WebSockets
     for pid in product_ids:
@@ -1478,8 +1670,7 @@ async def list_outward_bills(
             Product.name.label("product_name"),
             Product.brand.label("product_brand"),
             Product.model.label("product_model"),
-            Shop.name.label("shop_name"),
-            Shop.city.label("shop_city"),
+            Shop,
             User.full_name.label("dispatcher_name"),
             Canceller.full_name.label("canceller_name"),
         )
@@ -1496,6 +1687,7 @@ async def list_outward_bills(
             (OutwardBatch.bill_number.ilike(s))
             | (Shop.name.ilike(s))
             | (Shop.city.ilike(s))
+            | (Shop.gstin.ilike(s))
             | (OutwardBatch.delivery_reference.ilike(s))
         )
     if shop_id:
@@ -1510,7 +1702,7 @@ async def list_outward_bills(
 
     # Group batches by bill_number and status (separate active vs cancelled)
     bills_map: dict[str, dict] = {}
-    for b, p_name, p_brand, p_model, s_name, s_city, u_name, c_name in rows:
+    for b, p_name, p_brand, p_model, shop, u_name, c_name in rows:
         b_norm = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
         if b.is_cancelled:
             # Differentiate cancelled bills from active ones, and if the same bill number was cancelled multiple times,
@@ -1521,15 +1713,29 @@ async def list_outward_bills(
             b_key = f"{b_norm}::ACTIVE"
 
         if b_key not in bills_map:
+            raw_b_num = (b.bill_number or "").strip()
+            raw_del_ref = (b.delivery_reference or "").strip()
+            is_ref_bill_no = raw_del_ref.lower().startswith("tally:") or (raw_del_ref.lower() == raw_b_num.lower())
+            v_num_clean = raw_del_ref if raw_del_ref and not is_ref_bill_no else None
+            del_ref_clean = raw_del_ref if raw_del_ref and not is_ref_bill_no else None
+
             bills_map[b_key] = {
                 "bill_number": b.bill_number or f"REF-{b.delivery_reference or str(b.id)[:8]}",
                 "shop_id": b.shop_id,
-                "shop_name": s_name,
-                "shop_city": s_city,
+                "shop_name": shop.name,
+                "shop_city": shop.city,
+                "shop_gstin": shop.gstin,
+                "shop_address": shop.address,
+                "shop_state": shop.state,
+                "shop_phone": shop.phone,
+                "vehicle_number": v_num_clean,
+                "transporter_name": None,
+                "delivery_note": None,
+                "destination": shop.city,
                 "transaction_date": b.transaction_date,
                 "created_at": b.created_at,
                 "dispatched_by_name": u_name,
-                "delivery_reference": b.delivery_reference,
+                "delivery_reference": del_ref_clean,
                 "remarks": b.remarks,
                 "total_units": 0,
                 "total_batches": 0,
@@ -1579,8 +1785,7 @@ async def get_outward_bill_detail(
             Product.name.label("product_name"),
             Product.brand.label("product_brand"),
             Product.model.label("product_model"),
-            Shop.name.label("shop_name"),
-            Shop.city.label("shop_city"),
+            Shop,
             User.full_name.label("dispatcher_name"),
             Canceller.full_name.label("canceller_name"),
         )
@@ -1629,9 +1834,42 @@ async def get_outward_bill_detail(
             if latest_c_at:
                 rows = [r for r in rows if (r[0].cancelled_at or r[0].created_at) == latest_c_at]
 
-    first_b, _, _, _, s_name, s_city, u_name, c_name = rows[0]
+    first_b, _, _, _, shop, u_name, c_name = rows[0]
 
-    batch_ids = [b.id for b, _, _, _, _, _, _, _ in rows]
+    # Look up corresponding Tally sales voucher for transport/vehicle details if linked
+    tally_v_res = await db.execute(
+        select(TallySalesVoucher).where(
+            func.lower(TallySalesVoucher.voucher_number) == clean_b_num.lower()
+        )
+    )
+    tally_v = tally_v_res.scalars().first()
+
+    # Extract vehicle number: prioritize mobile dispatch input (delivery_reference) if provided and valid,
+    # otherwise fall back to Tally voucher vehicle_number
+    v_num = None
+    clean_del_ref = None
+    if first_b.delivery_reference:
+        raw_ref = first_b.delivery_reference.strip()
+        is_ref_bill_no = raw_ref.lower().startswith("tally:") or (raw_ref.lower() == clean_b_num.lower())
+        if not is_ref_bill_no and raw_ref:
+            clean_del_ref = raw_ref
+            v_num = raw_ref
+
+    if not v_num and tally_v and tally_v.vehicle_number:
+        v_num = tally_v.vehicle_number
+
+    t_name = tally_v.transporter_name if tally_v else None
+    d_note = tally_v.delivery_note if tally_v else None
+    dest = (tally_v.destination if tally_v and tally_v.destination else None) or shop.city
+
+    s_gstin = shop.gstin or (tally_v.raw_metadata.get("party_gstin") if tally_v and tally_v.raw_metadata else None)
+    s_addr = shop.address or (tally_v.address if tally_v else None)
+    s_state = shop.state or (tally_v.state_name if tally_v else None)
+    s_pincode = shop.pincode or (tally_v.raw_metadata.get("pincode") if tally_v and tally_v.raw_metadata else None)
+    s_phone = shop.phone
+    s_contact = shop.contact_person
+
+    batch_ids = [b.id for b, _, _, _, _, _, _ in rows]
     lines_res = await db.execute(
         select(OutwardLine)
         .where(OutwardLine.batch_id.in_(batch_ids))
@@ -1662,7 +1900,7 @@ async def get_outward_bill_detail(
     canceller_name = None
     cancel_reason = None
 
-    for b, p_name, p_brand, p_model, _, _, _, b_c_name in rows:
+    for b, p_name, p_brand, p_model, _, _, b_c_name in rows:
         total_units += b.quantity
         if b.is_cancelled:
             is_any_cancelled = True
@@ -1689,12 +1927,22 @@ async def get_outward_bill_detail(
     return BillDetailResponse(
         bill_number=first_b.bill_number or clean_b_num,
         shop_id=first_b.shop_id,
-        shop_name=s_name,
-        shop_city=s_city,
+        shop_name=shop.name,
+        shop_city=shop.city,
+        shop_gstin=s_gstin,
+        shop_address=s_addr,
+        shop_state=s_state,
+        shop_pincode=s_pincode,
+        shop_phone=s_phone,
+        shop_contact_person=s_contact,
+        vehicle_number=v_num,
+        transporter_name=t_name,
+        delivery_note=d_note,
+        destination=dest,
         transaction_date=first_b.transaction_date,
         created_at=first_b.created_at,
         dispatched_by_name=u_name,
-        delivery_reference=first_b.delivery_reference,
+        delivery_reference=clean_del_ref,
         remarks=first_b.remarks,
         total_units=total_units,
         total_batches=len(rows),

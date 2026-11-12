@@ -39,7 +39,7 @@ function buildBillPdf(bill) {
 
   // --- 1. TALLY PRIME STYLE HEADER BOX ---
   const startY = 12;
-  const headerBoxHeight = 58;
+  const headerBoxHeight = 68;
 
   // Outer border of header
   doc.rect(margin, startY, contentWidth, headerBoxHeight);
@@ -58,7 +58,7 @@ function buildBillPdf(bill) {
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   const subText = bill.is_cancelled
-    ? '(THIS BILL HAS BEEN CANCELLED - ALL SERIALS RETURNED TO INVENTORY)'
+    ? '(THIS BILL HAS BEEN CANCELLED - RETURN SCAN PENDING)'
     : '(CENTRAL WAREHOUSE OUTWARD DISPATCH / STOCK TRANSFER VOUCHER)';
   doc.text(subText, pageWidth / 2, startY + 9.5, {
     align: 'center',
@@ -68,56 +68,98 @@ function buildBillPdf(bill) {
   // Divider line under title
   doc.line(margin, startY + 11.5, pageWidth - margin, startY + 11.5);
 
-  // Vertical split between Consignor/Consignee (Left: 98mm) and Voucher Details (Right: 88mm)
-  const splitX = margin + 98;
+  // Vertical split between Consignor/Consignee (Left: 100mm) and Voucher Details (Right: 86mm)
+  const splitX = margin + 100;
   doc.line(splitX, startY + 11.5, splitX, startY + headerBoxHeight);
 
   // Horizontal divider on the left side (dividing Dispatcher from Consignee)
-  const leftMidY = startY + 34;
+  const leftMidY = startY + 28;
   doc.line(margin, leftMidY, splitX, leftMidY);
 
   // Left Top: Dispatcher / Consignor with Emblem Logo
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7);
-  doc.text('Consignor / Dispatcher:', margin + 2.5, startY + 15.5);
+  doc.setFontSize(6.8);
+  doc.text('Consignor / Dispatcher:', margin + 2.5, startY + 15);
 
   let textStartX = margin + 2.5;
   if (LOGO_BASE64) {
     try {
-      doc.addImage(LOGO_BASE64, 'PNG', margin + 2.5, startY + 17, 14, 14);
-      textStartX = margin + 19;
+      doc.addImage(LOGO_BASE64, 'PNG', margin + 2.5, startY + 16, 11, 11);
+      textStartX = margin + 15.5;
     } catch (err) {}
   }
 
-  doc.setFontSize(10.5);
-  doc.text('GLOBAL LOGISTICS', textStartX, startY + 22);
+  doc.setFontSize(9.5);
+  doc.text('GLOBAL LOGISTICS', textStartX, startY + 20);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.2);
-  doc.text('Central Warehouse & Distribution', textStartX, startY + 26.5);
-  doc.text('Stock Management & Automated Serial Register', textStartX, startY + 30.5);
+  doc.setFontSize(6.8);
+  doc.text('Central Warehouse & Distribution', textStartX, startY + 23.8);
+  doc.text('Stock Management & Automated Serial Register', textStartX, startY + 27);
 
   // Left Bottom: Consignee (Buyer / Dispatch To)
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7);
-  doc.text('Consignee / Buyer (Dispatch To):', margin + 2.5, leftMidY + 4.5);
+  doc.text('Consignee / Buyer (Dispatch To):', margin + 2.5, leftMidY + 4);
 
   doc.setFontSize(9);
-  doc.text(bill.shop_name || '', margin + 2.5, leftMidY + 9.5, {
+  doc.text(bill.shop_name || '', margin + 2.5, leftMidY + 8.5, {
     maxWidth: splitX - margin - 5,
   });
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.2);
-  let leftInfoY = leftMidY + 14.5;
-  if (bill.shop_city && bill.shop_city.trim()) {
-    doc.text(`Location: ${bill.shop_city.trim()}`, margin + 2.5, leftInfoY, {
+  let leftInfoY = leftMidY + 12.5;
+
+  // Show GSTIN / UIN if available
+  if (bill.shop_gstin && bill.shop_gstin.trim()) {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.text(`GSTIN / UIN: ${bill.shop_gstin.trim()}`, margin + 2.5, leftInfoY, {
       maxWidth: splitX - margin - 5,
     });
-    leftInfoY += 4;
+    leftInfoY += 3.8;
   }
-  if (bill.remarks) {
-    doc.text(`Remarks: ${bill.remarks}`, margin + 2.5, leftInfoY, {
+
+  // Show complete Address if available
+  if (bill.shop_address && bill.shop_address.trim()) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    const addrLines = doc.splitTextToSize(`Address: ${bill.shop_address.trim()}`, splitX - margin - 5);
+    doc.text(addrLines, margin + 2.5, leftInfoY);
+    leftInfoY += addrLines.length * 3.2;
+  }
+
+  // Show City, State & PIN
+  const locParts = [];
+  if (bill.shop_city && bill.shop_city.trim()) locParts.push(bill.shop_city.trim());
+  if (bill.shop_state && bill.shop_state.trim()) locParts.push(`State: ${bill.shop_state.trim()}`);
+  if (bill.shop_pincode && bill.shop_pincode.trim()) locParts.push(`PIN: ${bill.shop_pincode.trim()}`);
+  if (locParts.length > 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    doc.text(`Location: ${locParts.join(', ')}`, margin + 2.5, leftInfoY, {
+      maxWidth: splitX - margin - 5,
+    });
+    leftInfoY += 3.5;
+  }
+
+  // Show Phone & Contact Person if available
+  const contactParts = [];
+  if (bill.shop_phone && bill.shop_phone.trim()) contactParts.push(`Ph: ${bill.shop_phone.trim()}`);
+  if (bill.shop_contact_person && bill.shop_contact_person.trim()) contactParts.push(`Attn: ${bill.shop_contact_person.trim()}`);
+  if (contactParts.length > 0) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.8);
+    doc.text(contactParts.join(' • '), margin + 2.5, leftInfoY, {
+      maxWidth: splitX - margin - 5,
+    });
+    leftInfoY += 3.5;
+  }
+
+  // Show Remarks if available
+  if (bill.remarks && bill.remarks.trim()) {
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(6.5);
+    doc.text(`Remarks: ${bill.remarks.trim()}`, margin + 2.5, leftInfoY, {
       maxWidth: splitX - margin - 5,
     });
   }
@@ -126,16 +168,16 @@ function buildBillPdf(bill) {
   const labelX = splitX + 3;
   const valX = splitX + 31;
   const maxValWidth = pageWidth - margin - valX - 2;
-  let rY = startY + 16.5;
+  let rY = startY + 15.5;
 
   const addRightRow = (label, value, boldVal = true) => {
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7.2);
     doc.text(label, labelX, rY);
     doc.setFont('helvetica', boldVal ? 'bold' : 'normal');
-    doc.setFontSize(7.8);
+    doc.setFontSize(7.5);
     doc.text(String(value || ''), valX, rY, { maxWidth: maxValWidth });
-    rY += 6;
+    rY += 4.8;
   };
 
   addRightRow('Challan / Bill No.:', bill.bill_number, true);
@@ -147,13 +189,26 @@ function buildBillPdf(bill) {
   if (bill.is_cancelled && bill.cancelled_by_name) {
     addRightRow('Cancelled By:', bill.cancelled_by_name, true);
   }
-  addRightRow('Vehicle / Ref:', bill.delivery_reference || 'Direct / Local', true);
+
+  const rawRef = bill.delivery_reference ? String(bill.delivery_reference).trim() : '';
+  const isRefBillNo = rawRef.toLowerCase() === String(bill.bill_number || '').trim().toLowerCase() || rawRef.toLowerCase().startsWith('tally:');
+  const vehicleVal = bill.vehicle_number || (!isRefBillNo && rawRef ? rawRef : '') || 'Direct / Local';
+  addRightRow('Vehicle / Reg No.:', vehicleVal, true);
+
+  if (bill.transporter_name && bill.transporter_name.trim()) {
+    addRightRow('Transporter:', bill.transporter_name.trim(), false);
+  }
+
+  if (bill.delivery_note && bill.delivery_note.trim()) {
+    addRightRow('Delivery Note:', bill.delivery_note.trim(), false);
+  }
+
   addRightRow('Mode of Transport:', 'Road / Local Delivery', false);
 
   const destinationVal =
-    bill.shop_city && bill.shop_city.trim()
-      ? bill.shop_city.trim()
-      : bill.shop_name || '-';
+    bill.destination && bill.destination.trim()
+      ? bill.destination.trim()
+      : (bill.shop_city && bill.shop_city.trim() ? bill.shop_city.trim() : (bill.shop_name || '-'));
   addRightRow('Destination:', destinationVal, false);
 
   // --- 2. TABLE 1: DESCRIPTION OF GOODS & QUANTITY BREAKDOWN ---
@@ -403,9 +458,9 @@ function buildBillPdf(bill) {
     // Watermark on every page if bill is cancelled
     if (bill.is_cancelled) {
       doc.saveGraphicsState();
-      doc.setGState(new doc.GState({ opacity: 0.16 }));
+      doc.setGState(new doc.GState({ opacity: 0.20 }));
       doc.setTextColor(220, 38, 38);
-      doc.setFontSize(60);
+      doc.setFontSize(70);
       doc.setFont('helvetica', 'bold');
       doc.text('CANCELLED', pageWidth / 2, pageHeight / 2, {
         align: 'center',

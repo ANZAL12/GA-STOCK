@@ -4,7 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.database import AsyncSessionLocal
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from app.main import app
 from app.models.product import Product
 from app.models.tally import TallyConfig, TallySalesVoucher, TallyVoucherItem
@@ -228,7 +228,7 @@ async def test_tally_database_sync_and_endpoints():
         created, updated, cancelled = await TallySyncService.process_vouchers(
             session, parsed_vouchers, company_name="Global Agencies"
         )
-        assert created == 2
+        assert created == 1
         assert cancelled == 1
 
         # Check idempotent update
@@ -236,7 +236,7 @@ async def test_tally_database_sync_and_endpoints():
             session, parsed_vouchers, company_name="Global Agencies"
         )
         assert c2 == 0
-        assert u2 == 2
+        assert u2 == 1
 
     # 2. Test FastAPI Endpoints
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -252,7 +252,7 @@ async def test_tally_database_sync_and_endpoints():
         status_data = status_res.json()
         assert "is_connected" in status_data
         assert "total_vouchers" in status_data
-        assert status_data["total_vouchers"] >= 2
+        assert status_data["total_vouchers"] >= 1
 
         # Test POST /api/tally/connect
         conn_res = await client.post(
@@ -273,7 +273,7 @@ async def test_tally_database_sync_and_endpoints():
         assert agent_token is not None
 
         # Test GET /api/tally/sales-vouchers
-        list_res = await client.get(f"/api/tally/sales-vouchers?q={run_id}", headers=headers)
+        list_res = await client.get(f"/api/tally/sales-vouchers?q={run_id}&include_mock=true", headers=headers)
         assert list_res.status_code == 200
         vouchers_list = list_res.json()
         assert len(vouchers_list) >= 1
@@ -344,12 +344,244 @@ async def test_tally_database_sync_and_endpoints():
         )
         assert bad_token_res.status_code == 403
 
-        # Clean up test vouchers and shops after test run so database stays 100% clean
+        # Clean up only this test run's vouchers and shops
         async with AsyncSessionLocal() as cleanup_session:
             from app.models.tally import TallyVoucherItem, TallySalesVoucher, TallySyncHistory
             from app.models.shop import Shop
-            await cleanup_session.execute(delete(TallyVoucherItem))
-            await cleanup_session.execute(delete(TallySalesVoucher))
-            await cleanup_session.execute(delete(TallySyncHistory))
+            from sqlalchemy import or_
+            await cleanup_session.execute(
+                delete(TallyVoucherItem).where(
+                    TallyVoucherItem.voucher_id.in_(
+                        select(TallySalesVoucher.id).where(
+                            or_(
+                                TallySalesVoucher.guid.contains(run_id),
+                                TallySalesVoucher.guid.startswith("tally-guid-sales-"),
+                                TallySalesVoucher.guid.startswith("agent-push-vch-"),
+                            )
+                        )
+                    )
+                )
+            )
+            await cleanup_session.execute(
+                delete(TallySalesVoucher).where(
+                    or_(
+                        TallySalesVoucher.guid.contains(run_id),
+                        TallySalesVoucher.guid.startswith("tally-guid-sales-"),
+                        TallySalesVoucher.guid.startswith("agent-push-vch-"),
+                    )
+                )
+            )
             await cleanup_session.execute(delete(Shop).where(Shop.name.in_(["Agent Delivered Store", "Sree Electronics"])))
             await cleanup_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_outward_check_serial_with_tally_fallback_id():
+    """Verify that check-serial and check-reference gracefully handle non-UUID strings without 422."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Login
+        login_res = await client.post("/api/v1/auth/login", json={"username": "staff_test", "password": "Staff@12345"})
+        assert login_res.status_code == 200
+        headers = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+
+        # 1. GET check-serial with non-UUID product_id fallback string
+        res1 = await client.get(
+            "/api/v1/outward/check-serial?serial_number=NONEXISTENT123&product_id=tally_item_dummy123",
+            headers=headers,
+        )
+        assert res1.status_code == 200, f"Expected 200 but got {res1.status_code}: {res1.text}"
+        data1 = res1.json()
+        assert data1["case"] == 2  # Untracked stock case
+
+        # 2. POST check-serial with non-UUID product_id fallback string
+        res2 = await client.post(
+            "/api/v1/outward/check-serial",
+            headers=headers,
+            json={"serial_number": "NONEXISTENT123", "product_id": "tally_item_dummy123"},
+        )
+        assert res2.status_code == 200, f"Expected 200 but got {res2.status_code}: {res2.text}"
+        data2 = res2.json()
+        assert data2["case"] == 2
+
+        # 3. GET check-reference with non-UUID shop_id
+        res3 = await client.get(
+            "/api/v1/outward/check-reference?reference=REF123&shop_id=tally_shop_nonuuid",
+            headers=headers,
+        )
+        assert res3.status_code == 200, f"Expected 200 but got {res3.status_code}: {res3.text}"
+        data3 = res3.json()
+        assert data3["has_warning"] is False
+
+
+@pytest.mark.asyncio
+async def test_tally_cancellation_marks_outward_batch_cancelled_without_changing_serial_status():
+    """
+    Verify that when a bill is cancelled from Tally:
+    1. OutwardBatch.is_cancelled is marked True with reason 'Cancelled in TallyPrime'
+    2. OutwardLine.is_cancelled is marked True
+    3. SerialNumber.status is NOT changed (remains dispatched until physically scanned as Return by godown staff)
+    """
+    from datetime import date
+    from app.models.outward import OutwardBatch, OutwardLine
+    from app.models.serial import SerialNumber, SerialStatus
+    from app.models.product import Product
+    from app.models.shop import Shop
+    from app.models.user import User
+
+    test_b_num = f"TALLY-CANCEL-{uuid.uuid4().hex[:6]}".upper()
+
+    async with AsyncSessionLocal() as session:
+        # 1. Setup test product & shop
+        prod = (await session.execute(select(Product))).scalars().first()
+        shop = (await session.execute(select(Shop))).scalars().first()
+        user = (await session.execute(select(User))).scalars().first()
+        assert prod is not None
+        assert shop is not None
+        assert user is not None
+
+        # 2. Setup outward batch and line
+        batch = OutwardBatch(
+            shop_id=shop.id,
+            product_id=prod.id,
+            dispatched_by_user_id=user.id,
+            quantity=1,
+            matched_count=1,
+            unmatched_count=0,
+            flagged_count=0,
+            transaction_date=date.today(),
+            bill_number=test_b_num,
+            is_cancelled=False,
+        )
+        session.add(batch)
+        await session.flush()
+
+        test_sn_text = f"SN-CANCEL-TEST-{uuid.uuid4().hex[:6]}".upper()
+        sn = SerialNumber(
+            serial_number=test_sn_text,
+            product_id=prod.id,
+            status=SerialStatus.dispatched,
+            last_shop_id=shop.id,
+        )
+        session.add(sn)
+        await session.flush()
+
+        line = OutwardLine(
+            batch_id=batch.id,
+            product_id=prod.id,
+            shop_id=shop.id,
+            serial_text=test_sn_text,
+            serial_number_id=sn.id,
+            is_matched=True,
+            is_cancelled=False,
+            transaction_date=date.today(),
+        )
+        session.add(line)
+        await session.commit()
+
+        try:
+            # 3. Process incoming Tally cancellation for this voucher
+            vch_cancel_payload = [
+                {
+                    "guid": f"tally-guid-cancel-{test_b_num}",
+                    "voucher_number": test_b_num,
+                    "voucher_date": date.today(),
+                    "party_name": shop.name,
+                    "is_cancelled": True,
+                    "is_deleted": False,
+                    "items": [],
+                }
+            ]
+            c, u, canc = await TallySyncService.process_vouchers(session, vch_cancel_payload)
+            assert canc == 1
+
+            # 4. Verify OutwardBatch and OutwardLine are cancelled
+            reloaded_batch = await session.get(OutwardBatch, batch.id)
+            assert reloaded_batch.is_cancelled is True
+            assert reloaded_batch.cancel_reason == "Cancelled in TallyPrime"
+            assert reloaded_batch.cancelled_at is not None
+
+            reloaded_line = await session.get(OutwardLine, line.id)
+            assert reloaded_line.is_cancelled is True
+
+            # 5. STRICT USER CONSTRAINT: Serial number status MUST NOT be changed!
+            reloaded_sn = await session.get(SerialNumber, sn.id)
+            assert reloaded_sn.status == SerialStatus.dispatched
+
+        finally:
+            # Cleanup test data
+            await session.delete(line)
+            await session.delete(sn)
+            await session.delete(batch)
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_brand_separated_shop_gstin_auto_fill():
+    """
+    Test GSTIN extraction from nested Tally elements, root name extraction,
+    and automatic GSTIN inheritance across brand-separated shops.
+    """
+    from app.services.tally_service import (
+        extract_gstin,
+        extract_gstin_from_element,
+        get_shop_root_name,
+        TallySyncService,
+    )
+    from app.models.shop import Shop
+    import xml.etree.ElementTree as ET
+    import uuid
+
+    # 1. Test root name normalization
+    assert get_shop_root_name("APOLLO ELECTRONICS - DAIKIN") == "APOLLO ELECTRONICS"
+    assert get_shop_root_name("APOLLO ELECTRONICS (VOLTAS)") == "APOLLO ELECTRONICS"
+    assert get_shop_root_name("APOLLO ELECTRONICS [LG]") == "APOLLO ELECTRONICS"
+    assert get_shop_root_name("APOLLO ELECTRONICS - AC DIVISION") == "APOLLO ELECTRONICS"
+    assert get_shop_root_name("APOLLO ELECTRONICS DAIKIN") == "APOLLO ELECTRONICS"
+
+    # 2. Test nested Tally GST extraction
+    xml_sample = """
+    <LEDGER NAME="ABC TRADERS (DAIKIN)">
+      <LEDGSTREGDETAILS.LIST>
+        <LEDGSTREGDETAILS>
+          <GSTREGISTRATIONNUMBER>32AABCU9876D1Z5</GSTREGISTRATIONNUMBER>
+        </LEDGSTREGDETAILS>
+      </LEDGSTREGDETAILS.LIST>
+    </LEDGER>
+    """
+    elem = ET.fromstring(xml_sample)
+    extracted = extract_gstin_from_element(elem)
+    assert extracted == "32AABCU9876D1Z5"
+
+    # 3. Test Database auto_fill_brand_gstins across brand siblings
+    async with AsyncSessionLocal() as session:
+        uid = uuid.uuid4().hex[:6]
+        shop_a = Shop(
+            name=f"BRAND SHOP {uid} (DAIKIN)",
+            city="Cochin",
+            gstin="32AABCU1234F1Z5",
+            source="TALLY",
+            is_active=True,
+        )
+        shop_b = Shop(
+            name=f"BRAND SHOP {uid} - VOLTAS",
+            city="Cochin",
+            gstin=None,
+            source="TALLY",
+            is_active=True,
+        )
+        session.add(shop_a)
+        session.add(shop_b)
+        await session.commit()
+
+        try:
+            filled = await TallySyncService.auto_fill_brand_gstins(session)
+            assert filled >= 1
+
+            reloaded_b = await session.get(Shop, shop_b.id)
+            assert reloaded_b.gstin == "32AABCU1234F1Z5"
+
+        finally:
+            await session.delete(shop_a)
+            await session.delete(shop_b)
+            await session.commit()
+

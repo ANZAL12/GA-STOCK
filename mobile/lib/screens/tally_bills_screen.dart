@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../services/sound_service.dart';
+import '../services/websocket_service.dart';
 import '../widgets/top_toast.dart';
 import 'outward_screen.dart';
 
@@ -26,18 +28,109 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
 
   TallyStatus? _tallyStatus;
   List<TallySalesVoucher> _vouchers = [];
-
-  // Filter state: 'all', 'pending', 'processed', 'cancelled'
-  String _activeFilter = 'pending';
+  StreamSubscription? _wsSubscription;
+  VoidCallback? _newBillSub;
 
   @override
   void initState() {
     super.initState();
+    _api.tallyBillProcessedNotifier.addListener(_onBillProcessed);
+    _initLiveUpdates();
     _loadData();
+  }
+
+  void _initLiveUpdates() {
+    WebSocketService().connect();
+    _wsSubscription = WebSocketService().stream.listen((event) {
+      if (!mounted) return;
+      final type = event['event']?.toString() ?? event['type']?.toString();
+      final data = event['data'];
+
+      if (type == 'tally_bill_created' && data is Map<String, dynamic>) {
+        try {
+          final vch = TallySalesVoucher.fromJson(data);
+          final query = _searchController.text.trim().toLowerCase();
+          final matches = query.isEmpty ||
+              vch.voucherNumber.toLowerCase().contains(query) ||
+              vch.partyName.toLowerCase().contains(query);
+
+          if (matches) {
+            setState(() {
+              _vouchers.removeWhere((v) =>
+                  v.id == vch.id ||
+                  v.voucherNumber.trim().toLowerCase() == vch.voucherNumber.trim().toLowerCase());
+              _vouchers.insert(0, vch);
+            });
+            HapticFeedback.mediumImpact();
+            SoundService().playScannerBeep();
+            TopToast.show(
+              context,
+              message: '⚡ New Tally Bill: ${vch.voucherNumber} (${vch.partyName})',
+              backgroundColor: const Color(0xFF0284C7),
+            );
+          }
+        } catch (e) {
+          debugPrint('[TallyBills] Failed to parse real-time voucher: $e');
+        }
+      } else if ((type == 'tally_bill_cancelled' || type == 'bill_cancelled') && data is Map<String, dynamic>) {
+        final bNum = (data['bill_number'] ?? data['voucher_number'])?.toString().trim().toLowerCase();
+        if (bNum != null && bNum.isNotEmpty) {
+          setState(() {
+            _vouchers.removeWhere((v) => v.voucherNumber.trim().toLowerCase() == bNum);
+          });
+        }
+      } else if (type == 'tally_bill_processed' && data is Map<String, dynamic>) {
+        final processedId = data['id']?.toString();
+        final voucherNum = data['voucher_number']?.toString().trim().toLowerCase();
+        setState(() {
+          _vouchers.removeWhere((x) =>
+              x.id == processedId ||
+              x.voucherNumber.trim().toLowerCase() == voucherNum);
+        });
+      }
+    });
+
+    _newBillSub = () {
+      final newBill = _api.latestTallyBillNotifier.value;
+      if (newBill != null && mounted) {
+        final query = _searchController.text.trim().toLowerCase();
+        final matches = query.isEmpty ||
+            newBill.voucherNumber.toLowerCase().contains(query) ||
+            newBill.partyName.toLowerCase().contains(query);
+        if (matches) {
+          setState(() {
+            _vouchers.removeWhere((v) =>
+                v.id == newBill.id ||
+                v.voucherNumber.trim().toLowerCase() == newBill.voucherNumber.trim().toLowerCase());
+            _vouchers.insert(0, newBill);
+          });
+        }
+      }
+    };
+    _api.latestTallyBillNotifier.addListener(_newBillSub!);
+  }
+
+  void _onBillProcessed() {
+    if (mounted) {
+      final processedId = _api.tallyBillProcessedNotifier.value;
+      if (processedId != null) {
+        setState(() {
+          _vouchers.removeWhere((x) =>
+              x.id == processedId ||
+              x.voucherNumber.trim().toLowerCase() == processedId.trim().toLowerCase());
+        });
+      }
+      _loadData(showIndicator: false);
+    }
   }
 
   @override
   void dispose() {
+    _api.tallyBillProcessedNotifier.removeListener(_onBillProcessed);
+    if (_newBillSub != null) {
+      _api.latestTallyBillNotifier.removeListener(_newBillSub!);
+    }
+    _wsSubscription?.cancel();
     _searchController.dispose();
     _debounceTimer?.cancel();
     super.dispose();
@@ -53,23 +146,10 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
 
     try {
       final statusFuture = _api.getTallyStatus();
-
-      bool? filterProcessed;
-      bool? filterCancelled;
-
-      if (_activeFilter == 'pending') {
-        filterProcessed = false;
-        filterCancelled = false;
-      } else if (_activeFilter == 'processed') {
-        filterProcessed = true;
-      } else if (_activeFilter == 'cancelled') {
-        filterCancelled = true;
-      }
-
       final vouchersFuture = _api.getTallyVouchers(
         query: _searchController.text.trim().isEmpty ? null : _searchController.text.trim(),
-        isProcessed: filterProcessed,
-        isCancelled: filterCancelled,
+        isProcessed: false,
+        isCancelled: false,
         limit: 100,
       );
 
@@ -120,7 +200,7 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
 
   Future<void> _openVoucherDetail(TallySalesVoucher summary) async {
     HapticFeedback.lightImpact();
-    showDialog(
+    await showDialog(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => _VoucherDetailDialog(
@@ -129,12 +209,11 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
         onStatusChanged: () => _loadData(showIndicator: false),
       ),
     );
+    _loadData(showIndicator: false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final isTablet = MediaQuery.of(context).size.width >= 600;
-
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
@@ -180,11 +259,8 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
         color: const Color(0xFF3C3489),
         child: Column(
           children: [
-            // Status & Sync Banner
-            _buildStatusHeader(isTablet),
-
-            // Search Bar & Filters
-            _buildSearchAndFilters(),
+            // Search Bar
+            _buildSearchBar(),
 
             // List of Sales Bills
             Expanded(
@@ -196,206 +272,36 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
     );
   }
 
-  Widget _buildStatusHeader(bool isTablet) {
-    if (_tallyStatus == null && _loading) return const SizedBox.shrink();
-
-    final isOnline = _tallyStatus?.isConnected == true;
-    final lastSync = _tallyStatus?.lastSyncAt;
-    String lastSyncText = 'Never synced';
-    if (lastSync != null) {
-      try {
-        final dt = DateTime.parse(lastSync).toLocal();
-        final now = DateTime.now();
-        if (now.difference(dt).inMinutes < 1) {
-          lastSyncText = 'Just now';
-        } else if (now.difference(dt).inHours < 1) {
-          lastSyncText = '${now.difference(dt).inMinutes} min ago';
-        } else {
-          lastSyncText = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-        }
-      } catch (_) {}
-    }
-
+  Widget _buildSearchBar() {
     return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x0A000000),
-            blurRadius: 6,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: isOnline ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              isOnline ? Icons.check_circle_rounded : Icons.cloud_off_rounded,
-              color: isOnline ? const Color(0xFF059669) : const Color(0xFFDC2626),
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      isOnline ? 'TallyPrime Online' : 'Tally Offline / Agent Ready',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.bold,
-                        color: isOnline ? const Color(0xFF059669) : const Color(0xFFB91C1C),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEEF2FF),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        '${_tallyStatus?.pendingVouchers ?? 0} Pending',
-                        style: const TextStyle(
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF4F46E5),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Last synced: $lastSyncText • Port ${_tallyStatus?.port ?? 9000}',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
-                ),
-              ],
-            ),
-          ),
-          TextButton.icon(
-            style: TextButton.styleFrom(
-              foregroundColor: const Color(0xFF3C3489),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              backgroundColor: const Color(0xFFEEF2FF),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            icon: _syncing
-                ? const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFFCBD5E1)),
+        ),
+        child: TextField(
+          controller: _searchController,
+          onChanged: _onSearchChanged,
+          decoration: InputDecoration(
+            hintText: 'Search by invoice number or party name...',
+            hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
+            prefixIcon: const Icon(Icons.search, size: 20, color: Color(0xFF64748B)),
+            suffixIcon: _searchController.text.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear, size: 18),
+                    onPressed: () {
+                      _searchController.clear();
+                      _loadData(showIndicator: false);
+                    },
                   )
-                : const Icon(Icons.refresh_rounded, size: 16),
-            label: Text(_syncing ? 'Syncing...' : 'Sync Now', style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
-            onPressed: _syncing ? null : () => _triggerSync(),
+                : null,
+            border: InputBorder.none,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSearchAndFilters() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          // Search box
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFCBD5E1)),
-            ),
-            child: TextField(
-              controller: _searchController,
-              onChanged: _onSearchChanged,
-              decoration: InputDecoration(
-                hintText: 'Search by invoice number or party name...',
-                hintStyle: const TextStyle(fontSize: 13, color: Color(0xFF94A3B8)),
-                prefixIcon: const Icon(Icons.search, size: 20, color: Color(0xFF64748B)),
-                suffixIcon: _searchController.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear, size: 18),
-                        onPressed: () {
-                          _searchController.clear();
-                          _loadData(showIndicator: false);
-                        },
-                      )
-                    : null,
-                border: InputBorder.none,
-                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // Filter chips
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _buildFilterChip('pending', 'Pending Dispatch', Icons.pending_actions_rounded),
-                const SizedBox(width: 6),
-                _buildFilterChip('processed', 'Processed in GA', Icons.check_circle_outline),
-                const SizedBox(width: 6),
-                _buildFilterChip('all', 'All Sales Bills', Icons.receipt_long_outlined),
-                const SizedBox(width: 6),
-                _buildFilterChip('cancelled', 'Cancelled Bills', Icons.cancel_outlined),
-              ],
-            ),
-          ),
-          const SizedBox(height: 6),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFilterChip(String filterKey, String label, IconData icon) {
-    final isSelected = _activeFilter == filterKey;
-    return ChoiceChip(
-      selected: isSelected,
-      onSelected: (val) {
-        if (val) {
-          setState(() => _activeFilter = filterKey);
-          _loadData(showIndicator: false);
-        }
-      },
-      avatar: Icon(
-        icon,
-        size: 15,
-        color: isSelected ? Colors.white : const Color(0xFF64748B),
-      ),
-      label: Text(label),
-      selectedColor: const Color(0xFF1E1B4B),
-      backgroundColor: Colors.white,
-      labelStyle: TextStyle(
-        fontSize: 11.5,
-        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-        color: isSelected ? Colors.white : const Color(0xFF334155),
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(
-          color: isSelected ? const Color(0xFF1E1B4B) : const Color(0xFFCBD5E1),
         ),
       ),
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
     );
   }
 
@@ -458,7 +364,7 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
               ),
               const SizedBox(height: 6),
               const Text(
-                'Tap "Sync Now" to import sales invoices from TallyPrime,\nor check your search filters.',
+                'Pull down to refresh or tap below to sync from TallyPrime.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
               ),
@@ -491,9 +397,7 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
         color: Colors.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: v.isProcessed
-              ? const Color(0xFFBBF7D0)
-              : (v.isCancelled ? const Color(0xFFFECACA) : const Color(0xFFE2E8F0)),
+          color: const Color(0xFFE2E8F0),
         ),
         boxShadow: const [
           BoxShadow(
@@ -514,7 +418,7 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Row: Invoice # + Date + Status Badge
+                // Top Row: Invoice # + Date
                 Row(
                   children: [
                     Container(
@@ -538,65 +442,6 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                       v.voucherDate,
                       style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                     ),
-                    const Spacer(),
-                    if (v.isCancelled)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFEF2F2),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: const Color(0xFFFECACA)),
-                        ),
-                        child: const Text(
-                          'CANCELLED',
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFFDC2626),
-                          ),
-                        ),
-                      )
-                    else if (v.isProcessed)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF0FDF4),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: const Color(0xFFBBF7D0)),
-                        ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.check, size: 12, color: Color(0xFF15803D)),
-                            SizedBox(width: 3),
-                            Text(
-                              'Processed',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF15803D),
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    else
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFFFFBEB),
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: const Color(0xFFFDE68A)),
-                        ),
-                        child: const Text(
-                          'Pending Dispatch',
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFFB45309),
-                          ),
-                        ),
-                      ),
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -610,6 +455,38 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                     color: Color(0xFF1E293B),
                   ),
                 ),
+                if (v.vehicleNumber != null && v.vehicleNumber!.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      const Icon(Icons.local_shipping_outlined, size: 14, color: Color(0xFF0284C7)),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          'Vehicle: ${v.vehicleNumber!}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF0369A1),
+                          ),
+                        ),
+                      ),
+                      if (v.transporterName != null && v.transporterName!.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            '• ${v.transporterName!}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
                 if (v.address != null && v.address!.isNotEmpty) ...[
                   const SizedBox(height: 2),
                   Text(
@@ -621,7 +498,7 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                 ],
                 const SizedBox(height: 10),
 
-                // Footer Row: Item Count, Total Units, Godowns
+                // Footer Row: Item Count, Total Units, Godowns, Start Scan
                 Row(
                   children: [
                     Container(
@@ -651,38 +528,42 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                       ),
                     ] else
                       const Spacer(),
-                    if (!v.isProcessed && !v.isCancelled) ...[
-                      const SizedBox(width: 8),
-                      InkWell(
-                        onTap: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => OutwardScreen(fromTallyVoucher: v),
+                    const SizedBox(width: 8),
+                    InkWell(
+                      onTap: () async {
+                        final didDispatch = await Navigator.push<bool>(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => OutwardScreen(fromTallyVoucher: v),
+                          ),
+                        );
+                        if (didDispatch == true && mounted) {
+                          setState(() {
+                            _vouchers.removeWhere((x) => x.id == v.id);
+                          });
+                        }
+                        _loadData(showIndicator: false);
+                      },
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF4F46E5),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.barcode_reader, size: 12, color: Colors.white),
+                            SizedBox(width: 4),
+                            Text(
+                              'Start Scan',
+                              style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
                             ),
-                          );
-                        },
-                        borderRadius: BorderRadius.circular(6),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF4F46E5),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.barcode_reader, size: 12, color: Colors.white),
-                              SizedBox(width: 4),
-                              Text(
-                                'Start Scan',
-                                style: TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
+                          ],
                         ),
                       ),
-                    ],
+                    ),
                     const SizedBox(width: 4),
                     const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
                   ],
@@ -720,7 +601,6 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
   bool _loading = true;
   TallySalesVoucher? _detail;
   String? _error;
-  bool _updating = false;
 
   @override
   void initState() {
@@ -745,64 +625,54 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
     }
   }
 
-  Future<void> _toggleProcessed() async {
-    if (_detail == null || _updating) return;
-    final newProcessed = !_detail!.isProcessed;
-    setState(() => _updating = true);
-
-    try {
-      await _api.markTallyVoucherProcessed(
-        _detail!.id,
-        processed: newProcessed,
-        notes: newProcessed ? 'Marked processed in mobile scanner' : null,
-      );
-      if (!mounted) return;
-      setState(() {
-        _detail = TallySalesVoucher(
-          id: _detail!.id,
-          guid: _detail!.guid,
-          alterId: _detail!.alterId,
-          voucherNumber: _detail!.voucherNumber,
-          voucherDate: _detail!.voucherDate,
-          voucherType: _detail!.voucherType,
-          partyName: _detail!.partyName,
-          partyLedgerName: _detail!.partyLedgerName,
-          buyerName: _detail!.buyerName,
-          address: _detail!.address,
-          stateName: _detail!.stateName,
-          companyName: _detail!.companyName,
-          isCancelled: _detail!.isCancelled,
-          isDeleted: _detail!.isDeleted,
-          isProcessed: newProcessed,
-          processedAt: newProcessed ? DateTime.now().toIso8601String() : null,
-          itemCount: _detail!.itemCount,
-          totalQuantity: _detail!.totalQuantity,
-          godowns: _detail!.godowns,
-          items: _detail!.items,
-          notes: _detail!.notes,
-        );
-        _updating = false;
-      });
-      widget.onStatusChanged();
-      TopToast.show(
-        context,
-        message: newProcessed ? 'Voucher marked as processed!' : 'Voucher unmarked.',
-        backgroundColor: newProcessed ? const Color(0xFF059669) : const Color(0xFF334155),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _updating = false);
-      TopToast.show(context, message: 'Update failed: $e', backgroundColor: const Color(0xFFDC2626));
-    }
-  }
-
-  void _copyToOutward() {
+  void _copyToOutward() async {
     final v = _detail ?? widget.initialSummary;
-    Navigator.pop(context);
-    Navigator.push(
+    Navigator.pop(context, true);
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => OutwardScreen(fromTallyVoucher: v)),
     );
+    widget.onStatusChanged();
+  }
+
+  Future<void> _deleteVoucher() async {
+    final v = _detail ?? widget.initialSummary;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        title: const Text('Delete Bill?', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        content: Text('Are you sure you want to remove bill ${v.voucherNumber}? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete Bill'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      try {
+        await _api.deleteTallyVoucher(v.id);
+        if (!mounted) return;
+        Navigator.pop(context, true);
+        widget.onStatusChanged();
+        TopToast.show(context, message: 'Bill ${v.voucherNumber} removed.', backgroundColor: const Color(0xFF059669));
+      } catch (e) {
+        if (!mounted) return;
+        TopToast.show(context, message: 'Delete failed: $e', backgroundColor: const Color(0xFFDC2626));
+      }
+    }
   }
 
   @override
@@ -846,6 +716,11 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
                         ),
                       ],
                     ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.delete_outline, color: Color(0xFFFCA5A5)),
+                    tooltip: 'Delete Bill',
+                    onPressed: _deleteVoucher,
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Colors.white),
@@ -907,44 +782,67 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
                             ],
                           ),
                         ),
+                        if ((v.vehicleNumber != null && v.vehicleNumber!.isNotEmpty) ||
+                            (v.transporterName != null && v.transporterName!.isNotEmpty) ||
+                            (v.deliveryNote != null && v.deliveryNote!.isNotEmpty) ||
+                            (v.destination != null && v.destination!.isNotEmpty)) ...[
+                          const SizedBox(height: 10),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF0F9FF),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: const Color(0xFFBAE6FD)),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(Icons.local_shipping_rounded, color: Color(0xFF0284C7), size: 22),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'DISPATCH / VEHICLE (FROM TALLY)',
+                                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF0284C7)),
+                                      ),
+                                      if (v.vehicleNumber != null && v.vehicleNumber!.isNotEmpty) ...[
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          'Vehicle: ${v.vehicleNumber!}',
+                                          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Color(0xFF0369A1)),
+                                        ),
+                                      ],
+                                      if (v.transporterName != null && v.transporterName!.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Transporter: ${v.transporterName!}',
+                                          style: const TextStyle(fontSize: 12, color: Color(0xFF0284C7)),
+                                        ),
+                                      ],
+                                      if (v.deliveryNote != null && v.deliveryNote!.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Doc / LR No: ${v.deliveryNote!}',
+                                          style: const TextStyle(fontSize: 12, color: Color(0xFF0284C7)),
+                                        ),
+                                      ],
+                                      if (v.destination != null && v.destination!.isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'Destination: ${v.destination!}',
+                                          style: const TextStyle(fontSize: 12, color: Color(0xFF0284C7)),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 14),
-
-                        // Processed status bar
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                v.isProcessed ? '✓ Processed in GA STOCK' : '⏳ Pending Dispatch Scan',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12.5,
-                                  color: v.isProcessed ? const Color(0xFF15803D) : const Color(0xFFB45309),
-                                ),
-                              ),
-                            ),
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: v.isProcessed ? const Color(0xFFFEF2F2) : const Color(0xFFECFDF5),
-                                foregroundColor: v.isProcessed ? const Color(0xFFDC2626) : const Color(0xFF059669),
-                                elevation: 0,
-                                side: BorderSide(
-                                  color: v.isProcessed ? const Color(0xFFFECACA) : const Color(0xFFA7F3D0),
-                                ),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              ),
-                              icon: _updating
-                                  ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
-                                  : Icon(v.isProcessed ? Icons.undo_rounded : Icons.check_circle_outline, size: 16),
-                              label: Text(
-                                v.isProcessed ? 'Unmark' : 'Mark Processed',
-                                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
-                              ),
-                              onPressed: _updating ? null : _toggleProcessed,
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 16),
 
                         // Section Title: Inventory Items
                         Row(

@@ -989,6 +989,7 @@ class OfflineQueueService {
           billNumber: item.payload['bill_number'],
           deliveryReference: item.payload['delivery_reference'],
           remarks: item.payload['remarks'],
+          tallyVoucherId: item.payload['tally_voucher_id'],
         );
       } else {
         await api.submitOutwardBatch(
@@ -1001,6 +1002,7 @@ class OfflineQueueService {
           billNumber: item.payload['bill_number'],
           deliveryReference: item.payload['delivery_reference'],
           remarks: item.payload['remarks'],
+          tallyVoucherId: item.payload['tally_voucher_id'],
         );
       }
     }

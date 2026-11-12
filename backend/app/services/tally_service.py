@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import AsyncSessionLocal
 from app.config import settings
 from app.core.websocket_manager import ws_manager
+from app.models.category import Category
+from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
 from app.models.shop import Shop
 from app.models.tally import (
@@ -64,17 +66,124 @@ def clean_xml_text(elem: Optional[ET.Element]) -> str:
     return elem.text.strip()
 
 
+GSTIN_REGEX = re.compile(r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1})\b", re.IGNORECASE)
+
+
+def extract_gstin(text: Optional[str]) -> Optional[str]:
+    """Extract and validate 15-character Indian GSTIN from string."""
+    if not text:
+        return None
+    cleaned = text.strip().replace("-", "").replace(" ", "").upper()
+    match = GSTIN_REGEX.search(cleaned)
+    if match:
+        return match.group(1).upper()
+    match_raw = GSTIN_REGEX.search(text.strip())
+    if match_raw:
+        return match_raw.group(1).upper()
+    return None
+
+
+def extract_gstin_from_element(elem: Optional[ET.Element]) -> Optional[str]:
+    """
+    Exhaustively searches an XML element (Ledger or Voucher) for GSTIN.
+    Checks priority tags, nested mailing/statutory lists, and all child text.
+    """
+    if elem is None:
+        return None
+
+    # 1. Direct priority tags
+    PRIORITY_TAGS = (
+        "PARTYGSTIN",
+        "GSTIN",
+        "BUYERGSTIN",
+        "CONSIGNEEGSTIN",
+        "COUNTRYGSTIN",
+        "GSTREGISTRATIONNUMBER",
+        "LEDGERGSTIN",
+        "PARTYREGISTRATIONNUMBER",
+    )
+    for tag in PRIORITY_TAGS:
+        val = clean_xml_text(elem.find(tag))
+        if val:
+            g = extract_gstin(val)
+            if g:
+                return g
+
+    # 2. Check nested lists (TallyPrime 3/4/5 puts it in LEDGSTREGDETAILS.LIST)
+    for list_tag in ("LEDGSTREGDETAILS.LIST", "MAILINGDETAILS.LIST", "LEDGERENTRIES.LIST"):
+        nested = elem.find(list_tag)
+        if nested is not None:
+            for child in nested.iter():
+                txt = clean_xml_text(child)
+                if txt:
+                    g = extract_gstin(txt)
+                    if g:
+                        return g
+
+    # 3. Regex search all children with GST, REG, or TAX in tag name
+    for child in elem.iter():
+        tag = child.tag.upper().split("}")[-1]
+        if any(kw in tag for kw in ("GST", "REG", "TAX", "TIN", "PARTY", "BUYER")):
+            txt = clean_xml_text(child)
+            if txt:
+                g = extract_gstin(txt)
+                if g:
+                    return g
+
+    return None
+
+
+def get_shop_root_name(name: str) -> str:
+    """
+    Normalizes shop name by removing brand suffixes/prefixes, e.g.:
+    'UNIVERSAL AGENCIES - DAIKIN' -> 'UNIVERSAL AGENCIES'
+    'UNIVERSAL AGENCIES (VOLTAS)' -> 'UNIVERSAL AGENCIES'
+    'UNIVERSAL AGENCIES [LG]' -> 'UNIVERSAL AGENCIES'
+    'UNIVERSAL AGENCIES - AC DIVISION' -> 'UNIVERSAL AGENCIES'
+    'ABC ELECTRONICS DAIKIN' -> 'ABC ELECTRONICS'
+    """
+    if not name:
+        return ""
+    s = name.strip()
+
+    # 1. Strip trailing parentheses or brackets
+    s = re.sub(r"\s*[\(\[\{][^\)\]\}]*[\)\]\}]\s*$", "", s).strip()
+
+    # 2. Strip trailing dash/slash brand identifiers
+    s = re.sub(
+        r"\s*[-–/:]\s*(daikin|voltas|lg|samsung|carrier|panasonic|hitachi|blue\s*star|mitsubishi|lloyd|godrej|haier|whirlpool|general|o\s*general|brand|division|distributor|dealer|sales|ac|service|branch|retail|wholesale|c&f).*$",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # 3. Strip trailing plain brand words if there are multiple words
+    words = s.split()
+    if len(words) > 2:
+        s = re.sub(
+            r"\s+(daikin|voltas|lg|samsung|carrier|panasonic|hitachi|blue\s*star|mitsubishi|lloyd|godrej|haier|whirlpool|general|o\s*general|ac|division)$",
+            "",
+            s,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    # 4. Clean multiple spaces
+    s = re.sub(r"\s+", " ", s).strip()
+    return s if len(s) >= 3 else name.strip()
+
+
 def parse_tally_quantity(qty_str: Optional[str]) -> Tuple[float, Optional[str]]:
     """
     Parses Tally quantity strings like:
       ' 10 NOS' -> (10.0, 'NOS')
+      ' 1,200 NOS' -> (1200.0, 'NOS')
       '-5 SET' -> (-5.0, 'SET')
       ' 100.50 KGS' -> (100.5, 'KGS')
       '12' -> (12.0, None)
     """
     if not qty_str:
         return 0.0, None
-    s = qty_str.strip()
+    s = str(qty_str).replace(",", "").strip()
     match = re.search(r"^(-?[\d\.]+)\s*([A-Za-z0-9]+)?", s)
     if match:
         try:
@@ -84,6 +193,85 @@ def parse_tally_quantity(qty_str: Optional[str]) -> Tuple[float, Optional[str]]:
         except ValueError:
             pass
     return 0.0, None
+
+
+KNOWN_TALLY_BRANDS = (
+    "CARRIER", "MIDEA", "O GENERAL", "GENERAL", "FUJITSU", "FORMENTY", "FMTY",
+    "ROCKWELL", "CELFROST", "HAIER", "MITSUBISHI", "AMSTRAD", "WHIRLPOOL",
+    "GODREJ", "GOGREJ", "BOSCH", "LLOYD", "IFB", "SAMSUNG", "LG", "DAIKIN", "VOLTAS",
+    "BLUE STAR", "BLUESTAR", "PANASONIC", "HITACHI", "ZAROOKY",
+)
+
+
+def extract_clean_brand_and_model(item_name: str, parent_group: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Extracts the true clean brand and model code from a Tally stock item name.
+    Eliminates category prefixes ('AC ', 'WM ', 'REF ', 'LED ', 'W/M ') and
+    redundant brand repetitions (e.g. 'CARRIER CARRIER AC 12K...').
+    """
+    if not item_name:
+        return "General", ""
+
+    raw_name = item_name.strip()
+
+    # 1. Detect Brand
+    brand = None
+    for b in KNOWN_TALLY_BRANDS:
+        if re.search(r"\b" + re.escape(b) + r"\b", raw_name, re.I):
+            brand = b
+            if b in ("FMTY", "ZAROOKY"):
+                brand = "FORMENTY"
+            elif b == "O GENERAL":
+                brand = "GENERAL"
+            elif b == "GOGREJ":
+                brand = "GODREJ"
+            elif b == "BLUESTAR":
+                brand = "BLUE STAR"
+            break
+
+    if not brand and parent_group:
+        for b in KNOWN_TALLY_BRANDS:
+            if re.search(r"\b" + re.escape(b) + r"\b", parent_group, re.I):
+                brand = b
+                if b == "FMTY":
+                    brand = "FORMENTY"
+                break
+
+    if not brand:
+        if any(kw in raw_name.lower() or (parent_group and kw in parent_group.lower()) for kw in ["stand", "trolly", "trolley", "pipe", "cover", "rubber coupler", "gear teeth", "cutter", "switch", "jar", "motor"]):
+            brand = "Local"
+        elif parent_group and parent_group.upper() not in ("GENERAL", "LOCAL", "AC", "WM", "REF", "LED"):
+            brand = parent_group
+        else:
+            first = raw_name.split()[0]
+            if first.upper() in ("AC", "WM", "REF", "LED", "W/M", "STAND"):
+                brand = "General"
+            else:
+                brand = first
+
+    brand = (brand or "General").strip().upper()
+    if brand == "GOGREJ":
+        brand = "GODREJ"
+
+    # 2. Extract Model Code
+    model = raw_name
+    # Strip leading category noise
+    model = re.sub(r"^(?:AC|WM|REF|LED|W/M)\s+", "", model, flags=re.I).strip()
+
+    # Strip leading brand if present in model
+    if brand:
+        model = re.sub(r"^" + re.escape(brand) + r"[:\s\-]+", "", model, flags=re.I).strip()
+        if brand == "FORMENTY":
+            model = re.sub(r"^(?:FMTY|FORMENTY)[:\s\-]+", "", model, flags=re.I).strip()
+
+    # Strip trailing brand from model
+    if brand:
+        model = re.sub(r"[\s\-]+" + re.escape(brand) + r"\s*$", "", model, flags=re.I).strip()
+        if brand == "FORMENTY":
+            model = re.sub(r"[\s\-]+(?:FMTY|FORMENTY)\s*$", "", model, flags=re.I).strip()
+
+    model = model.strip() or raw_name
+    return brand, model
 
 
 def parse_tally_date(date_str: Optional[str]) -> date:
@@ -113,6 +301,23 @@ def format_date_for_tally(d: Optional[date]) -> str:
     return d.strftime("%Y%m%d")
 
 
+def format_date_for_tdl(d: Optional[date]) -> Optional[str]:
+    """Format date as d-Mmm-yyyy for TDL $$Date formula (e.g. 1-Apr-2026, 31-Mar-2027)."""
+    if not d:
+        return None
+    return f"{d.day}-{d.strftime('%b')}-{d.year}"
+
+
+def _clean_sv_company(company_name: Optional[str]) -> str:
+    """Returns <SVCURRENTCOMPANY> XML tag only if valid non-empty, non-zero company name is given."""
+    if not company_name:
+        return ""
+    c = company_name.strip()
+    if not c or c == "0" or c.isdigit():
+        return ""
+    return f"<SVCURRENTCOMPANY>{escape_xml(c)}</SVCURRENTCOMPANY>"
+
+
 # ---------------------------------------------------------------------------
 # XML Request Generators
 # ---------------------------------------------------------------------------
@@ -140,27 +345,25 @@ class TallyXmlBuilder:
     def build_company_collection_request() -> str:
         return """<ENVELOPE>
   <HEADER>
-    <TALLYREQUEST>Export Data</TALLYREQUEST>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>Company Collection</ID>
   </HEADER>
   <BODY>
-    <EXPORTDATA>
-      <REQUESTDESC>
-        <STATICVARIABLES>
-          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        </STATICVARIABLES>
-        <TDL>
-          <TDLMESSAGE>
-            <COLLECTION NAME="CompanyCollection" ISINITIALIZE="Yes">
-              <TYPE>Company</TYPE>
-              <NATIVEMETHOD>Name</NATIVEMETHOD>
-              <NATIVEMETHOD>StartingFrom</NATIVEMETHOD>
-              <NATIVEMETHOD>EndingAt</NATIVEMETHOD>
-              <NATIVEMETHOD>Guid</NATIVEMETHOD>
-            </COLLECTION>
-          </TDLMESSAGE>
-        </TDL>
-      </REQUESTDESC>
-    </EXPORTDATA>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="Company Collection">
+            <TYPE>Company</TYPE>
+            <FETCH>Name, StartingFrom, EndingAt, Guid</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
   </BODY>
 </ENVELOPE>"""
 
@@ -171,7 +374,61 @@ class TallyXmlBuilder:
         to_date: Optional[date] = None,
         alter_id: Optional[int] = None,
     ) -> str:
-        sv_company = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
+        sv_company = _clean_sv_company(company_name)
+
+        filters = ["<FILTER>InvFilt</FILTER>"]
+        formulae = ['<SYSTEM TYPE="Formulae" NAME="InvFilt">$IsInvoice OR $IsCancelled</SYSTEM>']
+
+        if alter_id is not None and alter_id > 0:
+            filters.append("<FILTER>AlterFilt</FILTER>")
+            formulae.append(f'<SYSTEM TYPE="Formulae" NAME="AlterFilt">$AlterID &gt; {alter_id}</SYSTEM>')
+        else:
+            if from_date:
+                tdl_from = format_date_for_tdl(from_date)
+                filters.append("<FILTER>FromDateFilt</FILTER>")
+                formulae.append(f'<SYSTEM TYPE="Formulae" NAME="FromDateFilt">$Date &gt;= $$Date:"{tdl_from}"</SYSTEM>')
+            if to_date:
+                tdl_to = format_date_for_tdl(to_date)
+                filters.append("<FILTER>ToDateFilt</FILTER>")
+                formulae.append(f'<SYSTEM TYPE="Formulae" NAME="ToDateFilt">$Date &lt;= $$Date:"{tdl_to}"</SYSTEM>')
+
+        filter_tags_str = "\n            ".join(filters)
+        formulae_tags_str = "\n          ".join(formulae)
+
+        return f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>SalesInvoiceCollection</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      <STATICVARIABLES>
+        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+        {sv_company}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="SalesInvoiceCollection">
+            <TYPE>Voucher</TYPE>
+            <FETCH>VOUCHERNUMBER, VOUCHERTYPENAME, DATE, PARTYLEDGERNAME, ALTERID, MASTERID, GUID, STATENAME, PLACEOFSUPPLY, NARRATION, ISCANCELLED, ISDELETED, BASICBUYERNAME, BASICBUYERADDRESS.LIST, ADDRESS.LIST, PARTYGSTIN, LEDGERGSTIN, ALLINVENTORYENTRIES.LIST, ALLINVENTORYENTRIES.*</FETCH>
+            {filter_tags_str}
+          </COLLECTION>
+          {formulae_tags_str}
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+
+    @staticmethod
+    def build_fallback_voucher_register_request(
+        company_name: Optional[str] = None,
+        from_date: Optional[date] = None,
+        to_date: Optional[date] = None,
+    ) -> str:
+        sv_company = _clean_sv_company(company_name)
         sv_from = f"<SVFROMDATE>{format_date_for_tally(from_date)}</SVFROMDATE>" if from_date else ""
         sv_to = f"<SVTODATE>{format_date_for_tally(to_date)}</SVTODATE>" if to_date else ""
 
@@ -185,6 +442,7 @@ class TallyXmlBuilder:
         <REPORTNAME>Day Book</REPORTNAME>
         <STATICVARIABLES>
           <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+          <EXPLODEFLAG>Yes</EXPLODEFLAG>
           {sv_company}
           {sv_from}
           {sv_to}
@@ -195,15 +453,8 @@ class TallyXmlBuilder:
 </ENVELOPE>"""
 
     @staticmethod
-    def build_fallback_voucher_register_request(
-        company_name: Optional[str] = None,
-        from_date: Optional[date] = None,
-        to_date: Optional[date] = None,
-    ) -> str:
-        sv_company = f"<SVCURRENTCOMPANY>{escape_xml(company_name)}</SVCURRENTCOMPANY>" if company_name else ""
-        sv_from = f"<SVFROMDATE>{format_date_for_tally(from_date)}</SVFROMDATE>" if from_date else ""
-        sv_to = f"<SVTODATE>{format_date_for_tally(to_date)}</SVTODATE>" if to_date else ""
-
+    def build_stock_items_request(company_name: Optional[str] = None) -> str:
+        sv_company = _clean_sv_company(company_name)
         return f"""<ENVELOPE>
   <HEADER>
     <TALLYREQUEST>Export Data</TALLYREQUEST>
@@ -211,13 +462,76 @@ class TallyXmlBuilder:
   <BODY>
     <EXPORTDATA>
       <REQUESTDESC>
-        <REPORTNAME>Voucher Register</REPORTNAME>
+        <REPORTNAME>List of Accounts</REPORTNAME>
         <STATICVARIABLES>
           <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-          <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+          <ACCOUNTTYPE>Stock Items</ACCOUNTTYPE>
           {sv_company}
-          {sv_from}
-          {sv_to}
+        </STATICVARIABLES>
+      </REQUESTDESC>
+    </EXPORTDATA>
+  </BODY>
+</ENVELOPE>"""
+
+    @staticmethod
+    def build_stock_groups_request(company_name: Optional[str] = None) -> str:
+        sv_company = _clean_sv_company(company_name)
+        return f"""<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Export Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <EXPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>List of Accounts</REPORTNAME>
+        <STATICVARIABLES>
+          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+          <ACCOUNTTYPE>Stock Groups</ACCOUNTTYPE>
+          {sv_company}
+        </STATICVARIABLES>
+      </REQUESTDESC>
+    </EXPORTDATA>
+  </BODY>
+</ENVELOPE>"""
+
+    @staticmethod
+    def build_stock_summary_request(company_name: Optional[str] = None) -> str:
+        sv_company = _clean_sv_company(company_name)
+        return f"""<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Export Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <EXPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>Stock Summary</REPORTNAME>
+        <STATICVARIABLES>
+          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+          {sv_company}
+          <EXPLODEFLAG>Yes</EXPLODEFLAG>
+          <ISITEMWISE>Yes</ISITEMWISE>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+    </EXPORTDATA>
+  </BODY>
+</ENVELOPE>"""
+
+    @staticmethod
+    def build_ledgers_request(company_name: Optional[str] = None) -> str:
+        sv_company = _clean_sv_company(company_name)
+        return f"""<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Export Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <EXPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>List of Accounts</REPORTNAME>
+        <STATICVARIABLES>
+          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+          <ACCOUNTTYPE>Ledgers</ACCOUNTTYPE>
+          <EXPLODEFLAG>Yes</EXPLODEFLAG>
+          {sv_company}
         </STATICVARIABLES>
       </REQUESTDESC>
     </EXPORTDATA>
@@ -248,22 +562,27 @@ class TallyXmlParser:
 
         # 1. Check for current active company in Day Book / Tally envelope
         cur_comp = root.findtext(".//SVCURRENTCOMPANY")
-        if cur_comp and cur_comp.strip():
+        if cur_comp and cur_comp.strip() and not cur_comp.strip().isdigit() and cur_comp.strip() != "0":
             name = cur_comp.strip()
             seen_names.add(name)
             companies.append({"name": name})
 
-        # 2. Check for COMPANY tags anywhere
+        # 2. Check for real COMPANY tags in collection/reports (skip CMPINFO schema header counts)
         for comp in root.iter("COMPANY"):
-            name = comp.attrib.get("NAME") or clean_xml_text(comp.find("NAME")) or clean_xml_text(comp)
+            name = comp.attrib.get("NAME") or clean_xml_text(comp.find("NAME"))
             if not name:
                 rem = comp.find("REMOTECMPINFO.LIST")
                 if rem is not None:
                     name = clean_xml_text(rem.find("NAME"))
+            if not name and comp.text and not comp.text.strip().isdigit() and len(comp.text.strip()) > 2:
+                name = clean_xml_text(comp)
+
             if (
                 name
                 and name not in seen_names
-                and name not in ("List of Companies", "XML")
+                and name not in ("List of Companies", "XML", "0")
+                and not name.isdigit()
+                and len(name) > 1
                 and not (len(name) == 36 and name.count("-") == 4)
             ):
                 seen_names.add(name)
@@ -322,9 +641,20 @@ class TallyXmlParser:
             if vch_type and vch_type.lower() in non_sales:
                 continue
 
-            # Only process vouchers that contain billed inventory items (goods dispatched to customers)
+            # Status flags
+            is_cancelled = (
+                clean_xml_text(vch.find("ISCANCELLED")).lower() in ("yes", "true", "1")
+                or vch.attrib.get("ACTION", "").lower() == "cancel"
+            )
+            is_deleted = (
+                clean_xml_text(vch.find("ISDELETED")).lower() in ("yes", "true", "1")
+                or vch.attrib.get("ACTION", "").lower() == "delete"
+            )
+
+            # Only process vouchers that contain billed inventory items (goods dispatched to customers),
+            # unless it is cancelled or deleted in Tally so cancellation can be synchronized to GA STOCK
             inv_nodes = list(vch.findall("ALLINVENTORYENTRIES.LIST")) + list(vch.findall("INVENTORYENTRIES.LIST"))
-            if not inv_nodes:
+            if not inv_nodes and not (is_cancelled or is_deleted):
                 continue
 
             # 1. Identifier extraction
@@ -352,22 +682,25 @@ class TallyXmlParser:
             )
             party_ledger_name = clean_xml_text(vch.find("PARTYLEDGERNAME")) or None
             buyer_name = clean_xml_text(vch.find("BASICBUYERNAME")) or None
-            state_name = clean_xml_text(vch.find("STATENAME")) or None
+            state_name = clean_xml_text(vch.find("STATENAME")) or clean_xml_text(vch.find("PLACEOFSUPPLY")) or None
 
-            # Address list
+            # Party GSTIN, Phone, Pincode
+            party_gstin = extract_gstin_from_element(vch)
+            phone = clean_xml_text(vch.find("PHONENUMBER")) or clean_xml_text(vch.find("LEDGERPHONE")) or None
+            pincode = clean_xml_text(vch.find("PINCODE")) or clean_xml_text(vch.find("BASICBUYERPINCODE")) or None
+
+            # Address list (check ADDRESS.LIST, BASICBUYERADDRESS.LIST, CONSIGNEEADDRESS.LIST)
             address_lines = []
-            addr_list = vch.find("ADDRESS.LIST")
-            if addr_list is not None:
-                for a in addr_list.iter("ADDRESS"):
-                    txt = clean_xml_text(a)
-                    if txt:
-                        address_lines.append(txt)
+            for a_tag in ("ADDRESS.LIST", "BASICBUYERADDRESS.LIST", "CONSIGNEEADDRESS.LIST"):
+                addr_list = vch.find(a_tag)
+                if addr_list is not None:
+                    for a in addr_list.iter("ADDRESS"):
+                        txt = clean_xml_text(a)
+                        if txt and txt not in address_lines:
+                            address_lines.append(txt)
             address = ", ".join(address_lines) if address_lines else None
 
-            # 3. Status flags
-            is_cancelled = clean_xml_text(vch.find("ISCANCELLED")).lower() in ("yes", "true", "1")
-            is_deleted = clean_xml_text(vch.find("ISDELETED")).lower() in ("yes", "true", "1")
-
+            # 3. Narration
             narration = clean_xml_text(vch.find("NARRATION")) or None
 
             # 4. Inventory items extraction (STRICTLY NON-FINANCIAL)
@@ -441,6 +774,9 @@ class TallyXmlParser:
                 "buyer_name": buyer_name,
                 "address": address,
                 "state_name": state_name,
+                "party_gstin": party_gstin,
+                "phone": phone,
+                "pincode": pincode,
                 "company_name": detected_company or default_company,
                 "is_cancelled": is_cancelled,
                 "is_deleted": is_deleted,
@@ -450,6 +786,208 @@ class TallyXmlParser:
             })
 
         return vouchers
+
+    @staticmethod
+    def parse_stock_groups(xml_content: str) -> List[Dict[str, Any]]:
+        """
+        Parses Stock Groups from Tally XML response into categories.
+        STRICTLY NO FINANCIAL DATA.
+        """
+        groups: List[Dict[str, Any]] = []
+        if not xml_content or not xml_content.strip():
+            return groups
+
+        xml_clean = sanitize_tally_xml(xml_content)
+        try:
+            root = ET.fromstring(xml_clean)
+        except Exception as e:
+            logger.warning(f"Failed to parse Stock Groups XML: {e}")
+            return groups
+
+        for sg in root.iter():
+            tag_name = sg.tag.upper().split("}")[-1]
+            if tag_name not in ("STOCKGROUP", "GROUP"):
+                continue
+
+            name = clean_xml_text(sg.find("NAME")) or sg.attrib.get("NAME")
+            if not name or name.strip().lower() in ("primary", ""):
+                continue
+
+            parent = clean_xml_text(sg.find("PARENT"))
+            guid = clean_xml_text(sg.find("GUID")) or sg.attrib.get("GUID")
+
+            groups.append({
+                "name": name.strip(),
+                "parent": parent.strip() if parent else None,
+                "guid": guid.strip() if guid else None,
+            })
+
+        return groups
+
+    @staticmethod
+    def parse_stock_items(xml_content: str) -> List[Dict[str, Any]]:
+        """
+        Parses Stock Items from Tally XML response into products.
+        STRICTLY NO FINANCIAL DATA.
+        """
+        items: List[Dict[str, Any]] = []
+        if not xml_content or not xml_content.strip():
+            return items
+
+        xml_clean = sanitize_tally_xml(xml_content)
+        try:
+            root = ET.fromstring(xml_clean)
+        except Exception as e:
+            logger.warning(f"Failed to parse Stock Items XML: {e}")
+            return items
+
+        for si in root.iter():
+            tag_name = si.tag.upper().split("}")[-1]
+            if tag_name not in ("STOCKITEM", "ITEM"):
+                continue
+
+            name = clean_xml_text(si.find("NAME")) or si.attrib.get("NAME")
+            if not name or not name.strip():
+                continue
+
+            parent = clean_xml_text(si.find("PARENT"))
+            part_no = clean_xml_text(si.find("PARTNO")) or clean_xml_text(si.find("MAILINGNAME"))
+            base_units = clean_xml_text(si.find("BASEUNITS")) or "piece"
+            description = clean_xml_text(si.find("DESCRIPTION"))
+            guid = clean_xml_text(si.find("GUID")) or si.attrib.get("GUID")
+            alter_id = clean_xml_text(si.find("ALTERID"))
+
+            items.append({
+                "name": name.strip(),
+                "parent_group": parent.strip() if parent else None,
+                "part_number": part_no.strip() if part_no else None,
+                "unit": base_units.strip() if base_units else "piece",
+                "description": description.strip() if description else None,
+                "guid": guid.strip() if guid else None,
+                "alter_id": int(alter_id) if alter_id and alter_id.isdigit() else None,
+            })
+
+        return items
+
+    @staticmethod
+    def parse_stock_summary(xml_content: str) -> Dict[str, int]:
+        """
+        Parses item-wise Stock Summary from Tally into a dictionary:
+        { "clean item name lower": closing_qty_int }
+        Handles commas in numbers, negative stock floored at 0, and whitespace normalization.
+        """
+        stock_map: Dict[str, int] = {}
+        if not xml_content or not xml_content.strip():
+            return stock_map
+
+        xml_clean = sanitize_tally_xml(xml_content)
+        try:
+            root = ET.fromstring(xml_clean)
+        except Exception as e:
+            logger.warning(f"Failed to parse Stock Summary XML: {e}")
+            return stock_map
+
+        current_name = None
+        for elem in root:
+            tag = elem.tag.upper().split("}")[-1]
+            if tag == "DSPACCNAME":
+                disp = elem.find("DSPDISPNAME")
+                if disp is not None and disp.text:
+                    current_name = " ".join(disp.text.split()).lower()
+            elif tag == "DSPSTKINFO" and current_name:
+                cl = elem.find(".//DSPCLQTY")
+                qty_str = cl.text.strip() if (cl is not None and cl.text) else ""
+                if qty_str:
+                    clean_qty = qty_str.replace(",", "").strip()
+                    m = re.search(r"([+-]?\d+(?:\.\d+)?)", clean_qty)
+                    qty = max(0, int(round(float(m.group(1))))) if m else 0
+                    stock_map[current_name] = qty
+                else:
+                    stock_map[current_name] = 0
+                current_name = None
+
+        return stock_map
+
+    @staticmethod
+    def parse_ledgers(xml_content: str) -> List[Dict[str, Any]]:
+        """
+        Parses customer / debtor ledgers from Tally XML response into shop records.
+        Extracts complete details: GSTIN, address lines, state, pincode, phone, email, contact person.
+        STRICTLY NO FINANCIAL DATA.
+        """
+        ledgers: List[Dict[str, Any]] = []
+        if not xml_content or not xml_content.strip():
+            return ledgers
+
+        xml_clean = sanitize_tally_xml(xml_content)
+        try:
+            root = ET.fromstring(xml_clean)
+        except Exception as e:
+            logger.warning(f"Failed to parse Ledgers XML: {e}")
+            return ledgers
+
+        for node in root.iter():
+            tag_name = node.tag.upper().split("}")[-1]
+            if tag_name not in ("LEDGER",):
+                continue
+
+            name = clean_xml_text(node.find("NAME")) or node.attrib.get("NAME")
+            if not name or not name.strip():
+                continue
+
+            guid = clean_xml_text(node.find("GUID")) or node.attrib.get("GUID")
+            parent = clean_xml_text(node.find("PARENT")) or ""
+
+            # Check GSTIN (including nested LEDGSTREGDETAILS and MAILINGDETAILS)
+            gstin = extract_gstin_from_element(node)
+
+            # Check Address
+            address_lines = []
+            for a_tag in ("ADDRESS.LIST", "MAILINGDETAILS.LIST"):
+                addr_list = node.find(a_tag)
+                if addr_list is not None:
+                    for a in addr_list.iter("ADDRESS"):
+                        txt = clean_xml_text(a)
+                        if txt and txt not in address_lines:
+                            address_lines.append(txt)
+            if not address_lines:
+                for a in node.iter("ADDRESS"):
+                    txt = clean_xml_text(a)
+                    if txt and txt not in address_lines:
+                        address_lines.append(txt)
+            address = ", ".join(address_lines) if address_lines else None
+
+            # State & Pincode
+            state = clean_xml_text(node.find("STATENAME")) or clean_xml_text(node.find("LEDSTATENAME")) or None
+            pincode = clean_xml_text(node.find("PINCODE")) or clean_xml_text(node.find("LEDPINCODE")) or None
+
+            # Phone / Mobile
+            phone = (
+                clean_xml_text(node.find("LEDGERPHONE"))
+                or clean_xml_text(node.find("PHONENUMBER"))
+                or clean_xml_text(node.find("LEDGERMOBILE"))
+                or clean_xml_text(node.find("MOBILENUMBER"))
+                or None
+            )
+
+            # Contact person & Email
+            contact_person = clean_xml_text(node.find("LEDGERCONTACT")) or clean_xml_text(node.find("CONTACTPERSON")) or None
+            email = clean_xml_text(node.find("EMAIL")) or None
+
+            ledgers.append({
+                "name": name.strip(),
+                "guid": guid.strip() if guid else None,
+                "parent": parent.strip() if parent else None,
+                "gstin": gstin.strip() if gstin else None,
+                "address": address.strip() if address else None,
+                "state": state.strip() if state else None,
+                "pincode": pincode.strip() if pincode else None,
+                "phone": phone.strip() if phone else None,
+                "contact_person": contact_person.strip() if contact_person else None,
+                "email": email.strip() if email else None,
+            })
+
+        return ledgers
 
 
 # ---------------------------------------------------------------------------
@@ -498,23 +1036,22 @@ class TallyHttpClient:
     ) -> Tuple[bool, str, List[Dict[str, Any]]]:
         """Tests if Tally is online and extracts list of open companies."""
         try:
-            req_xml = TallyXmlBuilder.build_company_list_request()
+            req_xml = TallyXmlBuilder.build_company_collection_request()
             resp_xml = await cls.post_xml(host, port, req_xml, tally_url, timeout=timeout)
             companies = TallyXmlParser.parse_companies(resp_xml)
             if not companies:
-                # Fallback to Day Book request which always returns SVCURRENTCOMPANY in native reports
-                daybook_xml = TallyXmlBuilder.build_sales_vouchers_request()
+                # Fallback to Day Book request which returns SVCURRENTCOMPANY in native reports
+                daybook_xml = TallyXmlBuilder.build_fallback_voucher_register_request()
                 try:
                     resp_db = await cls.post_xml(host, port, daybook_xml, tally_url, timeout=timeout)
                     companies = TallyXmlParser.parse_companies(resp_db)
                 except Exception:
                     pass
             if not companies:
-                # Fallback to collection request
                 try:
-                    col_xml = TallyXmlBuilder.build_company_collection_request()
-                    resp_col = await cls.post_xml(host, port, col_xml, tally_url, timeout=timeout)
-                    companies = TallyXmlParser.parse_companies(resp_col)
+                    list_xml = TallyXmlBuilder.build_company_list_request()
+                    resp_list = await cls.post_xml(host, port, list_xml, tally_url, timeout=timeout)
+                    companies = TallyXmlParser.parse_companies(resp_list)
                 except Exception:
                     pass
 
@@ -560,8 +1097,8 @@ class TallySyncService:
             elif not cfg.agent_token:
                 cfg.agent_token = secrets.token_urlsafe(32)
                 changed = True
-            # If settings explicitly overridden in .env and config is still default localhost
-            if settings.tally_host != "localhost" and cfg.host == "localhost":
+            # If settings explicitly configured in .env and config is different
+            if settings.tally_host and settings.tally_host != "localhost" and cfg.host != settings.tally_host:
                 cfg.host = settings.tally_host
                 changed = True
             if settings.tally_company_name and not cfg.company_name:
@@ -571,6 +1108,66 @@ class TallySyncService:
                 await db.commit()
                 await db.refresh(cfg)
         return cfg
+
+    @classmethod
+    async def cancel_outward_batches_for_bill(
+        cls, db: AsyncSession, bill_number: Optional[str]
+    ) -> int:
+        """
+        Marks OutwardBatch and OutwardLines as cancelled when a bill is cancelled in Tally.
+        STRICT USER CONSTRAINT:
+        Do NOT change SerialNumber status or product stock!
+        Godown staff must physically receive and scan the models as Return in Inward.
+        """
+        if not bill_number or not bill_number.strip():
+            return 0
+
+        clean_b = bill_number.strip()
+        clean_b_lower = clean_b.lower()
+
+        res = await db.execute(
+            select(OutwardBatch).where(
+                func.lower(func.trim(OutwardBatch.bill_number)) == clean_b_lower,
+                OutwardBatch.is_cancelled == False,
+            )
+        )
+        active_batches = res.scalars().all()
+        if not active_batches:
+            return 0
+
+        now = datetime.now()
+        batch_ids = [b.id for b in active_batches]
+        for b in active_batches:
+            b.is_cancelled = True
+            b.cancelled_at = now
+            b.cancel_reason = "Cancelled in TallyPrime"
+
+        lines_res = await db.execute(
+            select(OutwardLine).where(
+                OutwardLine.batch_id.in_(batch_ids),
+                OutwardLine.is_cancelled == False,
+            )
+        )
+        for l in lines_res.scalars().all():
+            l.is_cancelled = True
+
+        try:
+            await ws_manager.broadcast("stock_updated", {
+                "type": "bill_cancelled",
+                "bill_number": clean_b,
+                "voucher_number": clean_b,
+                "reason": "Cancelled in TallyPrime",
+            })
+            await ws_manager.broadcast("tally_bill_cancelled", {
+                "bill_number": clean_b,
+                "voucher_number": clean_b,
+                "reason": "Cancelled in TallyPrime",
+            })
+        except Exception as e:
+            logger.warning(f"Could not broadcast bill_cancelled event: {e}")
+
+        logger.info(f"Successfully marked {len(active_batches)} outward batch(es) for Bill '{clean_b}' as cancelled.")
+        return len(active_batches)
 
     @classmethod
     async def process_vouchers(
@@ -593,6 +1190,22 @@ class TallySyncService:
         prod_lookup_by_model = {p.model.strip().lower(): p.id for p in all_products}
         prod_by_id = {p.id: p for p in all_products}
 
+        is_tally_2 = bool(company_name and "2025-26" in company_name)
+        cat_res = await db.execute(select(Category))
+        all_cats = cat_res.scalars().all()
+        cat_map = {c.name.strip().lower(): c for c in all_cats}
+
+        default_cat_name = "General (Tally 2)" if is_tally_2 and "general (tally 2)" in cat_map else "General"
+        default_cat = cat_map.get(default_cat_name.lower())
+        if not default_cat:
+            default_cat = cat_map.get("general")
+        if not default_cat and all_cats:
+            default_cat = all_cats[0]
+        if not default_cat:
+            default_cat = Category(name="General", has_dual_serial=False, is_active=True, source="TALLY")
+            db.add(default_cat)
+            await db.flush()
+
         created = 0
         updated = 0
         cancelled = 0
@@ -613,13 +1226,44 @@ class TallySyncService:
                     select(Shop).where(func.lower(Shop.name) == func.lower(party_name_clean))
                 )
                 shop = s_res.scalar_one_or_none()
+                city_val = v_data.get("state_name")
+                if not city_val and v_data.get("address"):
+                    city_val = v_data["address"].split(",")[0][:90].strip()
+
+                party_gstin = v_data.get("party_gstin")
+
+                # If voucher XML did not contain GSTIN, check if shop already has one in DB
+                if not party_gstin and shop and shop.gstin:
+                    party_gstin = shop.gstin
+                    v_data["party_gstin"] = party_gstin
+
+                # If STILL no GSTIN, search for sibling brand shops in DB
+                if not party_gstin:
+                    root_name = get_shop_root_name(party_name_clean)
+                    if root_name:
+                        rel_res = await db.execute(
+                            select(Shop.gstin).where(
+                                func.lower(Shop.name).like(f"{root_name.lower()}%"),
+                                Shop.gstin.is_not(None),
+                                func.length(Shop.gstin) == 15,
+                            ).limit(1)
+                        )
+                        found_g = rel_res.scalar_one_or_none()
+                        if found_g:
+                            party_gstin = found_g
+                            v_data["party_gstin"] = found_g
+                            logger.info(f"[TallySync] Inherited GSTIN {found_g} for voucher {v_data.get('voucher_number')} from sibling brand shop for '{party_name_clean}'.")
+
                 if not shop:
-                    city_val = v_data.get("state_name")
-                    if not city_val and v_data.get("address"):
-                        city_val = v_data["address"].split("\n")[0][:90].strip()
                     shop = Shop(
                         name=party_name_clean,
                         city=city_val or "Local",
+                        address=v_data.get("address"),
+                        state=v_data.get("state_name"),
+                        gstin=party_gstin,
+                        phone=v_data.get("phone"),
+                        pincode=v_data.get("pincode"),
+                        source="TALLY",
                         is_active=True,
                     )
                     db.add(shop)
@@ -629,13 +1273,28 @@ class TallySyncService:
                             "id": str(shop.id),
                             "name": shop.name,
                             "city": shop.city,
+                            "gstin": shop.gstin,
+                            "address": shop.address,
+                            "phone": shop.phone,
                             "is_active": True,
                         })
                     except Exception:
                         pass
+                else:
+                    # Enrich shop details from bill if missing
+                    if not shop.gstin and party_gstin:
+                        shop.gstin = party_gstin
+                    if not shop.address and v_data.get("address"):
+                        shop.address = v_data.get("address")
+                    if not shop.state and v_data.get("state_name"):
+                        shop.state = v_data.get("state_name")
+                    if not shop.pincode and v_data.get("pincode"):
+                        shop.pincode = v_data.get("pincode")
+                    if not shop.phone and v_data.get("phone"):
+                        shop.phone = v_data.get("phone")
 
             # Ensure voucher_date is python date object
-            v_date = v_data["voucher_date"]
+            v_date = v_data.get("voucher_date") or v_data.get("date")
             if isinstance(v_date, str):
                 v_date = parse_tally_date(v_date)
 
@@ -664,9 +1323,11 @@ class TallySyncService:
 
                 # Cancellation status
                 if is_cancelled or is_deleted:
-                    existing_vch.is_cancelled = True
-                    existing_vch.is_deleted = is_deleted
+                    # If cancelled in Tally, delete from DB immediately as requested
+                    await db.delete(existing_vch)
                     cancelled += 1
+                    await cls.cancel_outward_batches_for_bill(db, v_data.get("voucher_number"))
+                    continue
                 else:
                     existing_vch.is_cancelled = False
                     existing_vch.is_deleted = False
@@ -677,8 +1338,44 @@ class TallySyncService:
                 # Replace items
                 existing_vch.items.clear()
                 for itm in v_data.get("items", []):
+                    clean_brand, clean_model = extract_clean_brand_and_model(itm["item_name"])
                     item_name_clean = itm["item_name"].strip().lower()
-                    matched_prod_id = prod_lookup_by_name.get(item_name_clean) or prod_lookup_by_model.get(item_name_clean)
+                    clean_model_lower = clean_model.strip().lower()
+
+                    matched_prod_id = (
+                        prod_lookup_by_name.get(item_name_clean)
+                        or prod_lookup_by_model.get(item_name_clean)
+                        or prod_lookup_by_model.get(clean_model_lower)
+                        or prod_lookup_by_name.get(clean_model_lower)
+                    )
+
+                    if not matched_prod_id:
+                        target_cat = None
+                        brand_upper = clean_brand.upper()
+                        if is_tally_2 and f"{brand_upper.lower()} (tally 2)" in cat_map:
+                            target_cat = cat_map[f"{brand_upper.lower()} (tally 2)"]
+                        elif brand_upper.lower() in cat_map:
+                            target_cat = cat_map[brand_upper.lower()]
+
+                        if not target_cat:
+                            target_cat = default_cat
+
+                        auto_p = Product(
+                            name=itm["item_name"].strip(),
+                            brand=clean_brand,
+                            model=clean_model,
+                            category_id=target_cat.id,
+                            unit=itm.get("uom") or "piece",
+                            serial_number_required=True,
+                            is_active=True,
+                            source="TALLY",
+                        )
+                        db.add(auto_p)
+                        await db.flush()
+                        matched_prod_id = auto_p.id
+                        prod_lookup_by_name[item_name_clean] = matched_prod_id
+                        prod_lookup_by_model[clean_model_lower] = matched_prod_id
+                        prod_by_id[matched_prod_id] = auto_p
 
                     new_itm = TallyVoucherItem(
                         item_name=itm["item_name"],
@@ -695,6 +1392,12 @@ class TallySyncService:
 
                 updated += 1
             else:
+                # Do not insert cancelled or deleted vouchers into DB
+                if is_cancelled or is_deleted:
+                    cancelled += 1
+                    await cls.cancel_outward_batches_for_bill(db, v_data.get("voucher_number"))
+                    continue
+
                 # Create new voucher
                 new_vch = TallySalesVoucher(
                     guid=guid,
@@ -709,16 +1412,52 @@ class TallySyncService:
                     address=v_data.get("address"),
                     state_name=v_data.get("state_name"),
                     company_name=company_name or v_data.get("company_name"),
-                    is_cancelled=is_cancelled or is_deleted,
-                    is_deleted=is_deleted,
+                    is_cancelled=False,
+                    is_deleted=False,
                     is_processed=False,
                     notes=v_data.get("notes"),
                     raw_metadata=v_data.get("raw_metadata"),
                 )
 
                 for itm in v_data.get("items", []):
+                    clean_brand, clean_model = extract_clean_brand_and_model(itm["item_name"])
                     item_name_clean = itm["item_name"].strip().lower()
-                    matched_prod_id = prod_lookup_by_name.get(item_name_clean) or prod_lookup_by_model.get(item_name_clean)
+                    clean_model_lower = clean_model.strip().lower()
+
+                    matched_prod_id = (
+                        prod_lookup_by_name.get(item_name_clean)
+                        or prod_lookup_by_model.get(item_name_clean)
+                        or prod_lookup_by_model.get(clean_model_lower)
+                        or prod_lookup_by_name.get(clean_model_lower)
+                    )
+
+                    if not matched_prod_id:
+                        target_cat = None
+                        brand_upper = clean_brand.upper()
+                        if is_tally_2 and f"{brand_upper.lower()} (tally 2)" in cat_map:
+                            target_cat = cat_map[f"{brand_upper.lower()} (tally 2)"]
+                        elif brand_upper.lower() in cat_map:
+                            target_cat = cat_map[brand_upper.lower()]
+
+                        if not target_cat:
+                            target_cat = default_cat
+
+                        auto_p = Product(
+                            name=itm["item_name"].strip(),
+                            brand=clean_brand,
+                            model=clean_model,
+                            category_id=target_cat.id,
+                            unit=itm.get("uom") or "piece",
+                            serial_number_required=True,
+                            is_active=True,
+                            source="TALLY",
+                        )
+                        db.add(auto_p)
+                        await db.flush()
+                        matched_prod_id = auto_p.id
+                        prod_lookup_by_name[item_name_clean] = matched_prod_id
+                        prod_lookup_by_model[clean_model_lower] = matched_prod_id
+                        prod_by_id[matched_prod_id] = auto_p
 
                     new_itm = TallyVoucherItem(
                         item_name=itm["item_name"],
@@ -735,10 +1474,7 @@ class TallySyncService:
 
                 db.add(new_vch)
                 created += 1
-                if is_cancelled or is_deleted:
-                    cancelled += 1
-                else:
-                    new_vouchers_to_broadcast.append((new_vch, str(shop.id) if shop else None))
+                new_vouchers_to_broadcast.append((new_vch, str(shop.id) if shop else None))
 
         await db.commit()
 
@@ -758,6 +1494,10 @@ class TallySyncService:
                     "state_name": vch.state_name,
                     "company_name": vch.company_name,
                     "shop_id": shop_id_str,
+                    "vehicle_number": vch.vehicle_number,
+                    "transporter_name": vch.transporter_name,
+                    "delivery_note": vch.delivery_note,
+                    "destination": vch.destination,
                     "is_cancelled": vch.is_cancelled,
                     "is_deleted": vch.is_deleted,
                     "is_processed": vch.is_processed,
@@ -790,6 +1530,339 @@ class TallySyncService:
         return created, updated, cancelled
 
     @classmethod
+    async def sync_masters_from_tally(
+        cls,
+        db: AsyncSession,
+        company_name: Optional[str] = None,
+        target_host: Optional[str] = None,
+        target_port: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Syncs Stock Groups as Categories and Stock Items as Products from Tally.
+        STRICTLY NON-FINANCIAL (no rates, prices, costs, or values).
+        """
+        cfg = await cls.get_or_create_config(db)
+        sync_host = target_host or cfg.host
+        sync_port = target_port or cfg.port
+        sync_url = None if target_host else cfg.tally_url
+        active_company = company_name or (cfg.company_name if not target_host else None)
+        is_tally_2 = bool(active_company and ("2025-26" in active_company or "tally 2" in active_company.lower()))
+
+        categories_created = 0
+        categories_updated = 0
+        products_created = 0
+        products_updated = 0
+
+        # Ensure default category exists
+        def_res = await db.execute(select(Category).where(func.lower(Category.name) == "general"))
+        default_cat = def_res.scalar_one_or_none()
+        if not default_cat:
+            default_cat = Category(name="General", has_dual_serial=False, is_active=True, source="TALLY")
+            db.add(default_cat)
+            await db.flush()
+
+        # 1. Fetch & Sync Stock Groups (Categories)
+        try:
+            req_sg = TallyXmlBuilder.build_stock_groups_request(company_name=active_company)
+            resp_sg = await TallyHttpClient.post_xml(sync_host, sync_port, req_sg, sync_url, timeout=15.0)
+            if resp_sg:
+                stock_groups = TallyXmlParser.parse_stock_groups(resp_sg)
+                for sg in stock_groups:
+                    name_clean = sg["name"].strip()
+                    sg_guid = sg.get("guid")
+
+                    # 1. Match by guid first
+                    existing_c = None
+                    if sg_guid:
+                        c_by_guid = await db.execute(select(Category).where(Category.tally_guid == sg_guid))
+                        existing_c = c_by_guid.scalar_one_or_none()
+
+                    # 2. If not matched by guid, determine target name and match
+                    target_name = name_clean
+                    if not existing_c:
+                        if is_tally_2:
+                            # If company is Tally 2, keep colliding names separate (e.g. AC, General, REFRIGERATOR)
+                            c_plain = (await db.execute(
+                                select(Category).where(func.lower(Category.name) == func.lower(name_clean))
+                            )).scalar_one_or_none()
+                            if c_plain and (c_plain.tally_guid != sg_guid or name_clean.upper() in ("AC", "GENERAL", "REFRIGERATOR")):
+                                target_name = f"{name_clean} (Tally 2)"
+
+                        c_by_name = await db.execute(
+                            select(Category).where(func.lower(Category.name) == func.lower(target_name))
+                        )
+                        existing_c = c_by_name.scalar_one_or_none()
+
+                    is_dual = any(kw in target_name.lower() for kw in ("ac", "air conditioner", "split"))
+                    if existing_c:
+                        if sg_guid:
+                            existing_c.tally_guid = sg_guid
+                        if sg.get("parent"):
+                            existing_c.tally_parent_group = sg["parent"]
+                        existing_c.source = "TALLY"
+                        categories_updated += 1
+                    else:
+                        new_c = Category(
+                            name=target_name,
+                            has_dual_serial=is_dual,
+                            is_active=True,
+                            tally_guid=sg_guid,
+                            tally_parent_group=sg.get("parent"),
+                            source="TALLY",
+                        )
+                        db.add(new_c)
+                        categories_created += 1
+                await db.flush()
+        except Exception as e:
+            logger.debug(f"[TallySync] Stock Groups fetch skipped/failed: {e}")
+
+        # Refresh map of categories
+        all_cats = (await db.execute(select(Category))).scalars().all()
+        cat_map = {c.name.strip().lower(): c for c in all_cats}
+
+        # Select appropriate default category for this company
+        if is_tally_2 and "general (tally 2)" in cat_map:
+            active_default_cat = cat_map["general (tally 2)"]
+        else:
+            active_default_cat = default_cat
+
+        # 2. Fetch & Sync Stock Items (Products)
+        try:
+            req_si = TallyXmlBuilder.build_stock_items_request(company_name=active_company)
+            resp_si = await TallyHttpClient.post_xml(sync_host, sync_port, req_si, sync_url, timeout=45.0)
+            if resp_si:
+                stock_items = TallyXmlParser.parse_stock_items(resp_si)
+                for si in stock_items:
+                    item_name = si["name"].strip()
+                    parent_group = si.get("parent_group")
+                    matched_cat = None
+                    if parent_group:
+                        pg_clean = parent_group.strip().lower()
+                        if is_tally_2:
+                            # Try Tally 2 specific category first (e.g. 'ac (tally 2)', 'general (tally 2)', 'refrigerator (tally 2)')
+                            matched_cat = cat_map.get(f"{pg_clean} (tally 2)")
+                        if not matched_cat:
+                            matched_cat = cat_map.get(pg_clean)
+                    if not matched_cat:
+                        matched_cat = active_default_cat
+
+                    brand, model_code = extract_clean_brand_and_model(item_name, parent_group)
+                    if si.get("part_number"):
+                        model_code = si["part_number"].strip()
+
+                    p_res = await db.execute(
+                        select(Product).where(
+                            or_(
+                                (Product.tally_guid == si["guid"]) if si.get("guid") else False,
+                                func.lower(Product.name) == func.lower(item_name),
+                                func.lower(Product.model) == func.lower(model_code),
+                            )
+                        )
+                    )
+                    existing_p = p_res.scalars().first()
+                    if existing_p:
+                        existing_p.name = item_name
+                        existing_p.brand = brand
+                        existing_p.model = model_code
+                        # Never reassign category if existing product already has serial numbers
+                        has_serials = (await db.execute(
+                            select(func.count(SerialNumber.id)).where(SerialNumber.product_id == existing_p.id)
+                        )).scalar() or 0
+                        if has_serials == 0:
+                            existing_p.category_id = matched_cat.id
+
+                        if si.get("guid"):
+                            existing_p.tally_guid = si["guid"]
+                        if si.get("part_number"):
+                            existing_p.tally_part_number = si["part_number"]
+                        existing_p.source = "TALLY"
+                        products_updated += 1
+                    else:
+                        new_p = Product(
+                            name=item_name,
+                            brand=brand,
+                            model=model_code,
+                            category_id=matched_cat.id,
+                            unit=si.get("unit") or "piece",
+                            serial_number_required=True,
+                            description=si.get("description"),
+                            is_active=True,
+                            tally_guid=si.get("guid"),
+                            tally_part_number=si.get("part_number"),
+                            source="TALLY",
+                        )
+                        db.add(new_p)
+                        products_created += 1
+
+                await db.commit()
+        except Exception as e:
+            logger.debug(f"[TallySync] Stock Items fetch skipped/failed: {e}")
+
+        # 2b. Fetch & Sync Stock Summary (Tally Stock Quantities per Model)
+        tally_stock_synced = 0
+        try:
+            req_sum = TallyXmlBuilder.build_stock_summary_request(company_name=active_company)
+            resp_sum = await TallyHttpClient.post_xml(sync_host, sync_port, req_sum, sync_url, timeout=20.0)
+            if resp_sum:
+                stock_summary_map = TallyXmlParser.parse_stock_summary(resp_sum)
+                if stock_summary_map:
+                    all_prods = (await db.execute(select(Product))).scalars().all()
+                    for p in all_prods:
+                        p_norm = " ".join(p.name.split()).lower()
+                        m_norm = " ".join(p.model.split()).lower() if p.model else ""
+                        t_qty = stock_summary_map.get(p_norm)
+                        if t_qty is None and m_norm:
+                            t_qty = stock_summary_map.get(m_norm)
+
+                        if t_qty is not None:
+                            p.tally_stock_qty = t_qty
+                            tally_stock_synced += 1
+                        elif p.source == "TALLY" and p.tally_guid:
+                            p.tally_stock_qty = 0
+                            tally_stock_synced += 1
+                    await db.commit()
+        except Exception as e:
+            logger.debug(f"[TallySync] Stock Summary fetch skipped/failed: {e}")
+
+        # 3. Fetch & Sync Ledgers (Shops / Sundry Debtors)
+        shops_created = 0
+        shops_updated = 0
+        try:
+            req_l = TallyXmlBuilder.build_ledgers_request(company_name=active_company)
+            resp_l = await TallyHttpClient.post_xml(sync_host, sync_port, req_l, sync_url, timeout=20.0)
+            if resp_l:
+                ledgers = TallyXmlParser.parse_ledgers(resp_l)
+                for led in ledgers:
+                    led_name = led["name"].strip()
+                    parent_grp = (led.get("parent") or "").lower()
+                    # Filter for debtors/customers or ledgers with GSTIN/Address
+                    is_customer = "debtor" in parent_grp or "customer" in parent_grp or "party" in parent_grp or bool(led.get("gstin"))
+                    if not is_customer and parent_grp and parent_grp not in ("sundry debtors", ""):
+                        continue
+
+                    s_res = await db.execute(
+                        select(Shop).where(
+                            (func.lower(Shop.name) == func.lower(led_name))
+                            | (Shop.tally_guid == led["guid"] if led.get("guid") else False)
+                        )
+                    )
+                    existing_s = s_res.scalar_one_or_none()
+                    if existing_s:
+                        if led.get("guid"):
+                            existing_s.tally_guid = led["guid"]
+                        if led.get("gstin"):
+                            existing_s.gstin = led["gstin"]
+                        if led.get("address"):
+                            existing_s.address = led["address"]
+                        if led.get("state"):
+                            existing_s.state = led["state"]
+                        if led.get("pincode"):
+                            existing_s.pincode = led["pincode"]
+                        if led.get("phone"):
+                            existing_s.phone = led["phone"]
+                        if led.get("contact_person"):
+                            existing_s.contact_person = led["contact_person"]
+                        if led.get("email"):
+                            existing_s.email = led["email"]
+                        existing_s.source = "TALLY"
+                        shops_updated += 1
+                    else:
+                        new_s = Shop(
+                            name=led_name,
+                            city=led.get("state") or "Local",
+                            phone=led.get("phone"),
+                            gstin=led.get("gstin"),
+                            address=led.get("address"),
+                            state=led.get("state"),
+                            pincode=led.get("pincode"),
+                            contact_person=led.get("contact_person"),
+                            email=led.get("email"),
+                            tally_guid=led.get("guid"),
+                            source="TALLY",
+                            is_active=True,
+                        )
+                        db.add(new_s)
+                        shops_created += 1
+                await db.commit()
+        except Exception as e:
+            logger.debug(f"[TallySync] Ledgers fetch skipped/failed: {e}")
+
+        # Cross-fill GSTINs across brand-differentiated shops
+        inherited_gstins = await cls.auto_fill_brand_gstins(db)
+
+        return {
+            "status": "SUCCESS",
+            "categories_created": categories_created,
+            "categories_updated": categories_updated,
+            "products_created": products_created,
+            "products_updated": products_updated,
+            "tally_stock_synced": tally_stock_synced,
+            "shops_created": shops_created,
+            "shops_updated": shops_updated,
+            "gstins_cross_filled": inherited_gstins,
+        }
+
+    @classmethod
+    async def auto_fill_brand_gstins(cls, db: AsyncSession) -> int:
+        """
+        Cross-fills missing GSTINs across brand-differentiated shops.
+        E.g., if 'ABC ENTERPRISES (DAIKIN)' has a GSTIN, 'ABC ENTERPRISES - VOLTAS'
+        will automatically inherit that GSTIN.
+        """
+        all_shops_res = await db.execute(select(Shop).where(Shop.is_active == True))
+        all_shops = all_shops_res.scalars().all()
+
+        root_gstin_map: Dict[str, str] = {}
+        phone_gstin_map: Dict[str, str] = {}
+
+        for s in all_shops:
+            if s.gstin:
+                g_extracted = extract_gstin(s.gstin)
+                if g_extracted:
+                    root = get_shop_root_name(s.name).lower()
+                    if root and root not in root_gstin_map:
+                        root_gstin_map[root] = g_extracted
+                    if s.phone and len(s.phone.strip()) >= 8 and s.phone.strip() not in phone_gstin_map:
+                        phone_gstin_map[s.phone.strip()] = g_extracted
+
+        # Also inspect historical sales vouchers raw_metadata
+        vch_res = await db.execute(
+            select(TallySalesVoucher.party_name, TallySalesVoucher.raw_metadata).where(
+                TallySalesVoucher.raw_metadata.is_not(None)
+            )
+        )
+        for p_name, meta in vch_res.all():
+            if isinstance(meta, dict) and p_name:
+                v_g = extract_gstin(meta.get("party_gstin")) or extract_gstin(meta.get("buyer_gstin"))
+                if v_g:
+                    root = get_shop_root_name(p_name).lower()
+                    if root and root not in root_gstin_map:
+                        root_gstin_map[root] = v_g
+
+        updated_count = 0
+        for s in all_shops:
+            if not s.gstin or not extract_gstin(s.gstin):
+                root = get_shop_root_name(s.name).lower()
+                matched_gst = root_gstin_map.get(root)
+                if not matched_gst and s.phone:
+                    matched_gst = phone_gstin_map.get(s.phone.strip())
+
+                if matched_gst and matched_gst != s.gstin:
+                    s.gstin = matched_gst
+                    updated_count += 1
+                    logger.info(f"[TallySync] Auto-filled GSTIN {matched_gst} for shop '{s.name}' from related brand shop '{root}'.")
+
+        if updated_count > 0:
+            await db.commit()
+            try:
+                await ws_manager.broadcast("shop_updated", {"bulk": True, "count": updated_count})
+            except Exception:
+                pass
+            logger.info(f"[TallySync] Cross-filled GSTIN for {updated_count} brand-separated shop(s).")
+
+        return updated_count
+
+    @classmethod
     async def perform_sync(
         cls,
         db: AsyncSession,
@@ -798,19 +1871,22 @@ class TallySyncService:
         company_name: Optional[str] = None,
         force_full: bool = False,
         source: str = "DIRECT_HTTP",
-    ) -> TallySyncHistory:
+        record_empty_history: bool = True,
+    ) -> Optional[TallySyncHistory]:
         """
         Executes a synchronization run against Tally HTTP interface.
         Extracts sales bills, stores non-financial vouchers, and updates sync state.
         """
         cfg = await cls.get_or_create_config(db)
         active_company = company_name or cfg.company_name
+        if active_company and (active_company.strip() == "0" or active_company.strip().isdigit()):
+            active_company = None
 
         # Validate or auto-detect active company against open Tally instance
         try:
             ok, _, companies = await TallyHttpClient.test_connection(cfg.host, cfg.port, cfg.tally_url, timeout=3.0)
             if ok and companies:
-                open_names = [c["name"] for c in companies if c.get("name")]
+                open_names = [c["name"] for c in companies if c.get("name") and c["name"].strip() != "0" and not c["name"].strip().isdigit()]
                 if open_names:
                     # If active_company not explicitly requested or not currently open in Tally, adopt the open company
                     if not company_name and (not active_company or active_company not in open_names):
@@ -831,20 +1907,22 @@ class TallySyncService:
         if not to_date:
             to_date = date.today()
 
-        history = TallySyncHistory(
-            sync_source=source,
-            company_name=active_company,
-            status="IN_PROGRESS",
-            started_at=datetime.now(),
-            from_date=from_date.isoformat() if from_date else None,
-            to_date=to_date.isoformat() if to_date else None,
-            last_alter_id=alter_id,
-        )
-        db.add(history)
-        await db.commit()
-        await db.refresh(history)
-
         start_time = time.time()
+        history: Optional[TallySyncHistory] = None
+        if record_empty_history:
+            history = TallySyncHistory(
+                sync_source=source,
+                company_name=active_company,
+                status="IN_PROGRESS",
+                started_at=datetime.now(),
+                from_date=from_date.isoformat() if from_date else None,
+                to_date=to_date.isoformat() if to_date else None,
+                last_alter_id=alter_id,
+            )
+            db.add(history)
+            await db.commit()
+            await db.refresh(history)
+
         try:
             # 1. Fetch XML from Tally
             req_xml = TallyXmlBuilder.build_sales_vouchers_request(
@@ -855,11 +1933,11 @@ class TallySyncService:
             )
             try:
                 resp_xml = await TallyHttpClient.post_xml(
-                    cfg.host, cfg.port, req_xml, cfg.tally_url, timeout=30.0
+                    cfg.host, cfg.port, req_xml, cfg.tally_url, timeout=45.0
                 )
             except Exception as e:
-                # If collection failed, attempt fallback Voucher Register
-                logger.warning(f"TDL collection query failed, trying Voucher Register fallback: {e}")
+                # If collection failed, attempt fallback Day Book
+                logger.warning(f"TDL collection query failed, trying Day Book fallback: {e}")
                 fb_xml = TallyXmlBuilder.build_fallback_voucher_register_request(
                     company_name=active_company, from_date=from_date, to_date=to_date
                 )
@@ -874,7 +1952,8 @@ class TallySyncService:
                 if detected_comps:
                     active_company = detected_comps[0].get("name")
                     cfg.company_name = active_company
-                    history.company_name = active_company
+                    if history:
+                        history.company_name = active_company
             fetched_count = len(parsed_vouchers)
 
             # 3. Process into Database
@@ -891,34 +1970,65 @@ class TallySyncService:
             cfg.last_sync_status = "SUCCESS"
             cfg.last_sync_message = f"Synced {fetched_count} vouchers ({created} new, {updated} updated, {cancelled} cancelled)."
 
-            history.status = "SUCCESS"
-            history.completed_at = datetime.now()
-            history.vouchers_fetched = fetched_count
-            history.vouchers_created = created
-            history.vouchers_updated = updated
-            history.vouchers_cancelled = cancelled
-            history.last_alter_id = cfg.last_alter_id
-            await db.commit()
-            await db.refresh(history)
+            if record_empty_history or created > 0 or updated > 0 or cancelled > 0:
+                if not history:
+                    history = TallySyncHistory(
+                        sync_source=source,
+                        company_name=active_company,
+                        status="SUCCESS",
+                        started_at=datetime.fromtimestamp(start_time),
+                        from_date=from_date.isoformat() if from_date else None,
+                        to_date=to_date.isoformat() if to_date else None,
+                        last_alter_id=alter_id,
+                    )
+                    db.add(history)
+                history.status = "SUCCESS"
+                history.completed_at = datetime.now()
+                history.vouchers_fetched = fetched_count
+                history.vouchers_created = created
+                history.vouchers_updated = updated
+                history.vouchers_cancelled = cancelled
+                history.last_alter_id = cfg.last_alter_id
 
-            logger.info(
-                f"[TallySync] Complete in {time.time()-start_time:.2f}s: "
-                f"{fetched_count} fetched, {created} created, {updated} updated, {cancelled} cancelled."
-            )
+            await db.commit()
+            if history:
+                await db.refresh(history)
+
+            if created > 0 or updated > 0 or cancelled > 0 or record_empty_history:
+                logger.info(
+                    f"[TallySync] Complete in {time.time()-start_time:.2f}s: "
+                    f"{fetched_count} fetched, {created} created, {updated} updated, {cancelled} cancelled."
+                )
             return history
 
         except Exception as ex:
             err_msg = str(ex)
-            logger.error(f"[TallySync] Failed: {err_msg}")
+            if record_empty_history or "ConnectError" not in err_msg:
+                logger.error(f"[TallySync] Failed: {err_msg}")
+            else:
+                logger.debug(f"[TallySync] Tick connect status: {err_msg}")
+
             cfg.last_sync_status = "FAILED"
             cfg.last_sync_message = err_msg
 
-            history.status = "FAILED"
-            history.completed_at = datetime.now()
-            history.error_message = err_msg
-            await db.commit()
-            await db.refresh(history)
-            return history
+            if record_empty_history:
+                if not history:
+                    history = TallySyncHistory(
+                        sync_source=source,
+                        company_name=active_company,
+                        status="FAILED",
+                        started_at=datetime.fromtimestamp(start_time),
+                    )
+                    db.add(history)
+                history.status = "FAILED"
+                history.completed_at = datetime.now()
+                history.error_message = err_msg
+                await db.commit()
+                await db.refresh(history)
+                return history
+            else:
+                await db.commit()
+                return None
 
 
 # ---------------------------------------------------------------------------
@@ -958,32 +2068,47 @@ class TallyBackgroundWorker:
         logger.info("[TallyWorker] Background sync worker stopped.")
 
     async def _worker_loop(self):
-        # Wait 10 seconds after server startup before initial sync run
-        await asyncio.sleep(10)
+        # Brief 1-second delay after startup before initiating loop
+        await asyncio.sleep(1)
+        last_master_sync = 0.0
         while self._is_running:
             try:
                 async with AsyncSessionLocal() as session:
                     cfg = await TallySyncService.get_or_create_config(session)
-                    interval_sec = getattr(settings, "tally_sync_interval_seconds", None) or max(10, cfg.sync_interval_minutes * 60)
+                    interval_sec = max(getattr(settings, "tally_sync_interval_seconds", 10) or 10, 5)
 
                     if cfg.is_enabled and cfg.auto_sync:
                         async with self._lock:
                             self._is_syncing = True
                             try:
-                                await TallySyncService.perform_sync(session, source="DIRECT_HTTP")
+                                now_ts = time.time()
+                                # 1. Periodically sync masters every 5 minutes (300s), NOT on every 2-second tick
+                                if now_ts - last_master_sync > 300:
+                                    try:
+                                        await TallySyncService.sync_masters_from_tally(session)
+                                        last_master_sync = now_ts
+                                    except Exception as m_ex:
+                                        logger.debug(f"[TallyWorker] Periodic master sync: {m_ex}")
+
+                                # 2. Rapidly sync sales vouchers using alter_id (instant ~20ms incremental poll)
+                                await TallySyncService.perform_sync(
+                                    session,
+                                    source="DIRECT_HTTP",
+                                    record_empty_history=False,
+                                )
                             except Exception as e:
-                                logger.warning(f"[TallyWorker] Background sync tick failed: {e}")
+                                logger.debug(f"[TallyWorker] Background sync tick: {e}")
                             finally:
                                 self._is_syncing = False
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[TallyWorker] Error in background sync loop: {e}")
-                interval_sec = 60
+                interval_sec = 4
 
-            # Sleep for the configured interval
+            # Sleep for fast interval (default 2s) so new Tally bills appear in mobile at that same instant
             try:
-                await asyncio.sleep(interval_sec)
+                await asyncio.sleep(max(1, interval_sec))
             except asyncio.CancelledError:
                 break
 

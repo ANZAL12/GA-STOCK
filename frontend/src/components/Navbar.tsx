@@ -11,7 +11,8 @@ import {
   Users, 
   Smartphone, 
   LogOut,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Settings
 } from "lucide-react";
 
 import logoImg from "../assets/GLOBAL2.png";
@@ -35,6 +36,7 @@ export const Navbar: React.FC = () => {
     ...(isAdmin ? [{ label: "Import Serials", path: "/import-serials", icon: FileSpreadsheet }] : []),
     ...(isAdmin ? [{ label: "Users", path: "/users", icon: Users }] : []),
     ...(isAdmin ? [{ label: "Devices", path: "/devices", icon: Smartphone }] : []),
+    ...(isAdmin ? [{ label: "Settings", path: "/settings", icon: Settings }] : []),
   ];
 
   return (

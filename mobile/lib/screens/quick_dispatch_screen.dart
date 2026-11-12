@@ -10,7 +10,6 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
-import '../widgets/add_product_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 import 'print_bill_screen.dart';
@@ -657,33 +656,6 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                         ),
                       ),
-                      // Add New Model Button
-                      TextButton.icon(
-                        style: TextButton.styleFrom(
-                          foregroundColor: const Color(0xFF059669),
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        ),
-                        icon: const Icon(Icons.add_circle_outline, size: 18),
-                        label: const Text('Add Model', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                        onPressed: () async {
-                          final newProd = await showAddProductDialog(
-                            context,
-                            initialModel: search.trim().isNotEmpty ? search.trim() : null,
-                          );
-                          if (newProd != null && ctx.mounted) {
-                            setState(() {
-                              if (!_products.any((p) => p.id == newProd.id)) {
-                                _products.insert(0, newProd);
-                              }
-                            });
-                            if (newProd.hasDualSerial) {
-                              setModalState(() => chosenProduct = newProd);
-                            } else {
-                              Navigator.pop(ctx, newProd);
-                            }
-                          }
-                        },
-                      ),
                       IconButton(
                         tooltip: 'Sync Models from Server',
                         icon: isSyncing
@@ -824,65 +796,27 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
                                 Text(
                                   search.isNotEmpty
                                       ? 'Model "$search" is not in the system yet. Add it now or sync from server.'
-                                      : 'If this model was just added on the admin dashboard, tap below to sync immediately.',
+                                      : 'Catalog models are synced directly from TallyPrime stock items.',
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                                 ),
                                 const SizedBox(height: 16),
-                                Wrap(
-                                  alignment: WrapAlignment.center,
-                                  spacing: 12,
-                                  runSpacing: 10,
-                                  children: [
-                                    ElevatedButton.icon(
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: const Color(0xFF059669),
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                      ),
-                                      icon: const Icon(Icons.add_circle_outline, size: 18),
-                                      label: Text(
-                                        search.trim().isNotEmpty ? 'Add "${search.trim()}" Model' : 'Add Model',
-                                        style: const TextStyle(fontWeight: FontWeight.bold),
-                                      ),
-                                      onPressed: () async {
-                                        final newProd = await showAddProductDialog(
-                                          context,
-                                          initialModel: search.trim().isNotEmpty ? search.trim() : null,
-                                        );
-                                        if (newProd != null && ctx.mounted) {
-                                          setState(() {
-                                            if (!_products.any((p) => p.id == newProd.id)) {
-                                              _products.insert(0, newProd);
-                                            }
-                                          });
-                                          if (newProd.hasDualSerial) {
-                                            setModalState(() => chosenProduct = newProd);
-                                          } else {
-                                            Navigator.pop(ctx, newProd);
-                                          }
-                                        }
-                                      },
-                                    ),
-                                    OutlinedButton.icon(
-                                      style: OutlinedButton.styleFrom(
-                                        foregroundColor: const Color(0xFF0284C7),
-                                        side: const BorderSide(color: Color(0xFF0284C7)),
-                                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                      ),
-                                      icon: isSyncing
-                                          ? const SizedBox(
-                                              width: 16,
-                                              height: 16,
-                                              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF0284C7)),
-                                            )
-                                          : const Icon(Icons.cloud_sync_outlined, size: 18),
-                                      label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
-                                      onPressed: isSyncing ? null : () => syncFreshModels(query: search),
-                                    ),
-                                  ],
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF0284C7),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  ),
+                                  icon: isSyncing
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                        )
+                                      : const Icon(Icons.cloud_sync_outlined, size: 18),
+                                  label: Text(isSyncing ? 'Syncing...' : 'Sync Catalog from Server'),
+                                  onPressed: isSyncing ? null : () => syncFreshModels(query: search),
                                 ),
                               ],
                             ),

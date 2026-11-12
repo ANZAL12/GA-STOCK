@@ -49,6 +49,9 @@ class ApiService {
   /// Live notifier when an automatic Tally sales voucher is detected
   final ValueNotifier<TallySalesVoucher?> latestTallyBillNotifier = ValueNotifier<TallySalesVoucher?>(null);
 
+  /// Live notifier when a Tally sales voucher has been marked processed
+  final ValueNotifier<String?> tallyBillProcessedNotifier = ValueNotifier<String?>(null);
+
   void clearLatestTallyBill() {
     latestTallyBillNotifier.value = null;
   }
@@ -498,6 +501,20 @@ class ApiService {
       } catch (e) {
         debugPrint('[WS] Failed to parse tally_bill_created: $e');
       }
+    } else if (type == 'tally_bill_processed' && data is Map<String, dynamic>) {
+      final processedId = data['id']?.toString();
+      final voucherNum = data['voucher_number']?.toString();
+      if (latestTallyBillNotifier.value?.id == processedId ||
+          latestTallyBillNotifier.value?.voucherNumber == voucherNum) {
+        latestTallyBillNotifier.value = null;
+      }
+      tallyBillProcessedNotifier.value = processedId ?? voucherNum;
+    } else if ((type == 'tally_bill_cancelled' || type == 'bill_cancelled') && data is Map<String, dynamic>) {
+      final bNum = (data['bill_number'] ?? data['voucher_number'])?.toString().trim().toLowerCase();
+      if (latestTallyBillNotifier.value?.voucherNumber.trim().toLowerCase() == bNum) {
+        latestTallyBillNotifier.value = null;
+      }
+      tallyBillProcessedNotifier.value = bNum;
     }
   }
 
@@ -1158,7 +1175,10 @@ class ApiService {
       'serial_number': cleanSerial,
     };
     if (productId != null && productId.isNotEmpty) {
-      queryParams['product_id'] = productId;
+      final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(productId.trim());
+      if (isUuid) {
+        queryParams['product_id'] = productId.trim();
+      }
     }
 
     // Network is #1 priority! Live server query with 8-second timeout before falling back to offline cache
@@ -1186,7 +1206,12 @@ class ApiService {
         String msg = 'Serial check failed';
         try {
           final err = jsonDecode(res.body);
-          msg = err['detail'] ?? msg;
+          if (err['detail'] is String) {
+            msg = err['detail'];
+          } else if (err['detail'] is List && (err['detail'] as List).isNotEmpty) {
+            final first = (err['detail'] as List).first;
+            msg = first is Map ? (first['msg'] ?? msg) : first.toString();
+          }
         } catch (_) {}
         throw Exception(msg);
       }
@@ -1217,6 +1242,10 @@ class ApiService {
     if (reference.trim().isEmpty) {
       return {'is_duplicate_today': false};
     }
+    final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(shopId.trim());
+    if (!isUuid) {
+      return {'is_duplicate_today': false};
+    }
     final res = await _authenticatedGet(
       Uri.parse(
         '$_baseUrl/outward/check-reference?shop_id=$shopId&reference=${Uri.encodeComponent(reference.trim())}',
@@ -1238,6 +1267,7 @@ class ApiService {
     String? deliveryReference,
     String? remarks,
     String? clientRequestId,
+    String? tallyVoucherId,
   }) async {
     clearSerialCheckCache();
     final res = await _authenticatedPost(
@@ -1256,6 +1286,7 @@ class ApiService {
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks,
         if (clientRequestId != null) 'client_request_id': clientRequestId,
+        if (tallyVoucherId != null && tallyVoucherId.isNotEmpty) 'tally_voucher_id': tallyVoucherId,
       }),
     );
 
@@ -1263,6 +1294,11 @@ class ApiService {
       invalidateProductCache();
       invalidateBillsCache();
       _refreshProductsInBackground();
+      if (tallyVoucherId != null) {
+        tallyBillProcessedNotifier.value = tallyVoucherId;
+      } else if (billNumber != null && billNumber.trim().isNotEmpty) {
+        tallyBillProcessedNotifier.value = billNumber.trim();
+      }
       return jsonDecode(res.body);
     } else {
       String msg = 'Outward dispatch failed';
@@ -1281,6 +1317,7 @@ class ApiService {
     String? deliveryReference,
     String? remarks,
     String? clientRequestId,
+    String? tallyVoucherId,
   }) async {
     clearSerialCheckCache();
     final res = await _authenticatedPost(
@@ -1292,6 +1329,7 @@ class ApiService {
         'delivery_reference': deliveryReference?.trim().isEmpty == true ? null : deliveryReference?.trim(),
         'remarks': remarks?.trim().isEmpty == true ? null : remarks?.trim(),
         if (clientRequestId != null) 'client_request_id': clientRequestId,
+        if (tallyVoucherId != null && tallyVoucherId.isNotEmpty) 'tally_voucher_id': tallyVoucherId,
       }),
     );
 
@@ -1299,6 +1337,11 @@ class ApiService {
       invalidateProductCache();
       invalidateBillsCache();
       _refreshProductsInBackground();
+      if (tallyVoucherId != null) {
+        tallyBillProcessedNotifier.value = tallyVoucherId;
+      } else if (billNumber != null && billNumber.trim().isNotEmpty) {
+        tallyBillProcessedNotifier.value = billNumber.trim();
+      }
       return jsonDecode(res.body);
     } else {
       String msg = 'Outward dispatch failed';
@@ -1685,6 +1728,20 @@ class ApiService {
       return true;
     } else {
       String msg = 'Failed to update voucher status';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<bool> deleteTallyVoucher(String voucherId) async {
+    final uri = Uri.parse('$_baseUrl/tally/sales-vouchers/$voucherId');
+    final res = await _client.delete(uri, headers: _headers());
+    if (res.statusCode == 200 || res.statusCode == 204) {
+      return true;
+    } else {
+      String msg = 'Failed to delete voucher';
       try {
         msg = jsonDecode(res.body)['detail'] ?? msg;
       } catch (_) {}

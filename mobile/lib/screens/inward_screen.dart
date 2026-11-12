@@ -12,7 +12,6 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
-import '../widgets/add_product_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../services/sound_service.dart';
 import '../services/session_recovery_service.dart';
@@ -433,28 +432,6 @@ class _InwardScreenState extends State<InwardScreen> {
       _inwardUnitType = 'indoor';
       _stage = InwardStage.scanning;
     });
-  }
-
-  Future<void> _handleAddNewModel() async {
-    final newProduct = await showAddProductDialog(
-      context,
-      initialModel: _productSearch.isNotEmpty ? _productSearch : null,
-    );
-    if (newProduct != null && mounted) {
-      setState(() {
-        _products.removeWhere((p) => p.id == newProduct.id);
-        _products.insert(0, newProduct);
-      });
-      _onModelSelectedForStockIn(newProduct);
-      final isOffline = newProduct.id.startsWith('offline_');
-      TopToast.show(
-        context,
-        message: isOffline
-            ? 'Model "${newProduct.brand} ${newProduct.model}" added offline. Ready to scan; will sync when back online.'
-            : 'Product model "${newProduct.brand} ${newProduct.model}" added and selected for inward.',
-        icon: isOffline ? Icons.cloud_off_rounded : Icons.check_circle_rounded,
-      );
-    }
   }
 
   Future<bool> _handleWillPop() async {
@@ -1014,27 +991,8 @@ class _InwardScreenState extends State<InwardScreen> {
                                                 icon: isSyncing
                                                     ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                                                     : const Icon(Icons.cloud_sync_outlined, size: 16),
-                                                label: Text(isSyncing ? 'Syncing...' : 'Sync Models'),
+                                                label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Tally'),
                                                 onPressed: isSyncing ? null : () => syncFreshModels(query: filter),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              ElevatedButton.icon(
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor: const Color(0xFF059669),
-                                                  foregroundColor: Colors.white,
-                                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                                ),
-                                                icon: const Icon(Icons.add_shopping_cart_rounded, size: 16),
-                                                label: const Text('Add Model'),
-                                                onPressed: () async {
-                                                  final newProd = await showAddProductDialog(
-                                                    context,
-                                                    initialModel: filter.isNotEmpty ? filter : null,
-                                                  );
-                                                  if (newProd != null && ctx.mounted) {
-                                                    Navigator.pop(ctx, newProd);
-                                                  }
-                                                },
                                               ),
                                             ],
                                           ),
@@ -2348,19 +2306,6 @@ class _InwardScreenState extends State<InwardScreen> {
                   onChanged: (val) => setState(() => _productSearch = val),
                 ),
               ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4F46E5),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  elevation: 0,
-                ),
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('Add Model', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                onPressed: _handleAddNewModel,
-              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -2383,7 +2328,7 @@ class _InwardScreenState extends State<InwardScreen> {
                           ),
                           const SizedBox(height: 6),
                           const Text(
-                            'Receive a new model delivered to godown that is not registered yet?',
+                            'Models are synced directly from TallyPrime. Tap to refresh catalog.',
                             style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                             textAlign: TextAlign.center,
                           ),
@@ -2395,12 +2340,21 @@ class _InwardScreenState extends State<InwardScreen> {
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                             ),
-                            icon: const Icon(Icons.add_shopping_cart_rounded, size: 18),
-                            label: Text(
-                              _productSearch.isNotEmpty ? 'Add "$_productSearch" as Model' : 'Add New Product Model',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            icon: const Icon(Icons.sync_rounded, size: 18),
+                            label: const Text(
+                              'Refresh Catalog',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
                             ),
-                            onPressed: _handleAddNewModel,
+                            onPressed: () async {
+                              await _loadProducts(forceRefresh: true);
+                              if (mounted) {
+                                TopToast.show(
+                                  context,
+                                  message: 'Product catalog refreshed from server.',
+                                  icon: Icons.check_circle_rounded,
+                                );
+                              }
+                            },
                           ),
                         ],
                       ),

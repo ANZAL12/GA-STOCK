@@ -12,8 +12,6 @@ import '../widgets/responsive_utils.dart';
 import '../widgets/scanner_widget.dart';
 import '../widgets/top_toast.dart';
 import '../widgets/offline_banner.dart';
-import '../widgets/add_shop_dialog.dart';
-import '../widgets/add_product_dialog.dart';
 import '../widgets/uppercase_formatter.dart';
 import '../widgets/office_pc_confirm_dialog.dart';
 import '../services/sound_service.dart';
@@ -36,6 +34,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
   StreamSubscription? _wsSubscription;
   VoidCallback? _scannerSub;
   TallySalesVoucher? _tallyVoucher;
+  String? _selectedTallyItemId;
 
   // Wizard steps: 1 = Shop, 2 = Model & Ref, 3 = Scanning & Review
   int _currentStep = 1;
@@ -211,32 +210,43 @@ class _OutwardScreenState extends State<OutwardScreen> {
         isActive: true,
       );
 
-      // 2. Prefill Bill / Invoice Number and Delivery Reference
+      // 2. Prefill Bill / Invoice Number and Delivery / Vehicle Reference
       _billNumberController.text = tv.voucherNumber;
-      _deliveryRefController.text = 'Tally: ${tv.voucherNumber}';
-      if (tv.address != null && tv.address!.trim().isNotEmpty) {
-        _remarksController.text = tv.address!.trim();
+      if (tv.vehicleNumber != null && tv.vehicleNumber!.trim().isNotEmpty) {
+        _deliveryRefController.text = tv.vehicleNumber!.trim();
+      } else {
+        // Vehicle / Delivery reference is inputted from mobile; do not default to bill number
+        _deliveryRefController.text = '';
       }
 
-      // 3. Find first product model from bill items
-      for (final item in tv.items) {
-        final itemClean = item.itemName.trim().toLowerCase();
-        final matchedProd = _products.where((p) {
-          if (item.productId != null && p.id == item.productId) return true;
-          return p.name.trim().toLowerCase() == itemClean ||
-                 p.model.trim().toLowerCase() == itemClean ||
-                 itemClean.contains(p.model.trim().toLowerCase());
-        }).firstOrNull;
+      final remarksParts = <String>[];
+      if (tv.transporterName != null && tv.transporterName!.trim().isNotEmpty) {
+        remarksParts.add('Transporter: ${tv.transporterName!.trim()}');
+      }
+      if (tv.destination != null && tv.destination!.trim().isNotEmpty) {
+        remarksParts.add('Destination: ${tv.destination!.trim()}');
+      }
+      if (tv.address != null && tv.address!.trim().isNotEmpty) {
+        remarksParts.add(tv.address!.trim());
+      }
+      if (remarksParts.isNotEmpty) {
+        _remarksController.text = remarksParts.join(' • ');
+      }
 
-        if (matchedProd != null) {
-          _selectedProduct = matchedProd;
-          _activeFilterModelId = matchedProd.id;
-          if (matchedProd.hasDualSerial) {
-            _outwardUnitType = 'indoor';
-          }
-          break;
+      // 3. Immediately select first product model from bill items
+      if (tv.items.isNotEmpty) {
+        final firstItem = tv.items.first;
+        _selectedTallyItemId = firstItem.id;
+        final resolved = _resolveTallyProduct(firstItem);
+        _selectedProduct = resolved;
+        _activeFilterModelId = resolved.id;
+        if (resolved.hasDualSerial) {
+          _outwardUnitType = 'indoor';
         }
       }
+
+      // Fetch fresh voucher details from server in background to sync product & shop IDs
+      _loadTallyVoucherFresh(tv.id);
 
       // 4. Jump directly to Step 3: Scanning & Review!
       _currentStep = 3;
@@ -463,6 +473,16 @@ class _OutwardScreenState extends State<OutwardScreen> {
             });
           }
         }
+      } else if ((type == 'tally_bill_cancelled' || type == 'bill_cancelled') && data is Map<String, dynamic>) {
+        final bNum = (data['bill_number'] ?? data['voucher_number'])?.toString().trim().toLowerCase();
+        if (_tallyVoucher != null && _tallyVoucher!.voucherNumber.trim().toLowerCase() == bNum) {
+          HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
+          _showSimpleAlert(
+            'Bill Cancelled in Tally',
+            'Tally Bill ${_tallyVoucher!.voucherNumber} has been cancelled in TallyPrime.\n\nDispatch cannot continue for a cancelled bill.',
+          );
+        }
       }
     });
   }
@@ -513,33 +533,36 @@ class _OutwardScreenState extends State<OutwardScreen> {
             _selectedShop = refreshedShop;
           }
           if (_tallyVoucher != null) {
-            if (_selectedShop == null || _selectedShop!.id.startsWith('tally_')) {
-              final pClean = _tallyVoucher!.partyName.trim().toLowerCase();
-              final matchedShop = _shops.where((s) {
-                if (_tallyVoucher!.shopId != null && s.id == _tallyVoucher!.shopId) return true;
-                return s.name.trim().toLowerCase() == pClean;
+            final pClean = _tallyVoucher!.partyName.trim().toLowerCase();
+            final matchedShop = _shops.where((s) {
+              if (_tallyVoucher!.shopId != null && s.id == _tallyVoucher!.shopId) return true;
+              return s.name.trim().toLowerCase() == pClean;
+            }).firstOrNull;
+            if (matchedShop != null) {
+              _selectedShop = matchedShop;
+            } else {
+              final fuzzyShop = _shops.where((s) {
+                final sName = s.name.trim().toLowerCase();
+                return sName.contains(pClean) || pClean.contains(sName);
               }).firstOrNull;
-              if (matchedShop != null) {
-                _selectedShop = matchedShop;
+              if (fuzzyShop != null) {
+                _selectedShop = fuzzyShop;
               }
             }
-            if (_selectedProduct == null && _tallyVoucher!.items.isNotEmpty) {
-              for (final item in _tallyVoucher!.items) {
-                final itemClean = item.itemName.trim().toLowerCase();
-                final matchedProd = _products.where((p) {
-                  if (item.productId != null && p.id == item.productId) return true;
-                  return p.name.trim().toLowerCase() == itemClean ||
-                         p.model.trim().toLowerCase() == itemClean ||
-                         itemClean.contains(p.model.trim().toLowerCase());
-                }).firstOrNull;
-                if (matchedProd != null) {
-                  _selectedProduct = matchedProd;
-                  _activeFilterModelId = matchedProd.id;
-                  if (matchedProd.hasDualSerial) {
-                    _outwardUnitType = 'indoor';
-                  }
-                  break;
-                }
+
+            if (_selectedTallyItemId != null) {
+              final currentItem = _tallyVoucher!.items.where((it) => it.id == _selectedTallyItemId).firstOrNull;
+              if (currentItem != null) {
+                _selectedProduct = _resolveTallyProduct(currentItem);
+                _activeFilterModelId = _selectedProduct!.id;
+              }
+            } else if (_tallyVoucher!.items.isNotEmpty) {
+              final firstItem = _tallyVoucher!.items.first;
+              _selectedTallyItemId = firstItem.id;
+              _selectedProduct = _resolveTallyProduct(firstItem);
+              _activeFilterModelId = _selectedProduct!.id;
+              if (_selectedProduct!.hasDualSerial) {
+                _outwardUnitType = 'indoor';
               }
             }
           }
@@ -560,6 +583,30 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
+  Future<void> _loadTallyVoucherFresh(String voucherId) async {
+    try {
+      final fresh = await _api.getTallyVoucherDetail(voucherId);
+      if (mounted) {
+        setState(() {
+          _tallyVoucher = fresh;
+          if (fresh.shopId != null && fresh.shopId!.isNotEmpty) {
+            final matched = _shops.where((s) => s.id == fresh.shopId).firstOrNull;
+            if (matched != null) {
+              _selectedShop = matched;
+            }
+          }
+          if (_selectedTallyItemId != null) {
+            final itm = fresh.items.where((i) => i.id == _selectedTallyItemId).firstOrNull;
+            if (itm != null) {
+              _selectedProduct = _resolveTallyProduct(itm);
+              _activeFilterModelId = _selectedProduct!.id;
+            }
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
   Future<void> _checkReferenceDuplicate() async {
     final ref = _deliveryRefController.text.trim();
     if (ref.isEmpty || _selectedShop == null) {
@@ -577,8 +624,156 @@ class _OutwardScreenState extends State<OutwardScreen> {
     } catch (_) {}
   }
 
+  Product _resolveTallyProduct(TallyVoucherItem item) {
+    if (item.productId != null && item.productId!.isNotEmpty) {
+      final p = _products.where((prod) => prod.id.toLowerCase() == item.productId!.toLowerCase()).firstOrNull;
+      if (p != null) return p;
+    }
+
+    final itemClean = item.itemName.trim().toLowerCase();
+    final codeClean = item.itemCode?.trim().toLowerCase();
+    final matchedNameClean = item.matchedProductName?.trim().toLowerCase();
+    final matchedModelClean = item.matchedProductModel?.trim().toLowerCase();
+
+    // 1. Exact match by itemCode or matchedProductModel
+    if (codeClean != null && codeClean.isNotEmpty) {
+      final p = _products.where((prod) => prod.model.trim().toLowerCase() == codeClean).firstOrNull;
+      if (p != null) return p;
+    }
+    if (matchedModelClean != null && matchedModelClean.isNotEmpty) {
+      final p = _products.where((prod) => prod.model.trim().toLowerCase() == matchedModelClean).firstOrNull;
+      if (p != null) return p;
+    }
+
+    // 2. Exact match by model or name
+    for (final prod in _products) {
+      final pModel = prod.model.trim().toLowerCase();
+      final pName = prod.name.trim().toLowerCase();
+      if (pModel.isNotEmpty && pModel == itemClean) return prod;
+      if (pName.isNotEmpty && pName == itemClean) return prod;
+      if (matchedNameClean != null && matchedNameClean.isNotEmpty && pName == matchedNameClean) return prod;
+    }
+
+    // 3. High-confidence model substring match
+    for (final prod in _products) {
+      final pModel = prod.model.trim().toLowerCase();
+      if (pModel.length >= 3 && itemClean.contains(pModel)) {
+        return prod;
+      }
+    }
+
+    // 4. Token match: if words of DB product model appear in item name
+    for (final prod in _products) {
+      final pModel = prod.model.trim().toLowerCase();
+      final tokens = pModel.split(RegExp(r'[\s\-_]+')).where((t) => t.length >= 3).toList();
+      if (tokens.isNotEmpty && tokens.every((t) => itemClean.contains(t))) {
+        return prod;
+      }
+    }
+
+    // 5. Unique fallback: in-memory product uniquely tied to this item's specific ID
+    final bool hasValidProductId = item.productId != null &&
+        RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(item.productId!.trim());
+    final brandGuess = item.itemName.split(' ').first;
+    final catId = _products.isNotEmpty ? _products.first.categoryId : 'tally_category';
+    return Product(
+      id: hasValidProductId ? item.productId!.trim() : 'tally_item_${item.id}',
+      name: item.matchedProductName ?? item.itemName,
+      model: item.matchedProductModel ?? ((item.itemCode != null && item.itemCode!.trim().isNotEmpty)
+          ? item.itemCode!.trim()
+          : item.itemName),
+      brand: brandGuess.length <= 15 ? brandGuess : 'Tally',
+      categoryId: catId,
+      unit: item.uom ?? 'NOS',
+      serialNumberRequired: true,
+      currentStockQty: item.quantity.toInt(),
+      outOfStockReminder: false,
+      hasDualSerial: false,
+    );
+  }
+
+  bool _doesTallyItemMatchProduct(TallyVoucherItem item, Product prod) {
+    if (item.productId != null && item.productId!.isNotEmpty) {
+      if (item.productId!.toLowerCase() == prod.id.toLowerCase()) return true;
+    }
+    final resolved = _resolveTallyProduct(item);
+    if (resolved.id.toLowerCase() == prod.id.toLowerCase()) return true;
+
+    final itemClean = item.itemName.trim().toLowerCase();
+    final itemModelClean = (item.matchedProductModel ?? item.itemCode ?? '').trim().toLowerCase();
+    final prodModelClean = prod.model.trim().toLowerCase();
+    final prodNameClean = prod.name.trim().toLowerCase();
+
+    if (prodModelClean.isNotEmpty) {
+      if (prodModelClean == itemClean || prodModelClean == itemModelClean) return true;
+      if (prodModelClean.length >= 3 && itemClean.contains(prodModelClean)) return true;
+    }
+    if (prodNameClean.isNotEmpty && prodNameClean == itemClean) return true;
+
+    return false;
+  }
+
+  TallyVoucherItem? _findTallyItemForProduct(Product? prod) {
+    if (_tallyVoucher == null || prod == null) return null;
+    for (final item in _tallyVoucher!.items) {
+      if (_doesTallyItemMatchProduct(item, prod)) return item;
+    }
+    return null;
+  }
+
+  /// Strictly only models parsed from this specific Tally bill
+  List<Product> get _tallyBillProducts {
+    if (_tallyVoucher == null) return [];
+    final Map<String, Product> uniqueProds = {};
+    for (final item in _tallyVoucher!.items) {
+      final p = _resolveTallyProduct(item);
+      uniqueProds[p.id] = p;
+    }
+    return uniqueProds.values.toList();
+  }
+
+  TallyVoucherItem? _getCurrentTallyItem() {
+    if (_tallyVoucher == null) return null;
+    if (_selectedTallyItemId != null) {
+      final itm = _tallyVoucher!.items.where((it) => it.id == _selectedTallyItemId).firstOrNull;
+      if (itm != null) return itm;
+    }
+    if (_selectedProduct != null) {
+      return _findTallyItemForProduct(_selectedProduct);
+    }
+    return _tallyVoucher!.items.firstOrNull;
+  }
+
+  int _getScannedCountForProduct(Product prod) {
+    return _scannedItems.where((s) {
+      final p = s.product;
+      if (p == null) return false;
+      return p.id.toLowerCase() == prod.id.toLowerCase() ||
+          p.model.trim().toLowerCase() == prod.model.trim().toLowerCase();
+    }).length;
+  }
+
   void _openContinuousScanner() {
-    if (_selectedProduct == null || _selectedShop == null) return;
+    if (_selectedProduct == null && _tallyVoucher != null && _tallyVoucher!.items.isNotEmpty) {
+      final firstItem = _tallyVoucher!.items.first;
+      _selectedTallyItemId = firstItem.id;
+      _selectedProduct = _resolveTallyProduct(firstItem);
+      _activeFilterModelId = _selectedProduct?.id ?? 'ALL';
+    }
+
+    if (_selectedShop == null && _tallyVoucher != null) {
+      _selectedShop = Shop(
+        id: _tallyVoucher!.shopId ?? 'tally_${_tallyVoucher!.id}',
+        name: _tallyVoucher!.partyName,
+        city: _tallyVoucher!.stateName ?? _tallyVoucher!.address ?? '',
+        isActive: true,
+      );
+    }
+
+    if (_selectedProduct == null || _selectedShop == null) {
+      _showToast('Please select a model and shop to start scanning', const Color(0xFFE11D48));
+      return;
+    }
 
     Navigator.push(
       context,
@@ -648,7 +843,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
     _inFlightSerials.add(cleanSerial);
 
     try {
-      final res = await _api.checkOutwardSerial(_selectedProduct!.id, cleanSerial);
+      final String? pidToSend = (_selectedProduct != null &&
+              !_selectedProduct!.id.startsWith('tally_') &&
+              !_selectedProduct!.id.startsWith('offline_'))
+          ? _selectedProduct!.id
+          : null;
+      final res = await _api.checkOutwardSerial(pidToSend, cleanSerial);
       final bool isBlocked = res['is_blocked'] == true ||
           res['is_dispatched'] == true ||
           res['can_dispatch'] == false ||
@@ -690,6 +890,158 @@ class _OutwardScreenState extends State<OutwardScreen> {
       final bool isMatched = res['is_matched'] == true || caseVal == 1 || caseName == 'matched';
       final serialDetail = res['serial'];
 
+      // Identify registered DB product when serial is identified
+      final regProdId = res['registered_product_id']?.toString();
+      Product? realProd = (regProdId != null && regProdId.isNotEmpty)
+          ? (_products.where((p) => p.id.toLowerCase() == regProdId.toLowerCase()).firstOrNull ??
+              OfflineManager().products.where((p) => p.id.toLowerCase() == regProdId.toLowerCase()).firstOrNull)
+          : null;
+
+      // Fallback: If not resolved by ID, resolve by registered_model_name
+      if (realProd == null) {
+        final existingModelName = (res['registered_model_name'] ?? serialDetail?['product_name'])?.toString().trim();
+        if (existingModelName != null && existingModelName.isNotEmpty) {
+          final cleanM = existingModelName.toLowerCase();
+          realProd = _products.where((p) => p.model.trim().toLowerCase() == cleanM || p.name.trim().toLowerCase() == cleanM).firstOrNull ??
+              OfflineManager().products.where((p) => p.model.trim().toLowerCase() == cleanM || p.name.trim().toLowerCase() == cleanM).firstOrNull;
+          if (realProd == null && _tallyVoucher != null) {
+            for (final itm in _tallyVoucher!.items) {
+              if (itm.itemName.trim().toLowerCase() == cleanM || (itm.itemCode != null && itm.itemCode!.trim().toLowerCase() == cleanM)) {
+                realProd = _resolveTallyProduct(itm);
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // =========================================================================
+      // STRICT TALLY BILL ENFORCEMENT: ONLY MODELS IN THIS BILL MAY BE SCANNED
+      // =========================================================================
+      if (_tallyVoucher != null) {
+        final currentTallyItem = _getCurrentTallyItem();
+
+        // 1. If serial belongs to a known registered product in the warehouse
+        if (realProd != null) {
+          final Product targetProd = realProd;
+          // Check A: Is this product part of this Tally bill at all?
+          final billItemForProd = _findTallyItemForProduct(targetProd);
+          if (billItemForProd == null) {
+            HapticFeedback.heavyImpact();
+            SoundService().playErrorSound();
+            _showSimpleAlert(
+              'Model Not In Tally Bill',
+              'Serial "$cleanSerial" is registered under "${targetProd.brand} ${targetProd.model}", which is NOT in Tally Bill ${_tallyVoucher!.voucherNumber}.\n\nStrictly only models present in this Tally bill can be scanned.',
+              autoDismissDuration: const Duration(seconds: 12),
+            );
+            return; // STRICTLY REJECTED!
+          }
+
+          // Check B: Has the target quantity for this model already been reached?
+          final targetQty = billItemForProd.quantity.toInt();
+          final scannedQty = _getScannedCountForProduct(targetProd);
+          if (scannedQty >= targetQty && targetQty > 0) {
+            HapticFeedback.heavyImpact();
+            SoundService().playErrorSound();
+            _showSimpleAlert(
+              'Target Quantity Reached',
+              'All $targetQty units of "${targetProd.model}" in Tally Bill ${_tallyVoucher!.voucherNumber} have already been scanned ($scannedQty/$targetQty).\n\nCannot scan extra units.',
+            );
+            return; // STRICTLY REJECTED!
+          }
+
+          // Check C: Auto-switch active model to this model without any mismatch warning!
+          final bool wasDifferentModel = _selectedProduct == null || _selectedProduct!.id != targetProd.id;
+          if (wasDifferentModel) {
+            setState(() {
+              _selectedProduct = targetProd;
+              _selectedTallyItemId = billItemForProd.id;
+              _activeFilterModelId = targetProd.id;
+              if (targetProd.hasDualSerial) {
+                final detectedUnit = res['unit_type']?.toString().toLowerCase();
+                if (detectedUnit == 'indoor' || detectedUnit == 'outdoor') {
+                  _outwardUnitType = detectedUnit!;
+                }
+              }
+            });
+          }
+
+          // Automatically add serial directly to its matching model in this Tally bill
+          final unitType = (res['unit_type'] as String?) ?? (targetProd.hasDualSerial ? _outwardUnitType : null);
+          if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
+            final seq = _sequenceCounter++;
+            _scannedSerialSet.add(cleanSerial);
+            setState(() {
+              _scannedItems.insert(
+                0,
+                OutwardScanResult(
+                  serialNumber: cleanSerial,
+                  product: targetProd,
+                  caseType: isDamaged ? OutwardCase.statusWarning : OutwardCase.matched,
+                  isMatched: true,
+                  isFlaggedForReview: isDamaged,
+                  warningMessage: isDamaged ? 'Damaged item added after confirmation.' : msg,
+                  unitType: unitType,
+                  sequenceNumber: seq,
+                ),
+              );
+              if (targetProd.hasDualSerial) {
+                _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
+              }
+              _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${targetProd.brand} ${targetProd.model}';
+            });
+            HapticFeedback.lightImpact();
+            SoundService().playScannerBeep();
+            if (wasDifferentModel) {
+              _showToast('Auto-switched to ${targetProd.model}: $cleanSerial added', const Color(0xFF0284C7));
+            } else {
+              _showToast('Added $cleanSerial (${targetProd.model})', const Color(0xFF059669));
+            }
+          }
+          return; // Processed and added to matching Tally bill model!
+        }
+        // 2. If backend reported a model mismatch (Case 4), but model is not in this Tally bill
+        else if (caseVal == 4 || caseName == 'model_mismatch') {
+          HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
+          final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
+          _showSimpleAlert(
+            'Model Not In Tally Bill',
+            'Serial "$cleanSerial" is registered under "$existingModel", which is NOT in Tally Bill ${_tallyVoucher!.voucherNumber}.\n\nStrictly only models present in this Tally bill can be scanned.',
+            autoDismissDuration: const Duration(seconds: 12),
+          );
+          return; // STRICTLY REJECTED!
+        }
+        // 3. For pre-go-live untracked stock (Case 2) or Case 1 without registered realProd:
+        else {
+          if (currentTallyItem != null && _selectedProduct != null) {
+            final targetQty = currentTallyItem.quantity.toInt();
+            final scannedQty = _getScannedCountForProduct(_selectedProduct!);
+            if (scannedQty >= targetQty && targetQty > 0) {
+              HapticFeedback.heavyImpact();
+              SoundService().playErrorSound();
+              _showSimpleAlert(
+                'Target Quantity Reached',
+                'All $targetQty units of "${_selectedProduct!.model}" in Tally Bill ${_tallyVoucher!.voucherNumber} have already been scanned ($scannedQty/$targetQty).\n\nCannot scan extra units.',
+              );
+              return; // STRICTLY REJECTED!
+            }
+          }
+        }
+      } else {
+        // Non-Tally manual dispatch: upgrade placeholder product if applicable
+        if (realProd != null) {
+          final Product manualProd = realProd;
+          if (_selectedProduct == null ||
+              _selectedProduct!.id.startsWith('offline_')) {
+            setState(() {
+              _selectedProduct = manualProd;
+              _activeFilterModelId = manualProd.id;
+            });
+          }
+        }
+      }
+
       // --- CASE 1: MATCHED (Tracked & Available for current model) ---
       if (caseVal == 1 || caseName == 'matched') {
         // Enforce dual serial unit type match for matched serial numbers
@@ -728,6 +1080,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
+            if (_selectedProduct!.hasDualSerial) {
+              _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
+            }
             _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${_selectedProduct!.brand} ${_selectedProduct!.model}';
           });
         }
@@ -753,6 +1108,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
+            if (_selectedProduct!.hasDualSerial) {
+              _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
+            }
             _lastScanFeedback = '✓ Scanned #$seq (Old Stock): $cleanSerial • ${_selectedProduct!.brand} ${_selectedProduct!.model}';
           });
         }
@@ -807,6 +1165,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
+            if (_selectedProduct!.hasDualSerial) {
+              _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
+            }
           });
           _showToast(
             'Added $cleanSerial (${_selectedProduct!.model})${isDamaged ? " • DAMAGED" : ""}',
@@ -819,6 +1180,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
       else if (caseVal == 4 || caseName == 'model_mismatch') {
         HapticFeedback.heavyImpact();
         SoundService().playErrorSound();
+        if (_tallyVoucher != null) {
+          final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
+          _showSimpleAlert(
+            'Model Mismatch',
+            'Serial "$cleanSerial" is registered under "$existingModel".\n\nStrictly only models in Tally Bill ${_tallyVoucher!.voucherNumber} can be scanned.',
+          );
+          return; // STRICTLY REJECTED!
+        }
+
         final regProdId = res['registered_product_id']?.toString();
         Product? matchedProd;
         if (regProdId != null) {
@@ -1205,11 +1575,72 @@ class _OutwardScreenState extends State<OutwardScreen> {
     });
   }
 
+  void _showVehicleInputDialog(BuildContext context) {
+    final textController = TextEditingController(text: _deliveryRefController.text.trim());
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.local_shipping_outlined, color: Color(0xFF4F46E5)),
+            SizedBox(width: 8),
+            Text('Vehicle / Ref No', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter the vehicle registration number or delivery reference for this dispatch:',
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF64748B)),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: textController,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                hintText: 'e.g. KL-07-CD-1234, Local Van',
+                prefixIcon: const Icon(Icons.directions_car_outlined, size: 20),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1E1B4B),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              final val = textController.text.trim();
+              setState(() {
+                _deliveryRefController.text = val;
+              });
+              Navigator.pop(ctx);
+            },
+            child: const Text('Save Vehicle No'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showModelSwitchBottomSheet() {
     String sheetSearch = '';
     bool isSyncing = false;
     StreamSubscription? sheetWsSub;
     Timer? debounceTimer;
+    final isTallyMode = _tallyVoucher != null;
 
     showModalBottomSheet(
       context: context,
@@ -1219,27 +1650,30 @@ class _OutwardScreenState extends State<OutwardScreen> {
         _modelSheetContext = ctx;
         return StatefulBuilder(
           builder: (ctx, setSheetState) {
-            sheetWsSub ??= WebSocketService().stream.listen((event) {
-              final type = event['event']?.toString() ?? event['type']?.toString();
-              final data = event['data'];
-              if ((type == 'product_created' || type == 'product_updated') && data is Map<String, dynamic>) {
-                try {
-                  final newProd = Product.fromJson(data);
-                  _api.updateCachedProduct(newProd);
-                  if (mounted) {
-                    setState(() {
-                      _products.removeWhere((p) => p.id == newProd.id);
-                      _products.insert(0, newProd);
-                    });
-                  }
-                  if (ctx.mounted) {
-                    setSheetState(() {});
-                  }
-                } catch (_) {}
-              }
-            });
+            if (!isTallyMode) {
+              sheetWsSub ??= WebSocketService().stream.listen((event) {
+                final type = event['event']?.toString() ?? event['type']?.toString();
+                final data = event['data'];
+                if ((type == 'product_created' || type == 'product_updated') && data is Map<String, dynamic>) {
+                  try {
+                    final newProd = Product.fromJson(data);
+                    _api.updateCachedProduct(newProd);
+                    if (mounted) {
+                      setState(() {
+                        _products.removeWhere((p) => p.id == newProd.id);
+                        _products.insert(0, newProd);
+                      });
+                    }
+                    if (ctx.mounted) {
+                      setSheetState(() {});
+                    }
+                  } catch (_) {}
+                }
+              });
+            }
 
             Future<void> syncFreshModels({String? query}) async {
+              if (isTallyMode) return;
               setSheetState(() => isSyncing = true);
               try {
                 final fresh = await _api.getProducts(forceRefresh: true);
@@ -1256,31 +1690,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
               }
             }
 
-            Future<void> onAddNewModel() async {
-              final newProd = await showAddProductDialog(
-                context,
-                initialModel: sheetSearch.trim().isNotEmpty ? sheetSearch.trim() : null,
-              );
-              if (newProd != null && mounted) {
-                setState(() {
-                  if (!_products.any((p) => p.id == newProd.id)) {
-                    _products.insert(0, newProd);
-                  }
-                  _selectedProduct = newProd;
-                  _activeFilterModelId = 'ALL';
-                });
-                FocusManager.instance.primaryFocus?.unfocus();
-                SystemChannels.textInput.invokeMethod('TextInput.hide');
-                HardwareScannerService().clearBuffer();
-                _modelSheetContext = null;
-                if (ctx.mounted) {
-                  Navigator.pop(ctx);
-                }
-                _showToast('Active model: ${newProd.brand} ${newProd.model}', const Color(0xFF059669));
-              }
-            }
-
-            final filteredProds = _products.where((p) {
+            // Strictly restrict to only models in this Tally bill when dispatching a Tally bill
+            final sourceProducts = isTallyMode ? _tallyBillProducts : _products;
+            final filteredProds = sourceProducts.where((p) {
               final q = sheetSearch.toLowerCase();
               return p.name.toLowerCase().contains(q) ||
                   p.brand.toLowerCase().contains(q) ||
@@ -1308,37 +1720,31 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     child: Row(
                       children: [
-                        const Icon(Icons.swap_horiz, color: Color(0xFF4F46E5)),
+                        Icon(isTallyMode ? Icons.receipt_long_rounded : Icons.swap_horiz, color: const Color(0xFF4F46E5)),
                         const SizedBox(width: 8),
-                        const Expanded(
+                        Expanded(
                           child: Text(
-                            'Switch / Add Model for this Shop',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            isTallyMode
+                                ? 'Models in Tally Bill (${_tallyVoucher!.voucherNumber})'
+                                : 'Switch Model for this Shop',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        // Add New Model Button
-                        TextButton.icon(
-                          style: TextButton.styleFrom(
-                            foregroundColor: const Color(0xFF059669),
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        if (!isTallyMode) ...[
+                          // Real-time Sync Button
+                          IconButton(
+                            tooltip: 'Sync Models from Server',
+                            icon: isSyncing
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                                  )
+                                : const Icon(Icons.sync_rounded, color: Color(0xFF4F46E5)),
+                            onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
                           ),
-                          icon: const Icon(Icons.add_circle_outline, size: 18),
-                          label: const Text('Add Model', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                          onPressed: onAddNewModel,
-                        ),
-                        // Real-time Sync Button
-                        IconButton(
-                          tooltip: 'Sync Models from Server',
-                          icon: isSyncing
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
-                                )
-                              : const Icon(Icons.sync_rounded, color: Color(0xFF4F46E5)),
-                          onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
-                        ),
+                        ],
                         IconButton(
                           icon: const Icon(Icons.close),
                           onPressed: () => Navigator.pop(ctx),
@@ -1353,7 +1759,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       textCapitalization: TextCapitalization.characters,
                       inputFormatters: const [UpperCaseTextFormatter()],
                       decoration: InputDecoration(
-                        hintText: 'Search brand or model (e.g. GXI 360)...',
+                        hintText: isTallyMode
+                            ? 'Search models in Tally Bill ${_tallyVoucher!.voucherNumber}...'
+                            : 'Search brand or model (e.g. GXI 360)...',
                         prefixIcon: const Icon(Icons.search, size: 20),
                         suffixIcon: isSyncing
                             ? const Padding(
@@ -1379,7 +1787,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       ),
                       onChanged: (val) {
                         setSheetState(() => sheetSearch = val);
-                        if (val.trim().length >= 2) {
+                        if (!isTallyMode && val.trim().length >= 2) {
                           debounceTimer?.cancel();
                           debounceTimer = Timer(const Duration(milliseconds: 500), () {
                             if (filteredProds.isEmpty && !isSyncing) {
@@ -1401,9 +1809,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
                                   const SizedBox(height: 12),
                                   Text(
-                                    sheetSearch.isEmpty
-                                        ? 'No models available'
-                                        : 'No local match for "$sheetSearch"',
+                                    isTallyMode
+                                        ? (sheetSearch.isEmpty
+                                            ? 'No models in Tally Bill ${_tallyVoucher!.voucherNumber}'
+                                            : 'No model matching "$sheetSearch" in Tally Bill ${_tallyVoucher!.voucherNumber}')
+                                        : (sheetSearch.isEmpty
+                                            ? 'No models available'
+                                            : 'No local match for "$sheetSearch"'),
                                     style: const TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 15,
@@ -1413,57 +1825,51 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
-                                    sheetSearch.isNotEmpty
-                                        ? 'Model "$sheetSearch" is not in the system yet. Add it now or sync from server.'
-                                        : 'No models found. Add a new model or sync from server.',
+                                    isTallyMode
+                                        ? 'Only models present in Tally Bill ${_tallyVoucher!.voucherNumber} can be selected.'
+                                        : (sheetSearch.isNotEmpty
+                                            ? 'Model "$sheetSearch" is not in the system yet. Sync from server.'
+                                            : 'No models found. Sync models from server.'),
                                     textAlign: TextAlign.center,
                                     style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                                   ),
-                                  const SizedBox(height: 16),
-                                  Wrap(
-                                    alignment: WrapAlignment.center,
-                                    spacing: 12,
-                                    runSpacing: 10,
-                                    children: [
-                                      ElevatedButton.icon(
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: const Color(0xFF059669),
-                                          foregroundColor: Colors.white,
-                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                  if (!isTallyMode) ...[
+                                    const SizedBox(height: 16),
+                                    Wrap(
+                                      alignment: WrapAlignment.center,
+                                      spacing: 12,
+                                      runSpacing: 10,
+                                      children: [
+                                        OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: const Color(0xFF4F46E5),
+                                            side: const BorderSide(color: Color(0xFF4F46E5)),
+                                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                          ),
+                                          icon: isSyncing
+                                              ? const SizedBox(
+                                                  width: 16,
+                                                  height: 16,
+                                                  child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
+                                                )
+                                              : const Icon(Icons.cloud_sync_outlined, size: 18),
+                                          label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
+                                          onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
                                         ),
-                                        icon: const Icon(Icons.add_circle_outline, size: 18),
-                                        label: Text(
-                                          sheetSearch.trim().isNotEmpty ? 'Add "${sheetSearch.trim()}" Model' : 'Add Model',
-                                          style: const TextStyle(fontWeight: FontWeight.bold),
-                                        ),
-                                        onPressed: onAddNewModel,
-                                      ),
-                                      OutlinedButton.icon(
-                                        style: OutlinedButton.styleFrom(
-                                          foregroundColor: const Color(0xFF4F46E5),
-                                          side: const BorderSide(color: Color(0xFF4F46E5)),
-                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                        ),
-                                        icon: isSyncing
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
-                                              )
-                                            : const Icon(Icons.cloud_sync_outlined, size: 18),
-                                        label: Text(isSyncing ? 'Syncing...' : 'Sync Models from Server'),
-                                        onPressed: isSyncing ? null : () => syncFreshModels(query: sheetSearch),
-                                      ),
-                                    ],
-                                  ),
+                                      ],
+                                    ),
+                                  ],
                                 ],
                               ),
                             ),
                           )
                         : RefreshIndicator(
-                            onRefresh: () => syncFreshModels(query: sheetSearch),
+                            onRefresh: () async {
+                              if (!isTallyMode) {
+                                await syncFreshModels(query: sheetSearch);
+                              }
+                            },
                             child: ListView.separated(
                               physics: const AlwaysScrollableScrollPhysics(),
                               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -1472,21 +1878,30 @@ class _OutwardScreenState extends State<OutwardScreen> {
                               itemBuilder: (c, i) {
                                 final p = filteredProds[i];
                                 final isSelected = p.id == _selectedProduct?.id;
-                                final countInBatch = _scannedItems.where((e) => (e.product?.id ?? _selectedProduct!.id) == p.id).length;
+                                final itm = isTallyMode ? _findTallyItemForProduct(p) : null;
+                                final target = itm?.quantity.toInt() ?? 0;
+                                final countInBatch = _getScannedCountForProduct(p);
+                                final isDone = isTallyMode && target > 0 && countInBatch >= target;
 
                                 return ListTile(
-                                  tileColor: isSelected ? const Color(0xFFEEF2FF) : Colors.white,
+                                  tileColor: isSelected
+                                      ? const Color(0xFFEEF2FF)
+                                      : (isDone ? const Color(0xFFF0FDF4) : Colors.white),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(12),
                                     side: BorderSide(
-                                      color: isSelected ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+                                      color: isSelected
+                                          ? const Color(0xFF6366F1)
+                                          : (isDone ? const Color(0xFF86EFAC) : const Color(0xFFE2E8F0)),
                                       width: isSelected ? 1.5 : 1.0,
                                     ),
                                   ),
                                   leading: CircleAvatar(
-                                    backgroundColor: isSelected ? const Color(0xFF4F46E5) : const Color(0xFFF1F5F9),
-                                    foregroundColor: isSelected ? Colors.white : const Color(0xFF475569),
-                                    child: Icon(isSelected ? Icons.check : Icons.devices, size: 20),
+                                    backgroundColor: isSelected
+                                        ? const Color(0xFF4F46E5)
+                                        : (isDone ? const Color(0xFF16A34A) : const Color(0xFFF1F5F9)),
+                                    foregroundColor: (isSelected || isDone) ? Colors.white : const Color(0xFF475569),
+                                    child: Icon(isSelected ? Icons.check : (isDone ? Icons.check_circle : Icons.devices), size: 20),
                                   ),
                                   title: Text(
                                     p.name,
@@ -1496,36 +1911,60 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                     ),
                                   ),
                                   subtitle: Text(
-                                    p.currentStockQty < 0
-                                        ? '${p.brand} • ${p.model} (${p.currentStockQty} - Negative Stock)'
-                                        : '${p.brand} • ${p.model} (${p.currentStockQty} on shelves)',
+                                    isTallyMode
+                                        ? '${p.brand} • ${p.model} • Target: $target units'
+                                        : (p.currentStockQty < 0
+                                            ? '${p.brand} • ${p.model} (${p.currentStockQty} - Negative Stock)'
+                                            : '${p.brand} • ${p.model} (${p.currentStockQty} on shelves)'),
                                     style: TextStyle(
                                       fontSize: 11,
-                                      color: p.currentStockQty < 0 ? const Color(0xFFE11D48) : const Color(0xFF64748B),
-                                      fontWeight: p.currentStockQty < 0 ? FontWeight.bold : FontWeight.normal,
+                                      color: isDone ? const Color(0xFF15803D) : const Color(0xFF64748B),
+                                      fontWeight: isDone ? FontWeight.bold : FontWeight.normal,
                                     ),
                                   ),
-                                  trailing: countInBatch > 0
+                                  trailing: isTallyMode
                                       ? Container(
                                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                           decoration: BoxDecoration(
-                                            color: const Color(0xFF10B981),
+                                            color: isDone ? const Color(0xFF16A34A) : const Color(0xFF0284C7),
                                             borderRadius: BorderRadius.circular(10),
                                           ),
                                           child: Text(
-                                            '$countInBatch in dispatch',
+                                            isDone ? 'Completed ($countInBatch/$target)' : '$countInBatch / $target',
                                             style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
                                           ),
                                         )
-                                      : null,
+                                      : (countInBatch > 0
+                                          ? Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFF10B981),
+                                                borderRadius: BorderRadius.circular(10),
+                                              ),
+                                              child: Text(
+                                                '$countInBatch in dispatch',
+                                                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                              ),
+                                            )
+                                          : null),
                                   onTap: () {
                                     FocusManager.instance.primaryFocus?.unfocus();
                                     SystemChannels.textInput.invokeMethod('TextInput.hide');
                                     HardwareScannerService().clearBuffer();
                                     setState(() {
                                       _selectedProduct = p;
-                                      _activeFilterModelId = 'ALL';
+                                      _activeFilterModelId = p.id;
+                                      if (_tallyVoucher != null) {
+                                        final matchItem = _findTallyItemForProduct(p);
+                                        if (matchItem != null) {
+                                          _selectedTallyItemId = matchItem.id;
+                                        }
+                                      }
+                                      if (p.hasDualSerial) {
+                                        _outwardUnitType = 'indoor';
+                                      }
                                     });
+                                    _persistDraft();
                                     _modelSheetContext = null;
                                     Navigator.pop(ctx);
                                     _showToast('Active model: ${p.brand} ${p.model}', const Color(0xFF4F46E5));
@@ -1777,57 +2216,74 @@ class _OutwardScreenState extends State<OutwardScreen> {
   void _showSimpleAlert(String title, String message, {Duration autoDismissDuration = const Duration(seconds: 3)}) {
     _dismissSimpleAlert();
 
+    int remainingSeconds = autoDismissDuration.inSeconds;
+
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (ctx) {
         _alertContext = ctx;
         _alertTimer?.cancel();
-        _alertTimer = Timer(autoDismissDuration, () {
-          if (_alertContext != null && ctx.mounted) {
-            try {
-              Navigator.of(ctx).pop();
-            } catch (_) {}
-            _alertContext = null;
-          }
-        });
 
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(message, style: const TextStyle(fontSize: 13, height: 1.4)),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.timer_outlined, size: 13, color: Color(0xFF64748B)),
-                    SizedBox(width: 4),
-                    Text(
-                      'Auto-closing in 3s (or scan next serial)',
-                      style: TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            _alertTimer ??= Timer.periodic(const Duration(seconds: 1), (timer) {
+              if (remainingSeconds <= 1) {
+                timer.cancel();
+                _alertTimer = null;
+                if (_alertContext != null && dialogCtx.mounted) {
+                  try {
+                    Navigator.of(dialogCtx).pop();
+                  } catch (_) {}
+                  _alertContext = null;
+                }
+              } else {
+                if (dialogCtx.mounted) {
+                  setDialogState(() {
+                    remainingSeconds--;
+                  });
+                }
+              }
+            });
+
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(message, style: const TextStyle(fontSize: 13, height: 1.4)),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(6),
                     ),
-                  ],
-                ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.timer_outlined, size: 13, color: Color(0xFF64748B)),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Auto-closing in ${remainingSeconds}s (or scan next serial)',
+                          style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
-          actions: [
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
-              onPressed: () => _dismissSimpleAlert(),
-              child: const Text('OK', style: TextStyle(color: Colors.white)),
-            ),
-          ],
+              actions: [
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1E293B)),
+                  onPressed: () => _dismissSimpleAlert(),
+                  child: const Text('OK', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            );
+          },
         );
       },
     ).then((_) {
@@ -2365,7 +2821,32 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   ),
                   style: TextStyle(fontSize: context.isTablet ? 16 : 13, fontWeight: FontWeight.w600),
                 ),
-                SizedBox(height: context.isTablet ? 16 : 12),
+                SizedBox(height: context.isTablet ? 14 : 10),
+
+                // Vehicle Number / Delivery Reference (Input from mobile)
+                TextField(
+                  controller: _deliveryRefController,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: InputDecoration(
+                    labelText: 'Vehicle / Delivery Ref No (Optional)',
+                    hintText: 'e.g. KL-07-CD-1234, Local Van',
+                    prefixIcon: Icon(Icons.local_shipping_outlined, size: context.isTablet ? 24 : 20, color: const Color(0xFF4F46E5)),
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: context.isTablet ? 18 : 14,
+                      vertical: context.isTablet ? 16 : 12,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(context.isTablet ? 12 : 10),
+                      borderSide: const BorderSide(color: Color(0xFFCBD5E1)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(context.isTablet ? 12 : 10),
+                      borderSide: const BorderSide(color: Color(0xFF4F46E5), width: 1.5),
+                    ),
+                  ),
+                  style: TextStyle(fontSize: context.isTablet ? 16 : 13, fontWeight: FontWeight.w600),
+                ),
+                SizedBox(height: context.isTablet ? 14 : 10),
 
                 // Optional remarks with plenty of width
                 TextField(
@@ -2709,6 +3190,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         deliveryReference: deliveryRef.isEmpty ? null : deliveryRef,
         remarks: remarks.isEmpty ? null : remarks,
         clientRequestId: _dispatchRequestId,
+        tallyVoucherId: _tallyVoucher?.id,
       ).timeout(const Duration(seconds: 10));
 
       if (loadingCtx != null && Navigator.canPop(loadingCtx!)) {
@@ -2720,11 +3202,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
       await SessionRecoveryService().clearDraft();
 
       if (_tallyVoucher != null) {
-        _api.markTallyVoucherProcessed(
-          _tallyVoucher!.id,
-          processed: true,
-          notes: 'Dispatched via Godown Scanner (Bill: $billNumber)',
-        ).catchError((_) => false);
+        try {
+          await _api.markTallyVoucherProcessed(
+            _tallyVoucher!.id,
+            processed: true,
+            notes: 'Dispatched via Godown Scanner (Bill: $billNumber)',
+          );
+        } catch (_) {}
         _api.clearLatestTallyBill();
       }
 
@@ -2895,7 +3379,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       printCooldownTimer?.cancel();
 
       if (!mounted) return;
-      Navigator.pop(context);
+      Navigator.pop(context, true);
     } catch (e) {
       if (isSavingOfflineManually) return;
       if (loadingCtx != null && Navigator.canPop(loadingCtx!)) {
@@ -3014,6 +3498,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
             'bill_number': billNumber.isEmpty ? null : billNumber,
             'delivery_reference': deliveryRef.isEmpty ? null : deliveryRef,
             'remarks': remarks.isEmpty ? null : remarks,
+            if (_tallyVoucher != null) 'tally_voucher_id': _tallyVoucher!.id,
           },
           description: 'Outward: ${_selectedShop!.name} (${_scannedItems.length} units, ${byProduct.length} models)',
         );
@@ -3244,41 +3729,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
-  Future<void> _handleAddNewShop() async {
-    final newShop = await showAddShopDialog(
-      context,
-      initialName: _shopSearch.trim().isNotEmpty ? _shopSearch.trim() : null,
-    );
-    if (newShop != null && mounted) {
-      setState(() {
-        final existingIdx = _shops.indexWhere((s) => s.id == newShop.id);
-        if (existingIdx != -1) {
-          _shops[existingIdx] = newShop;
-        } else {
-          _shops.insert(0, newShop);
-        }
-        _selectedShop = newShop;
-        _currentStep = 2;
-      });
-
-      if (newShop.id.startsWith('offline_')) {
-        TopToast.show(
-          context,
-          message: 'Shop "${newShop.name}" created offline. Will sync to server on reconnect.',
-          backgroundColor: const Color(0xFFD97706),
-          icon: Icons.wifi_off_rounded,
-        );
-      } else {
-        TopToast.show(
-          context,
-          message: 'Shop "${newShop.name}" added successfully',
-          backgroundColor: const Color(0xFF059669),
-          icon: Icons.check_circle_outline,
-        );
-      }
-    }
-  }
-
   // STEP 1: Select Shop
   Widget _buildShopSelector() {
     if (_loadingShops || _loadingProducts) return const Center(child: CircularProgressIndicator());
@@ -3320,38 +3770,21 @@ class _OutwardScreenState extends State<OutwardScreen> {
             ),
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  textCapitalization: TextCapitalization.characters,
-                  inputFormatters: const [UpperCaseTextFormatter()],
-                  decoration: InputDecoration(
-                    hintText: 'Search dealer shop or city...',
-                    prefixIcon: const Icon(Icons.search, size: 20),
-                    filled: true,
-                    fillColor: Colors.white,
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
-                    ),
-                  ),
-                  onChanged: (val) => setState(() => _shopSearch = val),
-                ),
+          TextField(
+            textCapitalization: TextCapitalization.characters,
+            inputFormatters: const [UpperCaseTextFormatter()],
+            decoration: InputDecoration(
+              hintText: 'Search dealer shop or city...',
+              prefixIcon: const Icon(Icons.search, size: 20),
+              filled: true,
+              fillColor: Colors.white,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: Color(0xFFE2E8F0)),
               ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _handleAddNewShop,
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('Add Shop', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF3C3489),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ],
+            ),
+            onChanged: (val) => setState(() => _shopSearch = val),
           ),
           const SizedBox(height: 12),
           Expanded(
@@ -3371,13 +3804,17 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             style: TextStyle(color: Colors.grey.shade600, fontSize: 14),
                             textAlign: TextAlign.center,
                           ),
+                          const SizedBox(height: 6),
+                          const Text(
+                            'Shops are synced automatically from TallyPrime ledgers.',
+                            style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                            textAlign: TextAlign.center,
+                          ),
                           const SizedBox(height: 16),
                           ElevatedButton.icon(
-                            onPressed: _handleAddNewShop,
-                            icon: const Icon(Icons.add, size: 18),
-                            label: Text(
-                              _shopSearch.trim().isNotEmpty ? 'Add "$_shopSearch"' : 'Add New Shop',
-                            ),
+                            onPressed: () => _loadMetadata(forceRefresh: true),
+                            icon: const Icon(Icons.sync_rounded, size: 18),
+                            label: const Text('Refresh Shops'),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: const Color(0xFF3C3489),
                               foregroundColor: Colors.white,
@@ -3478,7 +3915,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   // STEP 2: Select Model & Delivery Ref
   Widget _buildModelAndRefSelector() {
-    final filtered = _products.where((p) {
+    final isTallyMode = _tallyVoucher != null;
+    final sourceProducts = isTallyMode ? _tallyBillProducts : _products;
+    final filtered = sourceProducts.where((p) {
       final q = _productSearch.toLowerCase();
       return p.name.toLowerCase().contains(q) ||
           p.brand.toLowerCase().contains(q) ||
@@ -3491,7 +3930,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         vertical: context.isLandscapeTablet ? 8 : 16,
       ),
       child: RefreshIndicator(
-        onRefresh: () => _loadMetadata(forceRefresh: true),
+        onRefresh: () => isTallyMode ? Future.value() : _loadMetadata(forceRefresh: true),
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
@@ -3595,66 +4034,36 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text(
-                        'Select Model to Dispatch:',
-                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
+                      Text(
+                        isTallyMode
+                            ? 'Models in Tally Bill (${_tallyVoucher!.voucherNumber}):'
+                            : 'Select Model to Dispatch:',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF475569)),
                       ),
-                      Row(
-                        children: [
-                          InkWell(
-                            onTap: () async {
-                              final newProd = await showAddProductDialog(
-                                context,
-                                initialModel: _productSearch.trim().isNotEmpty ? _productSearch.trim() : null,
-                              );
-                              if (newProd != null && mounted) {
-                                setState(() {
-                                  if (!_products.any((p) => p.id == newProd.id)) {
-                                    _products.insert(0, newProd);
-                                  }
-                                  _selectedProduct = newProd;
-                                  _currentStep = 3;
-                                });
-                                _showToast('Added and selected: ${newProd.brand} ${newProd.model}', const Color(0xFF059669));
-                              }
-                            },
-                            borderRadius: BorderRadius.circular(6),
-                            child: const Padding(
-                              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.add_circle_outline, size: 14, color: Color(0xFF059669)),
-                                  SizedBox(width: 4),
-                                  Text(
-                                    'Add Model',
-                                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
-                                  ),
-                                ],
+                      if (!isTallyMode)
+                        Row(
+                          children: [
+                            InkWell(
+                              onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                child: Row(
+                                  children: [
+                                    _loadingProducts
+                                        ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
+                                        : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      _loadingProducts ? 'Syncing...' : 'Sync Models',
+                                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          InkWell(
-                            onTap: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
-                            borderRadius: BorderRadius.circular(6),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              child: Row(
-                                children: [
-                                  _loadingProducts
-                                      ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5))
-                                      : const Icon(Icons.sync_rounded, size: 14, color: Color(0xFF4F46E5)),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    _loadingProducts ? 'Syncing...' : 'Sync Models',
-                                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF4F46E5)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                          ],
+                        ),
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -3663,13 +4072,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     textCapitalization: TextCapitalization.characters,
                     inputFormatters: const [UpperCaseTextFormatter()],
                     decoration: InputDecoration(
-                      hintText: 'Search appliance model (e.g. GXI 360)...',
+                      hintText: isTallyMode
+                          ? 'Search models in Tally Bill ${_tallyVoucher!.voucherNumber}...'
+                          : 'Search appliance model (e.g. GXI 360)...',
                       prefixIcon: const Icon(Icons.search, size: 20),
                       contentPadding: EdgeInsets.symmetric(
                         horizontal: 14,
                         vertical: context.isLandscapeTablet ? 10 : 14,
                       ),
-                      suffixIcon: _loadingProducts
+                      suffixIcon: _loadingProducts && !isTallyMode
                           ? const Padding(
                               padding: EdgeInsets.all(12),
                               child: SizedBox(
@@ -3693,7 +4104,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     ),
                     onChanged: (val) {
                       setState(() => _productSearch = val);
-                      if (val.trim().length >= 2 && filtered.isEmpty && !_loadingProducts) {
+                      if (!isTallyMode && val.trim().length >= 2 && filtered.isEmpty && !_loadingProducts) {
                         _loadMetadata(forceRefresh: true);
                       }
                     },
@@ -3714,9 +4125,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         const Icon(Icons.inventory_2_outlined, size: 48, color: Color(0xFF94A3B8)),
                         const SizedBox(height: 12),
                         Text(
-                          _productSearch.isEmpty
-                              ? 'No models available'
-                              : 'No local match for "$_productSearch"',
+                          isTallyMode
+                              ? (_productSearch.isEmpty
+                                  ? 'No models in Tally Bill ${_tallyVoucher!.voucherNumber}'
+                                  : 'No model matching "$_productSearch" in Tally Bill ${_tallyVoucher!.voucherNumber}')
+                              : (_productSearch.isEmpty
+                                  ? 'No models available'
+                                  : 'No local match for "$_productSearch"'),
                           style: const TextStyle(
                             fontWeight: FontWeight.bold,
                             fontSize: 15,
@@ -3726,66 +4141,34 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         ),
                         const SizedBox(height: 6),
                         Text(
-                          _productSearch.isNotEmpty
-                              ? 'Model "$_productSearch" is not in the system yet. Add it now or sync from server.'
-                              : 'If this model was just added on the admin dashboard, tap below to sync immediately.',
+                          isTallyMode
+                              ? 'Only models parsed from Tally Bill ${_tallyVoucher!.voucherNumber} can be dispatched.'
+                              : (_productSearch.isNotEmpty
+                                  ? 'Model "$_productSearch" not found. Models are synced from TallyPrime.'
+                                  : 'Sync your catalog directly from TallyPrime to see latest stock items.'),
                           textAlign: TextAlign.center,
                           style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                         ),
-                        const SizedBox(height: 16),
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          spacing: 12,
-                          runSpacing: 10,
-                          children: [
-                            ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF059669),
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              icon: const Icon(Icons.add_circle_outline, size: 18),
-                              label: Text(
-                                _productSearch.trim().isNotEmpty ? 'Add "${_productSearch.trim()}" Model' : 'Add Model',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              onPressed: () async {
-                                final newProd = await showAddProductDialog(
-                                  context,
-                                  initialModel: _productSearch.trim().isNotEmpty ? _productSearch.trim() : null,
-                                );
-                                if (newProd != null && mounted) {
-                                  setState(() {
-                                    if (!_products.any((p) => p.id == newProd.id)) {
-                                      _products.insert(0, newProd);
-                                    }
-                                    _selectedProduct = newProd;
-                                    _currentStep = 3;
-                                  });
-                                  _showToast('Added and selected: ${newProd.brand} ${newProd.model}', const Color(0xFF059669));
-                                }
-                              },
+                        if (!isTallyMode) ...[
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF4F46E5),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                             ),
-                            OutlinedButton.icon(
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: const Color(0xFF4F46E5),
-                                side: const BorderSide(color: Color(0xFF4F46E5)),
-                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              icon: _loadingProducts
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF4F46E5)),
-                                    )
-                                  : const Icon(Icons.cloud_sync_outlined, size: 18),
-                              label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
-                              onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
-                            ),
-                          ],
-                        ),
+                            icon: _loadingProducts
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  )
+                                : const Icon(Icons.cloud_sync_outlined, size: 18),
+                            label: Text(_loadingProducts ? 'Syncing...' : 'Sync Models from Server'),
+                            onPressed: _loadingProducts ? null : () => _loadMetadata(forceRefresh: true),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -3796,11 +4179,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 delegate: SliverChildBuilderDelegate(
                   (ctx, idx) {
                     final p = filtered[idx];
+                    final itm = isTallyMode ? _findTallyItemForProduct(p) : null;
+                    final target = itm?.quantity.toInt() ?? 0;
+                    final count = _getScannedCountForProduct(p);
+                    final isDone = isTallyMode && target > 0 && count >= target;
 
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Material(
-                        color: Colors.white,
+                        color: isDone ? const Color(0xFFF0FDF4) : Colors.white,
                         borderRadius: BorderRadius.circular(14),
                         child: InkWell(
                           onTap: () {
@@ -3809,6 +4196,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             HardwareScannerService().clearBuffer();
                             setState(() {
                               _selectedProduct = p;
+                              _activeFilterModelId = p.id;
+                              if (_tallyVoucher != null) {
+                                final matchItem = _findTallyItemForProduct(p);
+                                if (matchItem != null) {
+                                  _selectedTallyItemId = matchItem.id;
+                                }
+                              }
                               _currentStep = 3;
                             });
                           },
@@ -3817,7 +4211,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
                             padding: const EdgeInsets.all(14),
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(14),
-                              border: Border.all(color: const Color(0xFFE2E8F0)),
+                              border: Border.all(
+                                color: isDone ? const Color(0xFF86EFAC) : const Color(0xFFE2E8F0),
+                                width: isDone ? 1.5 : 1.0,
+                              ),
                             ),
                             child: Row(
                               children: [
@@ -3831,8 +4228,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
-                                        '${p.brand} • ${p.model}',
-                                        style: const TextStyle(fontSize: 11, color: Color(0xFF64748B), fontFamily: 'monospace'),
+                                        isTallyMode
+                                            ? '${p.brand} • ${p.model} • Target: $target units'
+                                            : '${p.brand} • ${p.model}',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: isDone ? const Color(0xFF15803D) : const Color(0xFF64748B),
+                                          fontFamily: isTallyMode ? null : 'monospace',
+                                          fontWeight: isDone ? FontWeight.bold : FontWeight.normal,
+                                        ),
                                       ),
                                       if (p.hasDualSerial) ...[
                                         const SizedBox(height: 4),
@@ -3851,16 +4255,31 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                     ],
                                   ),
                                 ),
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      '${p.currentStockQty}',
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                if (isTallyMode) ...[
+                                  const SizedBox(width: 8),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                    decoration: BoxDecoration(
+                                      color: isDone ? const Color(0xFF16A34A) : const Color(0xFF0284C7),
+                                      borderRadius: BorderRadius.circular(10),
                                     ),
-                                    const Text('on shelves', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
-                                  ],
-                                ),
+                                    child: Text(
+                                      isDone ? 'Completed ($count/$target)' : '$count / $target',
+                                      style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                ] else ...[
+                                  Column(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Text(
+                                        '${p.currentStockQty}',
+                                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Color(0xFF0F172A)),
+                                      ),
+                                      const Text('on shelves', style: TextStyle(fontSize: 10, color: Color(0xFF94A3B8))),
+                                    ],
+                                  ),
+                                ],
                               ],
                             ),
                           ),
@@ -3918,18 +4337,96 @@ class _OutwardScreenState extends State<OutwardScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 5),
+          Row(
+            children: [
+              InkWell(
+                onTap: () => _showVehicleInputDialog(context),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: _deliveryRefController.text.trim().isNotEmpty
+                          ? const Color(0xFF86EFAC)
+                          : const Color(0xFFFCD34D),
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.local_shipping_outlined,
+                        size: 14,
+                        color: _deliveryRefController.text.trim().isNotEmpty
+                            ? const Color(0xFF15803D)
+                            : const Color(0xFFB45309),
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        _deliveryRefController.text.trim().isNotEmpty
+                            ? 'Vehicle: ${_deliveryRefController.text.trim()}'
+                            : '+ Input Vehicle No',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: _deliveryRefController.text.trim().isNotEmpty
+                              ? const Color(0xFF15803D)
+                              : const Color(0xFFB45309),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.edit,
+                        size: 11,
+                        color: _deliveryRefController.text.trim().isNotEmpty
+                            ? const Color(0xFF15803D)
+                            : const Color(0xFFB45309),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (v.transporterName != null && v.transporterName!.trim().isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Transporter: ${v.transporterName!.trim()}',
+                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF15803D)),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ],
+          ),
           if (v.items.isNotEmpty) ...[
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
+            const Text(
+              'TAP MODEL TO SCAN:',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF15803D),
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 5),
             Wrap(
               spacing: 8,
-              runSpacing: 4,
+              runSpacing: 6,
               children: v.items.map((item) {
-                final clean = item.itemName.trim().toLowerCase();
+                final prod = _resolveTallyProduct(item);
+                final isSelected = _selectedTallyItemId != null
+                    ? _selectedTallyItemId == item.id
+                    : _selectedProduct?.id == prod.id;
                 final count = _scannedItems.where((s) {
                   final p = s.product;
                   if (p == null) return false;
-                  if (item.productId != null && p.id == item.productId) return true;
-                  return p.name.trim().toLowerCase() == clean || p.model.trim().toLowerCase() == clean;
+                  return p.id == prod.id ||
+                         p.name.trim().toLowerCase() == prod.name.trim().toLowerCase() ||
+                         p.model.trim().toLowerCase() == prod.model.trim().toLowerCase();
                 }).length;
 
                 final target = item.quantity.toInt();
@@ -3937,46 +4434,70 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
                 return InkWell(
                   onTap: () {
-                    final matched = _products.where((p) {
-                      if (item.productId != null && p.id == item.productId) return true;
-                      return p.name.trim().toLowerCase() == clean || p.model.trim().toLowerCase() == clean;
-                    }).firstOrNull;
-                    if (matched != null) {
-                      setState(() {
-                        _selectedProduct = matched;
-                        _activeFilterModelId = matched.id;
-                        if (matched.hasDualSerial) _outwardUnitType = 'indoor';
-                      });
-                      _showToast('Switched to ${matched.brand} ${matched.model}', const Color(0xFF16A34A));
-                    }
+                    setState(() {
+                      _selectedTallyItemId = item.id;
+                      _selectedProduct = prod;
+                      _activeFilterModelId = prod.id;
+                      if (prod.hasDualSerial) _outwardUnitType = 'indoor';
+                    });
+                    _showToast('Scanning: ${prod.model}', const Color(0xFF16A34A));
                   },
-                  borderRadius: BorderRadius.circular(6),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  borderRadius: BorderRadius.circular(8),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: isDone ? const Color(0xFFDCFCE7) : Colors.white,
-                      borderRadius: BorderRadius.circular(6),
+                      color: isSelected
+                          ? const Color(0xFF1E1B4B)
+                          : (isDone ? const Color(0xFFDCFCE7) : Colors.white),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(
-                        color: isDone ? const Color(0xFF86EFAC) : const Color(0xFFCBD5E1),
+                        color: isSelected
+                            ? const Color(0xFF4F46E5)
+                            : (isDone ? const Color(0xFF86EFAC) : const Color(0xFFCBD5E1)),
+                        width: isSelected ? 2 : 1,
                       ),
+                      boxShadow: isSelected
+                          ? [const BoxShadow(color: Color(0x224F46E5), blurRadius: 4, offset: Offset(0, 2))]
+                          : null,
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(
-                          isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                          size: 13,
-                          color: isDone ? const Color(0xFF16A34A) : const Color(0xFF64748B),
+                          isSelected
+                              ? Icons.bolt
+                              : (isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded),
+                          size: 14,
+                          color: isSelected
+                              ? Colors.amber
+                              : (isDone ? const Color(0xFF16A34A) : const Color(0xFF64748B)),
                         ),
                         const SizedBox(width: 5),
                         Text(
-                          '${item.itemName}: $count/$target',
+                          '${item.itemName} ($count/$target)',
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 11.5,
                             fontWeight: FontWeight.bold,
-                            color: isDone ? const Color(0xFF166534) : const Color(0xFF334155),
+                            color: isSelected
+                                ? Colors.white
+                                : (isDone ? const Color(0xFF166534) : const Color(0xFF1E293B)),
                           ),
                         ),
+                        if (isSelected) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: Colors.amber,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              'ACTIVE',
+                              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF1E1B4B)),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -4009,8 +4530,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
             return pid == currentProdId && e.unitType?.toLowerCase() == 'outdoor';
           }).length;
 
-    // Distinct models in current batch + selected
+    // Distinct models in current batch + selected + all Tally bill items
     final Map<String, Product> modelMap = {};
+    if (_tallyVoucher != null) {
+      for (final item in _tallyVoucher!.items) {
+        final p = _resolveTallyProduct(item);
+        modelMap[p.id] = p;
+      }
+    }
     if (_selectedProduct != null) {
       modelMap[_selectedProduct!.id] = _selectedProduct!;
     }
@@ -4082,28 +4609,61 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       ],
                     ),
                   ),
-                  if (_deliveryRefController.text.trim().isNotEmpty) ...[
-                    Container(
+                  InkWell(
+                    onTap: () => _showVehicleInputDialog(context),
+                    borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
+                    child: Container(
                       padding: EdgeInsets.symmetric(
-                        horizontal: context.isTablet ? 10 : 6,
-                        vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
+                        horizontal: context.isTablet ? 10 : 7,
+                        vertical: context.isLandscapeTablet ? 3 : (context.isTablet ? 5 : 3),
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF1F5F9),
-                        borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                        border: Border.all(color: const Color(0xFFE2E8F0)),
-                      ),
-                      child: Text(
-                        'Ref: ${_deliveryRefController.text.trim()}',
-                        style: TextStyle(
-                          fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 12 : 10),
-                          fontWeight: FontWeight.bold,
-                          color: const Color(0xFF475569),
+                        color: _deliveryRefController.text.trim().isNotEmpty
+                            ? const Color(0xFFF1F5F9)
+                            : const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
+                        border: Border.all(
+                          color: _deliveryRefController.text.trim().isNotEmpty
+                              ? const Color(0xFFCBD5E1)
+                              : const Color(0xFFFDE68A),
                         ),
                       ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.local_shipping_outlined,
+                            size: context.isTablet ? 15 : 12,
+                            color: _deliveryRefController.text.trim().isNotEmpty
+                                ? const Color(0xFF475569)
+                                : const Color(0xFF92400E),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            _deliveryRefController.text.trim().isNotEmpty
+                                ? 'Vehicle: ${_deliveryRefController.text.trim()}'
+                                : '+ Vehicle No',
+                            style: TextStyle(
+                              fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 12 : 10),
+                              fontWeight: FontWeight.bold,
+                              color: _deliveryRefController.text.trim().isNotEmpty
+                                  ? const Color(0xFF334155)
+                                  : const Color(0xFF92400E),
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          Icon(
+                            Icons.edit,
+                            size: context.isTablet ? 12 : 10,
+                            color: _deliveryRefController.text.trim().isNotEmpty
+                                ? const Color(0xFF94A3B8)
+                                : const Color(0xFFB45309),
+                          ),
+                        ],
+                      ),
                     ),
-                    SizedBox(width: context.isTablet ? 8 : 6),
-                  ],
+                  ),
+                  SizedBox(width: context.isTablet ? 8 : 6),
                   // Active Model Switch pill
                   InkWell(
                     onTap: _showModelSwitchBottomSheet,
@@ -4386,32 +4946,44 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           HardwareScannerService().clearBuffer();
                           setState(() {
                             _activeFilterModelId = val ? prod.id : 'ALL';
-                            if (val) _selectedProduct = prod;
+                            if (val) {
+                              _selectedProduct = prod;
+                              if (_tallyVoucher != null) {
+                                final matchItem = _tallyVoucher!.items.where((it) {
+                                  final p = _resolveTallyProduct(it);
+                                  return p.id == prod.id;
+                                }).firstOrNull;
+                                if (matchItem != null) {
+                                  _selectedTallyItemId = matchItem.id;
+                                }
+                              }
+                            }
                           });
                         },
                       ),
                     );
                   }),
 
-                  // Add / Switch Model Chip
-                  ActionChip(
-                    focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
-                    visualDensity: VisualDensity.compact,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    avatar: Icon(Icons.add, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 14), color: const Color(0xFF4F46E5)),
-                    label: const Text('+ Add Model'),
-                    labelStyle: TextStyle(
-                      fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF4F46E5),
+                  // Switch Model Chip (only shown in manual mode, hidden in Tally bill mode)
+                  if (_tallyVoucher == null)
+                    ActionChip(
+                      focusNode: FocusNode(canRequestFocus: false, skipTraversal: true),
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      avatar: Icon(Icons.swap_horiz_rounded, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 14), color: const Color(0xFF4F46E5)),
+                      label: const Text('Switch Model'),
+                      labelStyle: TextStyle(
+                        fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 13 : 11),
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF4F46E5),
+                      ),
+                      backgroundColor: const Color(0xFFEEF2FF),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: const BorderSide(color: Color(0xFFC7D2FE)),
+                      ),
+                      onPressed: _showModelSwitchBottomSheet,
                     ),
-                    backgroundColor: const Color(0xFFEEF2FF),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      side: const BorderSide(color: Color(0xFFC7D2FE)),
-                    ),
-                    onPressed: _showModelSwitchBottomSheet,
-                  ),
                 ],
               ),
             ),

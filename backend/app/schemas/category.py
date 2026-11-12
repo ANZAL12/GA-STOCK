@@ -22,5 +22,8 @@ class CategoryResponse(BaseModel):
     name: str
     has_dual_serial: bool = False
     is_active: bool
+    tally_guid: Optional[str] = None
+    tally_parent_group: Optional[str] = None
+    source: str = "TALLY"
     created_at: datetime
     product_count: int = 0

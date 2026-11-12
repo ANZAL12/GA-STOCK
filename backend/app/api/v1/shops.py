@@ -241,9 +241,21 @@ async def update_shop(
     if req.name is not None:
         shop_obj.name = req.name.strip()
     if req.city is not None:
-        shop_obj.city = req.city.strip()
+        shop_obj.city = req.city.strip() if req.city else None
     if req.phone is not None:
         shop_obj.phone = req.phone.strip() if req.phone else None
+    if req.gstin is not None:
+        shop_obj.gstin = req.gstin.strip() if req.gstin else None
+    if req.address is not None:
+        shop_obj.address = req.address.strip() if req.address else None
+    if req.state is not None:
+        shop_obj.state = req.state.strip() if req.state else None
+    if req.pincode is not None:
+        shop_obj.pincode = req.pincode.strip() if req.pincode else None
+    if req.contact_person is not None:
+        shop_obj.contact_person = req.contact_person.strip() if req.contact_person else None
+    if req.email is not None:
+        shop_obj.email = req.email.strip() if req.email else None
     if req.is_active is not None:
         shop_obj.is_active = req.is_active
 
@@ -657,3 +669,22 @@ async def import_shops_from_excel(
         new_shops=newly_created,
         existing_shops=already_existing,
     )
+
+
+@router.post("/auto-fill-brand-gstin")
+async def auto_fill_brand_gstin(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Scans all registered shops for missing GSTINs.
+    Matches shops with brand-specific suffixes (e.g. 'ABC ENTERPRISES (DAIKIN)' and 'ABC ENTERPRISES - VOLTAS')
+    to inherit the GSTIN from their sibling or root shop.
+    """
+    from app.services.tally_service import TallySyncService
+    updated_count = await TallySyncService.auto_fill_brand_gstins(db)
+    return {
+        "success": True,
+        "message": f"Successfully cross-filled GSTIN for {updated_count} shop(s).",
+        "updated_count": updated_count,
+    }

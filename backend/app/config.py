@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Tally Integration
     tally_host: str = "localhost"
     tally_port: int = 9000
+    tally_hosts: str | None = None  # Comma-separated: "localhost:9000, 100.x.y.z:9000"
     tally_company_name: str | None = None
     tally_auto_sync: bool = True
     tally_sync_interval_minutes: int = 1

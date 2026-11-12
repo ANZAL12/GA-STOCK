@@ -3,18 +3,16 @@ import * as XLSX from "xlsx";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
-import type { Product, Category, ProductSerialItem } from "../types";
+import type { Product, Category, ProductSerialItem, ExcelSerialImportRequest, ExcelSerialImportResponse } from "../types";
 
 import { Modal } from "../components/Modal";
 import { 
   Search, 
-  Plus, 
   Layers, 
   Edit2, 
   Archive, 
   RotateCcw,
   AlertCircle,
-  FolderPlus,
   Trash2,
   Copy,
   Check,
@@ -24,6 +22,8 @@ import {
   Package,
   FileSpreadsheet,
   Upload,
+  UploadCloud,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight
 } from "lucide-react";
@@ -186,13 +186,6 @@ export const StockPage: React.FC = () => {
     if (e.target) e.target.value = "";
   };
 
-  // Category Modal state
-  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState("");
-  const [newCategoryHasDualSerial, setNewCategoryHasDualSerial] = useState(false);
-  const [categorySubmitting, setCategorySubmitting] = useState(false);
-  const [categoryError, setCategoryError] = useState<string | null>(null);
-
   // Serial Numbers Modal state
   const [isSerialModalOpen, setIsSerialModalOpen] = useState(false);
   const [selectedProductForSerials, setSelectedProductForSerials] = useState<Product | null>(null);
@@ -271,28 +264,159 @@ export const StockPage: React.FC = () => {
     setTimeout(() => setCopiedSerial(null), 2000);
   };
 
-  const handleCreateCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCategoryName.trim()) return;
-    setCategorySubmitting(true);
-    setCategoryError(null);
+  // Setting for Serial Import
+  const [isImportEnabled, setIsImportEnabled] = useState(false);
+
+  useEffect(() => {
+    setIsImportEnabled(localStorage.getItem("feature_activate_serial_import") === "true");
+  }, []);
+
+  // Dedicated Model Serial Import Modal State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importProduct, setImportProduct] = useState<Product | null>(null);
+  const [importTargetStatus, setImportTargetStatus] = useState<"available" | "dispatched" | "returned" | "damaged" | "under_repair" | "lost">("available");
+  const [importUnitType, setImportUnitType] = useState<"auto" | "indoor" | "outdoor">("auto");
+  const [importSerialsText, setImportSerialsText] = useState("");
+  const [importBatchRef, setImportBatchRef] = useState("");
+  const [importSkipExisting, setImportSkipExisting] = useState(true);
+  const [importSubmitting, setImportSubmitting] = useState(false);
+  const [importModalError, setImportModalError] = useState<string | null>(null);
+  const [importSuccessResult, setImportSuccessResult] = useState<{
+    imported_count: number;
+    skipped_existing_count: number;
+    skipped_invalid_count: number;
+    new_stock: number;
+    message: string;
+  } | null>(null);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const openImportModal = (p: Product) => {
+    setImportProduct(p);
+    setImportTargetStatus("available");
+    setImportUnitType("auto");
+    setImportSerialsText("");
+    setImportBatchRef(`IMPORT_${p.model.replace(/\s+/g, "_").toUpperCase()}`);
+    setImportSkipExisting(true);
+    setImportModalError(null);
+    setImportSuccessResult(null);
+    setIsImportModalOpen(true);
+  };
+
+  const parsedImportSerials = React.useMemo(() => {
+    if (!importSerialsText.trim()) return [];
+    return Array.from(
+      new Set(
+        importSerialsText
+          .split(/[\n,;]+/)
+          .map((s) => s.trim().toUpperCase())
+          .filter((s) => s.length > 0)
+      )
+    );
+  }, [importSerialsText]);
+
+  const handleImportFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = evt.target?.result;
+        const wb = XLSX.read(data, { type: "binary" });
+        const firstSheetName = wb.SheetNames[0];
+        const worksheet = wb.Sheets[firstSheetName];
+        const rows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, defval: "" });
+
+        const extractedSerials: string[] = [];
+        for (const row of rows) {
+          if (!row || !Array.isArray(row)) continue;
+          for (const cell of row) {
+            const val = String(cell || "").trim();
+            if (val.length >= 3 && !/^(serial|sl|no|model|brand|date|qty|remarks)$/i.test(val)) {
+              extractedSerials.push(val.toUpperCase());
+            }
+          }
+        }
+
+        const uniqueExtracted = Array.from(new Set(extractedSerials));
+        if (uniqueExtracted.length > 0) {
+          setImportSerialsText((prev) => {
+            const combined = prev.trim() ? `${prev.trim()}\n${uniqueExtracted.join("\n")}` : uniqueExtracted.join("\n");
+            return combined;
+          });
+          setImportModalError(null);
+        } else {
+          setImportModalError("No valid serial numbers found in the uploaded file.");
+        }
+      } catch (err: any) {
+        setImportModalError(`Could not read file: ${err.message || "Invalid file format"}`);
+      }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = "";
+  };
+
+  const handleExecuteImport = async () => {
+    if (!importProduct) return;
+    if (parsedImportSerials.length === 0) {
+      setImportModalError("Please enter or upload at least one valid serial number.");
+      return;
+    }
+
+    setImportSubmitting(true);
+    setImportModalError(null);
+    setImportSuccessResult(null);
+
     try {
-      const created = await apiRequest<Category>("/categories", {
+      const items = parsedImportSerials.map((sn) => ({
+        serial_number: sn,
+        product_id: importProduct.id,
+        unit_type: importUnitType === "auto" ? null : importUnitType,
+        status: importTargetStatus,
+      }));
+
+      const payload: ExcelSerialImportRequest = {
+        items,
+        default_product_id: importProduct.id,
+        batch_reference: importBatchRef.trim() || `IMPORT_${importTargetStatus.toUpperCase()}`,
+        inward_reference: importBatchRef.trim() || `IMPORT_${importTargetStatus.toUpperCase()}`,
+        target_status: importTargetStatus,
+        skip_existing: importSkipExisting,
+        remarks: `Model Import: ${importProduct.brand} ${importProduct.model} as ${importTargetStatus.toUpperCase()}`,
+      };
+
+      const res = await apiRequest<ExcelSerialImportResponse>("/serials/import-bulk", {
         method: "POST",
-        body: JSON.stringify({ 
-          name: newCategoryName.trim(),
-          has_dual_serial: newCategoryHasDualSerial,
-        }),
+        body: JSON.stringify(payload),
       });
+
+      const updatedStock = res.products_updated?.[0]?.new_stock ?? importProduct.current_stock_qty;
+
+      setImportSuccessResult({
+        imported_count: res.imported_count,
+        skipped_existing_count: res.skipped_existing_count,
+        skipped_invalid_count: res.skipped_invalid_count,
+        new_stock: updatedStock,
+        message: res.imported_count > 0 
+          ? `Successfully recorded ${res.imported_count} serials as ${importTargetStatus.toUpperCase()}!`
+          : `No new serials imported. ${res.skipped_existing_count} were already present in database.`,
+      });
+
+      // Refresh product list and stock count
       await fetchStock();
-      setFormData((prev) => ({ ...prev, category_id: created.id }));
-      setNewCategoryName("");
-      setNewCategoryHasDualSerial(false);
-      setIsCategoryModalOpen(false);
+
+      // If serials modal is open for this product, refresh its serials
+      if (selectedProductForSerials?.id === importProduct.id) {
+        const refreshedList = await apiRequest<ProductSerialItem[]>(`/products/${importProduct.id}/serials`);
+        setProductSerials(refreshedList);
+        setSelectedProductForSerials((prev) =>
+          prev ? { ...prev, current_stock_qty: updatedStock } : null
+        );
+      }
     } catch (err: any) {
-      setCategoryError(err.message || "Failed to create category");
+      setImportModalError(err.message || "Failed to import serials.");
     } finally {
-      setCategorySubmitting(false);
+      setImportSubmitting(false);
     }
   };
 
@@ -339,38 +463,6 @@ export const StockPage: React.FC = () => {
       fetchStock();
     }
   });
-
-  const openAddModal = (mode: "single" | "bulk" = "single") => {
-    setEditingProduct(null);
-    setModalMode(mode);
-    const defaultCat = (selectedCategory !== "all" ? selectedCategory : categories[0]?.id) || "";
-    setFormData({
-      name: "",
-      sku: "",
-      category_id: defaultCat,
-      brand: "",
-      model: "",
-      size_capacity: "",
-      unit: "piece",
-      opening_stock_qty: 0,
-      description: "",
-      is_active: true,
-    });
-    setBulkCategory(defaultCat);
-    setBulkBrand("");
-    setBulkText("");
-    setBulkOpeningQty(0);
-    setBulkDescription("");
-    setBulkResult(null);
-    setExcelFileName(null);
-    setExcelWorkbook(null);
-    setExcelSheets([]);
-    setExcelSelectedSheet("");
-    setExcelColumns([]);
-    setExcelSelectedColumn("");
-    setFormError(null);
-    setIsModalOpen(true);
-  };
 
   const openEditModal = (p: Product) => {
     setEditingProduct(p);
@@ -632,29 +724,6 @@ export const StockPage: React.FC = () => {
             Real-time stock counts by model • Pre-go-live and tracked serials
           </p>
         </div>
-
-        {isAdmin && (
-          <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
-            <button
-              onClick={() => {
-                setCategoryError(null);
-                setNewCategoryName("");
-                setIsCategoryModalOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs font-semibold hover:bg-slate-50 shadow-xs transition-all cursor-pointer"
-            >
-              <FolderPlus size={15} className="text-[#3C3489]" />
-              <span>Add Category</span>
-            </button>
-            <button
-              onClick={() => openAddModal("single")}
-              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#3C3489] text-white text-xs font-semibold hover:bg-[#312B72] shadow-xs shadow-[#3C3489]/25 transition-all cursor-pointer"
-            >
-              <Plus size={16} />
-              <span>Add Product Model</span>
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Filter Tabs & Search */}
@@ -785,6 +854,14 @@ export const StockPage: React.FC = () => {
                   <span className="text-[11px] font-semibold text-[#3C3489] bg-[#EEF2FF] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
                     {p.category_name}
                   </span>
+                  {p.tally_part_number && (
+                    <span
+                      className="text-[10px] font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full"
+                      title={`Part No: ${p.tally_part_number}`}
+                    >
+                      Part No: {p.tally_part_number}
+                    </span>
+                  )}
                   {p.has_dual_serial && (
                     <span className="text-[10px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-full">
                       Dual Serial (Indoor / Outdoor)
@@ -806,10 +883,14 @@ export const StockPage: React.FC = () => {
                 <h3 className={`font-bold text-base tracking-tight leading-snug group-hover:text-indigo-900 transition-colors ${
                   p.is_active ? "text-slate-900" : "text-slate-700"
                 }`}>
-                  {p.brand} {p.model}
+                  {p.model.toLowerCase().startsWith(p.brand.toLowerCase()) ? p.model : `${p.brand} ${p.model}`}
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Model: <span className="font-medium text-slate-700">{p.model}</span>
+                  Model: <span className="font-medium text-slate-700">
+                    {p.model.toLowerCase().startsWith(p.brand.toLowerCase())
+                      ? p.model.slice(p.brand.length).replace(/^[:\s\-]+/, "") || p.model
+                      : p.model}
+                  </span>
                 </p>
               </div>
 
@@ -822,13 +903,33 @@ export const StockPage: React.FC = () => {
 
             {/* Bottom count & Actions */}
             <div className="border-t border-slate-100 pt-3 flex items-center justify-between">
-              <div>
-                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
-                  Current Stock
-                </span>
-                <span className="text-lg font-bold text-slate-900">
-                  {Math.max(0, p.current_stock_qty)} <span className="text-xs font-normal text-slate-500">{p.unit}s</span>
-                </span>
+              <div className="flex items-center gap-3">
+                <div>
+                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                    Physical Stock
+                  </span>
+                  <span className="text-base font-bold text-slate-900">
+                    {Math.max(0, p.current_stock_qty)} <span className="text-[10px] font-normal text-slate-500">{p.unit}s</span>
+                  </span>
+                </div>
+
+                <div className="h-6 w-px bg-slate-200" />
+
+                <div>
+                  <span className="text-[10px] font-semibold text-amber-600 uppercase tracking-wider block flex items-center gap-1" title="Stock parsed from Tally">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
+                    Tally Stock
+                  </span>
+                  <span className="text-base font-bold text-amber-700">
+                    {p.tally_stock_qty !== undefined && p.tally_stock_qty !== null ? (
+                      <>
+                        {Math.max(0, p.tally_stock_qty)} <span className="text-[10px] font-normal text-amber-600/80">{p.unit}s</span>
+                      </>
+                    ) : (
+                      <span className="text-xs font-normal text-slate-400" title="Not available in Tally">—</span>
+                    )}
+                  </span>
+                </div>
               </div>
 
               <div className="flex items-center gap-1">
@@ -837,6 +938,18 @@ export const StockPage: React.FC = () => {
                 </span>
                 {isAdmin && (
                   <>
+                    {isImportEnabled && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openImportModal(p);
+                        }}
+                        className="p-1.5 rounded-lg text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 transition-colors cursor-pointer"
+                        title="Import Serials for this Model"
+                      >
+                        <UploadCloud size={15} />
+                      </button>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -954,25 +1067,9 @@ export const StockPage: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Category Selection */}
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                    Category *
-                  </label>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCategoryError(null);
-                        setNewCategoryName("");
-                        setNewCategoryHasDualSerial(false);
-                        setIsCategoryModalOpen(true);
-                      }}
-                      className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
-                    >
-                      <Plus size={11} /> New Category
-                    </button>
-                  )}
-                </div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Category (Stock Group) *
+                </label>
                 <select
                   required
                   value={bulkCategory}
@@ -1248,25 +1345,9 @@ export const StockPage: React.FC = () => {
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600">
-                    Category *
-                  </label>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCategoryError(null);
-                        setNewCategoryName("");
-                        setNewCategoryHasDualSerial(false);
-                        setIsCategoryModalOpen(true);
-                      }}
-                      className="text-[11px] font-semibold text-[#3C3489] hover:underline cursor-pointer flex items-center gap-0.5"
-                    >
-                      <Plus size={11} /> New Category
-                    </button>
-                  )}
-                </div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
+                  Category (Stock Group) *
+                </label>
                 <select
                   required
                   value={formData.category_id}
@@ -1377,73 +1458,6 @@ export const StockPage: React.FC = () => {
         )}
       </Modal>
 
-      {/* Add Category Modal */}
-      <Modal
-        isOpen={isCategoryModalOpen}
-        onClose={() => setIsCategoryModalOpen(false)}
-        title="Add Appliance Category"
-        subtitle="Global Logistics Master Product Catalog"
-      >
-        {categoryError && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
-            <AlertCircle size={15} />
-            <span>{categoryError}</span>
-          </div>
-        )}
-
-        <form onSubmit={handleCreateCategory} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-slate-600 mb-1">
-              Category Name *
-            </label>
-            <input
-              type="text"
-              required
-              autoFocus
-              value={newCategoryName}
-              onChange={(e) => setNewCategoryName(e.target.value)}
-              placeholder="e.g. Air Conditioners, Microwave Oven"
-              className="w-full px-3 py-2.5 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
-            />
-          </div>
-
-          <div className="flex items-center justify-between p-3.5 rounded-xl bg-purple-50/50 border border-purple-200/70">
-            <div>
-              <p className="text-xs font-semibold text-slate-800">Dual Serial Model</p>
-              <p className="text-[11px] text-slate-500">
-                Enable for AC (Separate Indoor & Outdoor unit serials)
-              </p>
-            </div>
-            <label className="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                checked={newCategoryHasDualSerial}
-                onChange={(e) => setNewCategoryHasDualSerial(e.target.checked)}
-                className="sr-only peer"
-              />
-              <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#3C3489]"></div>
-            </label>
-          </div>
-
-          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setIsCategoryModalOpen(false)}
-              className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={categorySubmitting}
-              className="px-4 py-2 text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#312B72] rounded-xl shadow-sm transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {categorySubmitting ? "Creating..." : "Create Category"}
-            </button>
-          </div>
-        </form>
-      </Modal>
-
       {/* Product Scanned Serials & Delete Modal */}
       {isSerialModalOpen && selectedProductForSerials && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/50 backdrop-blur-xs animate-in fade-in duration-150">
@@ -1462,25 +1476,44 @@ export const StockPage: React.FC = () => {
                     </span>
                   )}
                   <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-white/10 text-white">
-                    Stock: {selectedProductForSerials.current_stock_qty} {selectedProductForSerials.unit}s
+                    Physical Stock: {selectedProductForSerials.current_stock_qty} {selectedProductForSerials.unit}s
                   </span>
+                  {selectedProductForSerials.tally_stock_qty !== undefined && selectedProductForSerials.tally_stock_qty !== null && (
+                    <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/25 text-amber-200 border border-amber-400/40">
+                      Tally Stock: {Math.max(0, selectedProductForSerials.tally_stock_qty)} {selectedProductForSerials.unit}s
+                    </span>
+                  )}
                 </div>
                 <h2 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
                   <Barcode size={20} className="text-indigo-400" />
-                  {selectedProductForSerials.brand} {selectedProductForSerials.model}
+                  {selectedProductForSerials.model.toLowerCase().startsWith(selectedProductForSerials.brand.toLowerCase())
+                    ? selectedProductForSerials.model
+                    : `${selectedProductForSerials.brand} ${selectedProductForSerials.model}`}
                 </h2>
                 <p className="text-xs text-slate-300">
                   Inspect and manage all scanned serial units for this product. You can delete incorrect or test scans.
                 </p>
               </div>
 
-              <button
-                onClick={() => setIsSerialModalOpen(false)}
-                className="p-1.5 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors cursor-pointer shrink-0"
-                title="Close"
-              >
-                <X size={18} />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {isImportEnabled && isAdmin && (
+                  <button
+                    onClick={() => openImportModal(selectedProductForSerials)}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer border border-indigo-400/30"
+                    title="Import Recorded Serials for this Model"
+                  >
+                    <UploadCloud size={14} />
+                    <span>Import Serials</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsSerialModalOpen(false)}
+                  className="p-1.5 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors cursor-pointer shrink-0"
+                  title="Close"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             {/* Notification Banner */}
@@ -1779,6 +1812,282 @@ export const StockPage: React.FC = () => {
         </div>
       )}
 
+      {/* Dedicated Import Serials for Model Modal */}
+      {isImportModalOpen && importProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[92vh] flex flex-col overflow-hidden">
+            
+            {/* Modal Header */}
+            <div className="p-5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-start justify-between gap-4 shrink-0">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 uppercase tracking-wider">
+                    {importProduct.brand}
+                  </span>
+                  <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-white/10 text-white">
+                    Physical Stock: {importProduct.current_stock_qty} {importProduct.unit}s
+                  </span>
+                  {importProduct.tally_stock_qty !== undefined && importProduct.tally_stock_qty !== null && (
+                    <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/25 text-amber-200 border border-amber-400/40">
+                      Tally Stock: {Math.max(0, importProduct.tally_stock_qty)} {importProduct.unit}s
+                    </span>
+                  )}
+                </div>
+                <h2 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                  <UploadCloud size={20} className="text-indigo-400" />
+                  Import Serials — {importProduct.model.toLowerCase().startsWith(importProduct.brand.toLowerCase()) ? importProduct.model : `${importProduct.brand} ${importProduct.model}`}
+                </h2>
+                <p className="text-xs text-slate-300">
+                  Record inwarded, dispatched, returned, or damaged serial numbers for this specific model.
+                </p>
+              </div>
+
+              <button
+                onClick={() => setIsImportModalOpen(false)}
+                className="p-1.5 rounded-xl bg-white/10 text-slate-300 hover:text-white hover:bg-white/20 transition-colors cursor-pointer shrink-0"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-6 flex-1">
+              {importSuccessResult ? (
+                /* Success View */
+                <div className="py-6 flex flex-col items-center justify-center text-center space-y-4">
+                  <div className="w-14 h-14 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 shadow-sm">
+                    <CheckCircle2 size={32} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900">Serial Import Completed</h3>
+                    <p className="text-xs text-slate-600 mt-1 max-w-md">{importSuccessResult.message}</p>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3 w-full max-w-md pt-2">
+                    <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                      <span className="text-[10px] font-bold text-emerald-800 uppercase block">Recorded</span>
+                      <span className="text-xl font-extrabold text-emerald-700">{importSuccessResult.imported_count}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] font-bold text-slate-600 uppercase block">Skipped Exists</span>
+                      <span className="text-xl font-extrabold text-slate-700">{importSuccessResult.skipped_existing_count}</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+                      <span className="text-[10px] font-bold text-indigo-800 uppercase block">Updated Stock</span>
+                      <span className="text-xl font-extrabold text-indigo-700">{importSuccessResult.new_stock}</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-4 flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImportSuccessResult(null);
+                        setImportSerialsText("");
+                      }}
+                      className="px-4 py-2 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs rounded-xl transition-colors cursor-pointer"
+                    >
+                      Import More Serials
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsImportModalOpen(false)}
+                      className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl shadow-sm transition-colors cursor-pointer"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Import Input Form */
+                <div className="space-y-5">
+                  {importModalError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-center gap-2">
+                      <AlertCircle size={15} className="text-rose-600 shrink-0" />
+                      <span>{importModalError}</span>
+                    </div>
+                  )}
+
+                  {/* 1. Target Status Selector */}
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Record Serial Numbers As: *
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[
+                        { id: "available", label: "In Stock", desc: "Adds to live warehouse stock", color: "emerald" },
+                        { id: "dispatched", label: "Dispatched", desc: "Recorded in history as sold", color: "indigo" },
+                        { id: "returned", label: "Returned", desc: "Customer/shop return", color: "amber" },
+                        { id: "damaged", label: "Damaged", desc: "Faulty / quarantined", color: "rose" },
+                      ].map((item) => {
+                        const isSel = importTargetStatus === item.id;
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => setImportTargetStatus(item.id as any)}
+                            className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                              isSel 
+                                ? "border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600 shadow-xs" 
+                                : "border-slate-200 bg-white hover:bg-slate-50"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className={`text-xs font-bold ${isSel ? "text-indigo-900" : "text-slate-800"}`}>
+                                {item.label}
+                              </span>
+                              {isSel && <CheckCircle2 size={13} className="text-indigo-600" />}
+                            </div>
+                            <span className="text-[10px] text-slate-500 block mt-1 leading-tight">{item.desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* 2. Dual Serial Unit Type (if AC) */}
+                  {importProduct.has_dual_serial && (
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-700">
+                        Unit Type (Dual Serial AC Model):
+                      </label>
+                      <div className="flex items-center gap-2">
+                        {[
+                          { id: "auto", label: "Auto / Single" },
+                          { id: "indoor", label: "Indoor Unit (IDU)" },
+                          { id: "outdoor", label: "Outdoor Unit (ODU)" },
+                        ].map((u) => (
+                          <button
+                            key={u.id}
+                            type="button"
+                            onClick={() => setImportUnitType(u.id as any)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all ${
+                              importUnitType === u.id
+                                ? "bg-slate-900 text-white border-slate-900"
+                                : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                            }`}
+                          >
+                            {u.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 3. Reference Note / Batch */}
+                  <div className="space-y-1">
+                    <label className="block text-xs font-bold text-slate-700">
+                      Import Reference / Note (Optional):
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. LEGACY_MIGRATION, INVOICE_2023, BATCH_1"
+                      value={importBatchRef}
+                      onChange={(e) => setImportBatchRef(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-600 focus:border-indigo-600 text-slate-800"
+                    />
+                  </div>
+
+                  {/* 4. Serial Numbers Textarea with Live Count and File Upload */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-bold text-slate-700">
+                        Serial Numbers: *
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                          {parsedImportSerials.length} serial{parsedImportSerials.length === 1 ? "" : "s"} detected
+                        </span>
+                        
+                        {/* Hidden file input */}
+                        <input
+                          type="file"
+                          ref={importFileInputRef}
+                          onChange={handleImportFileUpload}
+                          accept=".xlsx,.xls,.csv"
+                          className="hidden"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => importFileInputRef.current?.click()}
+                          className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
+                        >
+                          <Upload size={12} />
+                          <span>Upload File (.xlsx / .csv)</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <textarea
+                      rows={6}
+                      placeholder="Paste serial numbers here (one per line, or separated by commas)..."
+                      value={importSerialsText}
+                      onChange={(e) => setImportSerialsText(e.target.value)}
+                      className="w-full p-3 font-mono text-xs border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-600 focus:border-indigo-600 text-slate-800 placeholder-slate-400"
+                    />
+                    <p className="text-[11px] text-slate-400">
+                      Duplicates within the pasted text are automatically deduplicated. Serials will be converted to uppercase.
+                    </p>
+                  </div>
+
+                  {/* 5. Skip Existing Checkbox */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <input
+                      type="checkbox"
+                      id="skipExistingCheckbox"
+                      checked={importSkipExisting}
+                      onChange={(e) => setImportSkipExisting(e.target.checked)}
+                      className="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <label htmlFor="skipExistingCheckbox" className="text-xs text-slate-700 cursor-pointer font-medium select-none">
+                      Skip serial numbers that already exist in database (recommended)
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            {!importSuccessResult && (
+              <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setIsImportModalOpen(false)}
+                  disabled={importSubmitting}
+                  className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExecuteImport}
+                  disabled={importSubmitting || parsedImportSerials.length === 0}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-sm transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  {importSubmitting ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Recording Serials...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud size={14} />
+                      <span>
+                        Import {parsedImportSerials.length > 0 ? `${parsedImportSerials.length} ` : ""}Serials as {importTargetStatus.toUpperCase()}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
+export default StockPage;
