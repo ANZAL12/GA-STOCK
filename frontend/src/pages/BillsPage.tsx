@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import { apiRequest } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type {
   BillListItem,
+  BillListResponse,
   BillDetail,
   Shop,
   CancelBillResponse,
@@ -31,6 +32,10 @@ import {
   Pencil,
   Check,
   Trash2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 
 export const BillsPage: React.FC = () => {
@@ -39,11 +44,26 @@ export const BillsPage: React.FC = () => {
   const [shops, setShops] = useState<Shop[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // Filters & Pagination
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedShopId, setSelectedShopId] = useState<string>("");
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "cancelled">("all");
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [jumpPageInput, setJumpPageInput] = useState<string>("");
+  const pageSize = 50;
+  const [totalCounts, setTotalCounts] = useState({
+    total: 0,
+    all: 0,
+    active: 0,
+    cancelled: 0,
+  });
+
+  // Table Top Anchor & Request Tracking
+  const tableTopRef = useRef<HTMLDivElement>(null);
+  const isPageChangingRef = useRef(false);
+  const fetchSeqRef = useRef(0);
 
   // Detailed Modal State
   const [selectedBill, setSelectedBill] = useState<BillDetail | null>(null);
@@ -89,24 +109,52 @@ export const BillsPage: React.FC = () => {
     }
   };
 
-  const fetchBills = async () => {
+  const fetchBills = async (
+    page = currentPage,
+    status = statusFilter,
+    query = debouncedSearch,
+    shopId = selectedShopId,
+    dateStr = selectedDate
+  ) => {
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (search.trim()) params.append("search", search.trim());
-      if (selectedShopId) params.append("shop_id", selectedShopId);
-      if (selectedDate) {
-        params.append("date_from", selectedDate);
-        params.append("date_to", selectedDate);
+      if (query.trim()) params.append("search", query.trim());
+      if (shopId) params.append("shop_id", shopId);
+      if (dateStr) {
+        params.append("date_from", dateStr);
+        params.append("date_to", dateStr);
       }
-      params.append("limit", "150");
+      if (status && status !== "all") {
+        params.append("status", status);
+      }
+      params.append("limit", String(pageSize));
+      params.append("offset", String((page - 1) * pageSize));
 
-      const data = await apiRequest<BillListItem[]>(`/outward/bills?${params.toString()}`);
-      setBills(data);
+      const res = await apiRequest<BillListResponse>(`/outward/bills/paginated?${params.toString()}`);
+      if (seq !== fetchSeqRef.current) return;
+
+      const nextTotal = res.total || 0;
+      const nextTotalPages = Math.max(1, Math.ceil(nextTotal / pageSize));
+      if (page > nextTotalPages) {
+        setCurrentPage(nextTotalPages);
+        return;
+      }
+
+      setBills(res.items || []);
+      setTotalCounts({
+        total: nextTotal,
+        all: res.total_all ?? nextTotal,
+        active: res.total_active ?? 0,
+        cancelled: res.total_cancelled ?? 0,
+      });
     } catch (e) {
       console.error("Failed to load bills", e);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -114,13 +162,33 @@ export const BillsPage: React.FC = () => {
     fetchShops();
   }, []);
 
+  // Debounce search input (250ms) and reset to page 1 when search changes
   useEffect(() => {
-    fetchBills();
-  }, [search, selectedShopId, selectedDate]);
+    if (search === debouncedSearch) return;
+    const handler = setTimeout(() => {
+      setDebouncedSearch(search);
+      setCurrentPage(1);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [search, debouncedSearch]);
+
+  useEffect(() => {
+    fetchBills(currentPage, statusFilter, debouncedSearch, selectedShopId, selectedDate);
+  }, [currentPage, statusFilter, debouncedSearch, selectedShopId, selectedDate]);
+
+  // Smooth scroll back to top of table after new page data renders
+  useEffect(() => {
+    if (isPageChangingRef.current) {
+      isPageChangingRef.current = false;
+      requestAnimationFrame(() => {
+        scrollToTableTop("smooth");
+      });
+    }
+  }, [bills]);
 
   useWebSocket((event) => {
     if (event === "stock_updated") {
-      fetchBills();
+      fetchBills(currentPage, statusFilter, debouncedSearch, selectedShopId, selectedDate);
     }
   });
 
@@ -187,15 +255,66 @@ export const BillsPage: React.FC = () => {
     }
   };
 
-  // Filter bills by active/cancelled status
-  const displayedBills = useMemo(() => {
-    if (statusFilter === "active") return bills.filter((b) => !b.is_cancelled);
-    if (statusFilter === "cancelled") return bills.filter((b) => b.is_cancelled);
-    return bills;
-  }, [bills, statusFilter]);
+  // Paginated bills for current page (filtered server-side)
+  const displayedBills = bills;
+  const totalPages = Math.max(1, Math.ceil(totalCounts.total / pageSize));
 
-  const activeCount = useMemo(() => bills.filter((b) => !b.is_cancelled).length, [bills]);
-  const cancelledCount = useMemo(() => bills.filter((b) => b.is_cancelled).length, [bills]);
+  const scrollToTableTop = (behavior: ScrollBehavior = "smooth") => {
+    if (tableTopRef.current) {
+      tableTopRef.current.scrollIntoView({ behavior, block: "start" });
+    } else {
+      window.scrollTo({ top: 0, behavior });
+    }
+  };
+
+  const handleStatusFilterChange = (nextStatus: "all" | "active" | "cancelled") => {
+    setStatusFilter(nextStatus);
+    setCurrentPage(1);
+  };
+
+  const handleShopFilterChange = (nextShopId: string) => {
+    setSelectedShopId(nextShopId);
+    setCurrentPage(1);
+  };
+
+  const handleDateFilterChange = (nextDate: string) => {
+    setSelectedDate(nextDate);
+    setCurrentPage(1);
+  };
+
+  const handlePageChange = (newPage: number) => {
+    const target = Math.max(1, Math.min(newPage, totalPages));
+    if (target !== currentPage) {
+      isPageChangingRef.current = true;
+      setCurrentPage(target);
+      scrollToTableTop("smooth");
+    }
+  };
+
+  const handleJumpSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = parseInt(jumpPageInput.trim(), 10);
+    if (!isNaN(p) && p >= 1 && p <= totalPages) {
+      handlePageChange(p);
+      setJumpPageInput("");
+    }
+  };
+
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    if (totalPages <= 7) {
+      for (let i = 1; i <= totalPages; i++) pages.push(i);
+    } else {
+      if (currentPage <= 4) {
+        pages.push(1, 2, 3, 4, 5, "...", totalPages);
+      } else if (currentPage >= totalPages - 3) {
+        pages.push(1, "...", totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages);
+      } else {
+        pages.push(1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages);
+      }
+    }
+    return pages;
+  };
 
   const handleExecuteCancel = async () => {
     if (!billToCancel) return;
@@ -356,7 +475,7 @@ export const BillsPage: React.FC = () => {
         </div>
 
         <button
-          onClick={fetchBills}
+          onClick={() => fetchBills()}
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-xs transition-colors self-start sm:self-auto"
         >
           <RotateCcw size={14} className={loading ? "animate-spin" : ""} />
@@ -485,36 +604,36 @@ export const BillsPage: React.FC = () => {
       <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl w-fit">
         <button
           type="button"
-          onClick={() => setStatusFilter("all")}
+          onClick={() => handleStatusFilterChange("all")}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
             statusFilter === "all"
               ? "bg-white text-slate-900 shadow-xs"
               : "text-slate-600 hover:text-slate-900"
           }`}
         >
-          All Bills ({bills.length})
+          All Bills ({totalCounts.all.toLocaleString()})
         </button>
         <button
           type="button"
-          onClick={() => setStatusFilter("active")}
+          onClick={() => handleStatusFilterChange("active")}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
             statusFilter === "active"
               ? "bg-white text-emerald-700 shadow-xs"
               : "text-slate-600 hover:text-slate-900"
           }`}
         >
-          Active ({activeCount})
+          Active ({totalCounts.active.toLocaleString()})
         </button>
         <button
           type="button"
-          onClick={() => setStatusFilter("cancelled")}
+          onClick={() => handleStatusFilterChange("cancelled")}
           className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
             statusFilter === "cancelled"
               ? "bg-white text-rose-700 shadow-xs"
               : "text-slate-600 hover:text-slate-900"
           }`}
         >
-          Cancelled ({cancelledCount})
+          Cancelled ({totalCounts.cancelled.toLocaleString()})
         </button>
       </div>
 
@@ -538,7 +657,7 @@ export const BillsPage: React.FC = () => {
             <Store size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <select
               value={selectedShopId}
-              onChange={(e) => setSelectedShopId(e.target.value)}
+              onChange={(e) => handleShopFilterChange(e.target.value)}
               className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50 appearance-none text-slate-700"
             >
               <option value="">All Shops / Dealers</option>
@@ -558,7 +677,7 @@ export const BillsPage: React.FC = () => {
                 type="date"
                 title="Filter by date"
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
+                onChange={(e) => handleDateFilterChange(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50 text-slate-700"
               />
             </div>
@@ -567,7 +686,7 @@ export const BillsPage: React.FC = () => {
               type="button"
               onClick={() => {
                 const todayStr = new Date().toISOString().split("T")[0];
-                setSelectedDate(todayStr);
+                handleDateFilterChange(todayStr);
               }}
               title="Show today's bills"
               className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-colors shrink-0 ${
@@ -589,7 +708,7 @@ export const BillsPage: React.FC = () => {
                 Date: {selectedDate}
                 <button
                   type="button"
-                  onClick={() => setSelectedDate("")}
+                  onClick={() => handleDateFilterChange("")}
                   className="hover:text-rose-600 ml-0.5 cursor-pointer"
                 >
                   <X size={12} />
@@ -600,8 +719,10 @@ export const BillsPage: React.FC = () => {
               type="button"
               onClick={() => {
                 setSearch("");
+                setDebouncedSearch("");
                 setSelectedShopId("");
                 setSelectedDate("");
+                setCurrentPage(1);
               }}
               className="text-[11px] text-rose-600 hover:underline font-medium cursor-pointer"
             >
@@ -612,7 +733,18 @@ export const BillsPage: React.FC = () => {
       </div>
 
       {/* 4. Bills Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+      <div
+        ref={tableTopRef}
+        className="relative bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden scroll-mt-20"
+      >
+        {loading && displayedBills.length > 0 && (
+          <div className="absolute inset-0 z-10 bg-white/60 backdrop-blur-[1px] flex items-center justify-center">
+            <div className="px-4 py-2 rounded-xl bg-white border border-slate-200 shadow-md flex items-center gap-2 text-xs font-semibold text-slate-700">
+              <div className="w-4 h-4 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin" />
+              <span>Loading page {currentPage}...</span>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50/80 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[10px]">
@@ -628,7 +760,7 @@ export const BillsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
-              {loading ? (
+              {loading && displayedBills.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="text-center py-12 text-slate-400">
                     <div className="flex flex-col items-center gap-2">
@@ -792,6 +924,114 @@ export const BillsPage: React.FC = () => {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Footer Bar */}
+        {totalCounts.total > 0 && (
+          <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-col md:flex-row items-center justify-between gap-4 select-none">
+            {/* Left: Range and Total Counts */}
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="font-semibold text-slate-700">
+                Showing {((currentPage - 1) * pageSize + 1).toLocaleString()} – {Math.min(currentPage * pageSize, totalCounts.total).toLocaleString()}
+              </span>
+              <span>of</span>
+              <span className="font-bold text-slate-900">{totalCounts.total.toLocaleString()}</span>
+              <span>bills</span>
+            </div>
+
+            {/* Center: Pagination Buttons */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage === 1 || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="First Page"
+              >
+                <ChevronsLeft size={15} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 1 || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Previous Page"
+              >
+                <ChevronLeft size={15} />
+              </button>
+
+              <div className="flex items-center gap-1 mx-1">
+                {getPageNumbers().map((pg, idx) => {
+                  if (pg === "...") {
+                    return (
+                      <span key={`dots-${idx}`} className="px-2 py-1 text-xs text-slate-400">
+                        ...
+                      </span>
+                    );
+                  }
+                  const pageNum = Number(pg);
+                  const isActive = pageNum === currentPage;
+                  return (
+                    <button
+                      key={`page-${pageNum}`}
+                      type="button"
+                      onClick={() => handlePageChange(pageNum)}
+                      disabled={loading}
+                      className={`min-w-[32px] h-8 px-2 text-xs font-semibold rounded-lg transition-all ${
+                        isActive
+                          ? "bg-[#3C3489] text-white shadow-sm"
+                          : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Next Page"
+              >
+                <ChevronRight size={15} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage >= totalPages || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Last Page"
+              >
+                <ChevronsRight size={15} />
+              </button>
+            </div>
+
+            {/* Right: Quick jump to page */}
+            <form onSubmit={handleJumpSubmit} className="flex items-center gap-1.5 text-xs">
+              <span className="text-slate-500">Go to:</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={jumpPageInput}
+                onChange={(e) => setJumpPageInput(e.target.value)}
+                placeholder={String(currentPage)}
+                className="w-14 px-2 py-1 text-center font-medium text-xs rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 transition-all cursor-pointer shadow-xs"
+              >
+                Go
+              </button>
+            </form>
+          </div>
+        )}
       </div>
 
       {/* Loading Overlay when fetching detail */}

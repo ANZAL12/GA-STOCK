@@ -329,6 +329,16 @@ export interface BillListItem {
   models_summary: string[];
 }
 
+export interface BillListResponse {
+  total: number;
+  total_all: number;
+  total_active: number;
+  total_cancelled: number;
+  limit: number;
+  offset: number;
+  items: BillListItem[];
+}
+
 export interface CancelBillResponse {
   success: boolean;
   bill_number: string;

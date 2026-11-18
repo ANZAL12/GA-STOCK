@@ -23,6 +23,7 @@ from app.schemas.outward import (
     BillBatchSummary,
     BillDetailResponse,
     BillListItem,
+    BillListResponse,
     CancelBillRequest,
     CancelBillResponse,
     OutwardBatchCreate,
@@ -1456,20 +1457,16 @@ async def get_outward_batch(
     )
 
 
-@router.get("/bills", response_model=list[BillListItem])
-async def list_outward_bills(
-    current_user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-    search: Optional[str] = Query(None, description="Search by bill number or shop name"),
-    shop_id: Optional[uuid.UUID] = Query(None, description="Filter by shop"),
-    date_from: Optional[date] = Query(None, description="Filter from date"),
-    date_to: Optional[date] = Query(None, description="Filter to date"),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-) -> list[BillListItem]:
+async def _fetch_aggregated_bill_dicts(
+    db: AsyncSession,
+    search: Optional[str] = None,
+    shop_id: Optional[uuid.UUID] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+) -> list[dict]:
     """
-    List outward dispatches aggregated by Bill Number.
-    Allows viewing all models/batches dispatched together under one invoice or bill.
+    Fetch outward batches matching filters and aggregate them into bill dictionaries,
+    separating active vs cancelled bills (and distinct cancellation groups).
     """
     Canceller = aliased(User)
     query = (
@@ -1555,8 +1552,79 @@ async def list_outward_bills(
         if summary_str not in item["models_summary"]:
             item["models_summary"].append(summary_str)
 
-    bill_list = [BillListItem(**data) for data in bills_map.values()]
-    return bill_list[offset : offset + limit]
+    return list(bills_map.values())
+
+
+@router.get("/bills", response_model=list[BillListItem])
+async def list_outward_bills(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    search: Optional[str] = Query(None, description="Search by bill number or shop name"),
+    shop_id: Optional[uuid.UUID] = Query(None, description="Filter by shop"),
+    date_from: Optional[date] = Query(None, description="Filter from date"),
+    date_to: Optional[date] = Query(None, description="Filter to date"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[BillListItem]:
+    """
+    List outward dispatches aggregated by Bill Number.
+    Allows viewing all models/batches dispatched together under one invoice or bill.
+    """
+    all_bill_dicts = await _fetch_aggregated_bill_dicts(
+        db=db,
+        search=search,
+        shop_id=shop_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return [BillListItem(**data) for data in all_bill_dicts[offset : offset + limit]]
+
+
+@router.get("/bills/paginated", response_model=BillListResponse)
+async def list_outward_bills_paginated(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    search: Optional[str] = Query(None, description="Search by bill number, shop name, city, or reference"),
+    shop_id: Optional[uuid.UUID] = Query(None, description="Filter by shop"),
+    date_from: Optional[date] = Query(None, description="Filter from date"),
+    date_to: Optional[date] = Query(None, description="Filter to date"),
+    bill_status: str = Query("all", alias="status", description="Filter by status: all | active | cancelled"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> BillListResponse:
+    """
+    Paginated list of outward dispatch bills with accurate totals for all, active, and cancelled bills.
+    """
+    all_bill_dicts = await _fetch_aggregated_bill_dicts(
+        db=db,
+        search=search,
+        shop_id=shop_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    active_bills = [b for b in all_bill_dicts if not b["is_cancelled"]]
+    cancelled_bills = [b for b in all_bill_dicts if b["is_cancelled"]]
+
+    normalized_status = (bill_status or "all").strip().lower()
+    if normalized_status == "active":
+        filtered_bills = active_bills
+    elif normalized_status == "cancelled":
+        filtered_bills = cancelled_bills
+    else:
+        filtered_bills = all_bill_dicts
+
+    page_slice = filtered_bills[offset : offset + limit]
+
+    return BillListResponse(
+        total=len(filtered_bills),
+        total_all=len(all_bill_dicts),
+        total_active=len(active_bills),
+        total_cancelled=len(cancelled_bills),
+        limit=limit,
+        offset=offset,
+        items=[BillListItem(**data) for data in page_slice],
+    )
 
 
 @router.get("/bills/{bill_number}", response_model=BillDetailResponse)

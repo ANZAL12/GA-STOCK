@@ -215,6 +215,16 @@ class BillListItem(BaseModel):
     models_summary: list[str] = []
 
 
+class BillListResponse(BaseModel):
+    total: int
+    total_all: int
+    total_active: int
+    total_cancelled: int
+    limit: int
+    offset: int
+    items: list[BillListItem] = []
+
+
 class CancelBillRequest(BaseModel):
     reason: Optional[str] = None
 
