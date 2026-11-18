@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import * as XLSX from "xlsx";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { Product, Category, ProductSerialItem } from "../types";
@@ -30,12 +30,20 @@ import {
 
 export const StockPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [products, setProducts] = useState<Product[]>(() =>
+    getCachedResponse<Product[]>("/products") || []
+  );
+  const [categories, setCategories] = useState<Category[]>(() =>
+    getCachedResponse<Category[]>("/categories") || []
+  );
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(() => {
+    const hasProducts = getCachedResponse<Product[]>("/products") !== null;
+    const hasCategories = getCachedResponse<Category[]>("/categories") !== null;
+    return !(hasProducts && hasCategories);
+  });
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);

@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from "react";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { Badge } from "../components/Badge";
 import type { Device } from "../types";
 
 export const DevicesPage: React.FC = () => {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [devices, setDevices] = useState<Device[]>(() =>
+    getCachedResponse<Device[]>("/devices") || []
+  );
+  const [loading, setLoading] = useState<boolean>(
+    () => getCachedResponse<Device[]>("/devices") === null
+  );
   const [filter, setFilter] = useState<"all" | "pending" | "approved">("all");
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -19,11 +23,12 @@ export const DevicesPage: React.FC = () => {
   // Copied indicator
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  const fetchDevices = async () => {
+  const fetchDevices = async (forceRefresh = false) => {
+    const url = filter === "all" ? "/devices" : `/devices?status=${filter}`;
+    const hasCached = !forceRefresh && getCachedResponse<Device[]>(url) !== null;
     try {
-      setLoading(true);
-      const url = filter === "all" ? "/devices" : `/devices?status=${filter}`;
-      const data = await apiRequest<Device[]>(url);
+      if (!hasCached) setLoading(true);
+      const data = await apiRequest<Device[]>(url, { forceRefresh });
       setDevices(data);
       setError(null);
     } catch (err: any) {
@@ -123,7 +128,7 @@ export const DevicesPage: React.FC = () => {
         </div>
 
         <button
-          onClick={fetchDevices}
+          onClick={() => fetchDevices(true)}
           className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs font-semibold transition-colors cursor-pointer self-start sm:self-auto"
         >
           <svg className="w-3.5 h-3.5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">

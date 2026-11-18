@@ -1,13 +1,17 @@
 import React, { useEffect, useState } from "react";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { Badge } from "../components/Badge";
 import type { User, UserRole } from "../types";
 
 export const UsersPage: React.FC = () => {
   const { user: currentUser } = useAuth();
-  const [users, setUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [users, setUsers] = useState<User[]>(() =>
+    getCachedResponse<User[]>("/users") || []
+  );
+  const [loading, setLoading] = useState<boolean>(
+    () => getCachedResponse<User[]>("/users") === null
+  );
   const [search, setSearch] = useState("");
   const [filterActiveOnly, setFilterActiveOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,11 +31,11 @@ export const UsersPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
 
   const fetchUsers = async () => {
+    const endpoint = `/users${filterActiveOnly ? "?active_only=true" : ""}`;
+    const hasCached = getCachedResponse<User[]>(endpoint) !== null;
     try {
-      setLoading(true);
-      const data = await apiRequest<User[]>(
-        `/users${filterActiveOnly ? "?active_only=true" : ""}`
-      );
+      if (!hasCached) setLoading(true);
+      const data = await apiRequest<User[]>(endpoint);
       setUsers(data);
       setError(null);
     } catch (err: any) {

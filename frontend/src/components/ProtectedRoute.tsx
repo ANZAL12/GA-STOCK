@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { wsClient } from "../api/useWebSocket";
 import { Navbar } from "./Navbar";
 
 interface Props {
@@ -9,6 +10,13 @@ interface Props {
 
 export const ProtectedLayout: React.FC<Props> = ({ requireAdmin = false }) => {
   const { user, isLoading, isAdmin } = useAuth();
+
+  // Keep WebSocket connected on all authenticated pages so realtime events always invalidate browser cache
+  useEffect(() => {
+    if (user) {
+      wsClient.connect();
+    }
+  }, [user]);
 
   if (isLoading) {
     return (

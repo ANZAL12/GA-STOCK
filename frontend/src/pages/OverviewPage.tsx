@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import type { 
   OverviewSummary, 
@@ -21,10 +21,21 @@ import {
 } from "lucide-react";
 
 export const OverviewPage: React.FC = () => {
-  const [summary, setSummary] = useState<OverviewSummary | null>(null);
-  const [stockByModel, setStockByModel] = useState<StockByModelItem[]>([]);
-  const [timeline, setTimeline] = useState<TodayTimelineItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<OverviewSummary | null>(() =>
+    getCachedResponse<OverviewSummary>("/reports/overview")
+  );
+  const [stockByModel, setStockByModel] = useState<StockByModelItem[]>(() =>
+    getCachedResponse<StockByModelItem[]>("/reports/stock-by-model") || []
+  );
+  const [timeline, setTimeline] = useState<TodayTimelineItem[]>(() =>
+    getCachedResponse<TodayTimelineItem[]>("/reports/today-timeline") || []
+  );
+  const [loading, setLoading] = useState<boolean>(() => {
+    const hasOverview = getCachedResponse<OverviewSummary>("/reports/overview") !== null;
+    const hasStock = getCachedResponse<StockByModelItem[]>("/reports/stock-by-model") !== null;
+    const hasTimeline = getCachedResponse<TodayTimelineItem[]>("/reports/today-timeline") !== null;
+    return !(hasOverview && hasStock && hasTimeline);
+  });
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");

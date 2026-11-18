@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { SerialDetail, SerialListItem, SerialListResponse } from "../types";
@@ -28,14 +28,19 @@ import { generateSerialListPdf, generateSerialTracePdf } from "../utils/generate
 
 export const SerialsPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [serials, setSerials] = useState<SerialListItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const pageSize = 100;
+  const initialSerialsCache = getCachedResponse<SerialListResponse>(
+    `/serials?limit=${pageSize}&offset=0`
+  );
+  const [serials, setSerials] = useState<SerialListItem[]>(
+    () => initialSerialsCache?.items || []
+  );
+  const [loading, setLoading] = useState<boolean>(() => initialSerialsCache === null);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [flowFilter, setFlowFilter] = useState<"all" | "inward" | "outward" | "damaged">("all");
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [jumpPageInput, setJumpPageInput] = useState<string>("");
-  const pageSize = 100;
 
   // Table Top Anchor & Page Change Scroll Tracking
   const tableTopRef = useRef<HTMLDivElement>(null);
@@ -54,23 +59,25 @@ export const SerialsPage: React.FC = () => {
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
 
-  const [totalCounts, setTotalCounts] = useState({
-    total: 0,
-    inward: 0,
-    outward: 0,
-    damaged: 0,
-  });
+  const [totalCounts, setTotalCounts] = useState(() => ({
+    total: initialSerialsCache?.total || 0,
+    inward: initialSerialsCache?.total_inward ?? 0,
+    outward: initialSerialsCache?.total_outward ?? 0,
+    damaged: initialSerialsCache?.total_damaged ?? 0,
+  }));
 
   const fetchSerials = async (flow = flowFilter, query = searchQuery, page = currentPage) => {
-    try {
-      setLoading(true);
-      const params = new URLSearchParams();
-      params.append("limit", String(pageSize));
-      params.append("offset", String((page - 1) * pageSize));
-      if (flow && flow !== "all") params.append("flow", flow);
-      if (query.trim()) params.append("q", query.trim());
+    const params = new URLSearchParams();
+    params.append("limit", String(pageSize));
+    params.append("offset", String((page - 1) * pageSize));
+    if (flow && flow !== "all") params.append("flow", flow);
+    if (query.trim()) params.append("q", query.trim());
+    const endpoint = `/serials?${params.toString()}`;
+    const hasCached = getCachedResponse<SerialListResponse>(endpoint) !== null;
 
-      const res = await apiRequest<SerialListResponse>(`/serials?${params.toString()}`);
+    try {
+      if (!hasCached) setLoading(true);
+      const res = await apiRequest<SerialListResponse>(endpoint);
       setSerials(res.items);
       setTotalCounts({
         total: res.total || 0,

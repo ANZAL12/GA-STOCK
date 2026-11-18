@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { Badge } from "../components/Badge";
 import { Modal } from "../components/Modal";
 import type {
@@ -150,13 +150,17 @@ export const ReportsPage: React.FC = () => {
   const [dateTo, setDateTo] = useState<string>(getTodayStr());
 
   // Model & Search Filters
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<Product[]>(
+    () => getCachedResponse<Product[]>("/products") || []
+  );
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
 
   // Inward & Shop Filters
   const [selectedInwardType, setSelectedInwardType] = useState<string>("");
-  const [shops, setShops] = useState<Shop[]>([]);
+  const [shops, setShops] = useState<Shop[]>(
+    () => getCachedResponse<Shop[]>("/shops") || []
+  );
   const [selectedShop, setSelectedShop] = useState<Shop | null>(null);
 
   // Preview & Print Execution States
@@ -175,7 +179,9 @@ export const ReportsPage: React.FC = () => {
 
   // Raw Tables State (for second view)
   const [activeTab, setActiveTab] = useState<ReportTab>("stock_by_model");
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [categories, setCategories] = useState<Category[]>(
+    () => getCachedResponse<Category[]>("/categories") || []
+  );
   const [tableCategory, setTableCategory] = useState<string>("");
   const [tableShop, setTableShop] = useState<string>("");
   const [tableProduct, setTableProduct] = useState<string>("");
@@ -368,12 +374,13 @@ export const ReportsPage: React.FC = () => {
   // -------------------------------------------------------------
   const fetchTableData = async () => {
     try {
-      setTableLoading(true);
       setTableError(null);
 
       if (activeTab === "stock_by_model") {
         const query = tableCategory ? `?category_id=${tableCategory}` : "";
-        const data = await apiRequest<StockByModelItem[]>(`/reports/stock-by-model${query}`);
+        const endpoint = `/reports/stock-by-model${query}`;
+        if (getCachedResponse<StockByModelItem[]>(endpoint) === null) setTableLoading(true);
+        const data = await apiRequest<StockByModelItem[]>(endpoint);
         setStockByModel(data);
       } else if (activeTab === "stock_out") {
         const params = new URLSearchParams();
@@ -384,7 +391,9 @@ export const ReportsPage: React.FC = () => {
         if (matchedFilter === "matched") params.append("is_matched", "true");
         if (matchedFilter === "unmatched") params.append("is_matched", "false");
         const qs = params.toString() ? `?${params.toString()}` : "";
-        const data = await apiRequest<StockOutReportItem[]>(`/reports/stock-out${qs}`);
+        const endpoint = `/reports/stock-out${qs}`;
+        if (getCachedResponse<StockOutReportItem[]>(endpoint) === null) setTableLoading(true);
+        const data = await apiRequest<StockOutReportItem[]>(endpoint);
         setStockOutData(data);
       } else if (activeTab === "unmatched") {
         const params = new URLSearchParams();
@@ -393,11 +402,15 @@ export const ReportsPage: React.FC = () => {
         if (tableDateFrom) params.append("date_from", tableDateFrom);
         if (tableDateTo) params.append("date_to", tableDateTo);
         const qs = params.toString() ? `?${params.toString()}` : "";
-        const data = await apiRequest<StockOutReportItem[]>(`/reports/unmatched-outward${qs}`);
+        const endpoint = `/reports/unmatched-outward${qs}`;
+        if (getCachedResponse<StockOutReportItem[]>(endpoint) === null) setTableLoading(true);
+        const data = await apiRequest<StockOutReportItem[]>(endpoint);
         setUnmatchedData(data);
       } else if (activeTab === "damaged") {
         const query = tableProduct ? `?product_id=${tableProduct}` : "";
-        const data = await apiRequest<DamagedReportItem[]>(`/reports/damaged${query}`);
+        const endpoint = `/reports/damaged${query}`;
+        if (getCachedResponse<DamagedReportItem[]>(endpoint) === null) setTableLoading(true);
+        const data = await apiRequest<DamagedReportItem[]>(endpoint);
         setDamagedData(data);
       } else if (activeTab === "audit") {
         const params = new URLSearchParams();
@@ -407,7 +420,9 @@ export const ReportsPage: React.FC = () => {
         if (tableDateTo) params.append("date_to", tableDateTo);
         params.append("limit", "200");
         const qs = `?${params.toString()}`;
-        const data = await apiRequest<AuditLogItem[]>(`/audit${qs}`);
+        const endpoint = `/audit${qs}`;
+        if (getCachedResponse<AuditLogItem[]>(endpoint) === null) setTableLoading(true);
+        const data = await apiRequest<AuditLogItem[]>(endpoint);
         setAuditData(data);
       }
     } catch (err: any) {

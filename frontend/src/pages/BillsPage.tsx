@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type {
@@ -12,6 +12,13 @@ import type {
   DeleteOutwardLineResponse,
 } from "../types";
 import { generateBillPdf, printBillPdf } from "../utils/generateBillPdf";
+import {
+  isBillEditDeleteEnabled,
+  setBillEditDeleteEnabled as cacheBillEditDeleteEnabled,
+  fetchBillEditDeleteSetting,
+  BILL_EDIT_DELETE_SETTING_KEY,
+  SETTINGS_CHANGED_EVENT,
+} from "../utils/settings";
 import {
   Receipt,
   Search,
@@ -40,9 +47,15 @@ import {
 
 export const BillsPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [bills, setBills] = useState<BillListItem[]>([]);
-  const [shops, setShops] = useState<Shop[]>([]);
-  const [loading, setLoading] = useState(true);
+  const pageSize = 50;
+  const initialBillsCache = getCachedResponse<BillListResponse>(
+    `/outward/bills/paginated?limit=${pageSize}&offset=0`
+  );
+  const [bills, setBills] = useState<BillListItem[]>(() => initialBillsCache?.items || []);
+  const [shops, setShops] = useState<Shop[]>(
+    () => getCachedResponse<Shop[]>("/shops?active_only=false") || []
+  );
+  const [loading, setLoading] = useState<boolean>(() => initialBillsCache === null);
 
   // Filters & Pagination
   const [search, setSearch] = useState("");
@@ -52,13 +65,12 @@ export const BillsPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "cancelled">("all");
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [jumpPageInput, setJumpPageInput] = useState<string>("");
-  const pageSize = 50;
-  const [totalCounts, setTotalCounts] = useState({
-    total: 0,
-    all: 0,
-    active: 0,
-    cancelled: 0,
-  });
+  const [totalCounts, setTotalCounts] = useState(() => ({
+    total: initialBillsCache?.total || 0,
+    all: initialBillsCache?.total_all ?? initialBillsCache?.total ?? 0,
+    active: initialBillsCache?.total_active ?? 0,
+    cancelled: initialBillsCache?.total_cancelled ?? 0,
+  }));
 
   // Table Top Anchor & Request Tracking
   const tableTopRef = useRef<HTMLDivElement>(null);
@@ -84,7 +96,10 @@ export const BillsPage: React.FC = () => {
   const [cancelModalError, setCancelModalError] = useState<string | null>(null);
   const [actionSuccessNotice, setActionSuccessNotice] = useState<string | null>(null);
 
-  // Line Serial Edit & Delete State (Admin Only)
+  // Line Serial Edit & Delete State (Admin Only, controlled by Settings toggle)
+  const [billEditDeleteEnabled, setBillEditDeleteEnabled] = useState<boolean>(() =>
+    isBillEditDeleteEnabled()
+  );
   const [editingLineId, setEditingLineId] = useState<string | null>(null);
   const [editingSerialText, setEditingSerialText] = useState("");
   const [isSavingLine, setIsSavingLine] = useState(false);
@@ -114,25 +129,30 @@ export const BillsPage: React.FC = () => {
     status = statusFilter,
     query = debouncedSearch,
     shopId = selectedShopId,
-    dateStr = selectedDate
+    dateStr = selectedDate,
+    forceRefresh = false
   ) => {
     const seq = ++fetchSeqRef.current;
-    setLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (query.trim()) params.append("search", query.trim());
-      if (shopId) params.append("shop_id", shopId);
-      if (dateStr) {
-        params.append("date_from", dateStr);
-        params.append("date_to", dateStr);
-      }
-      if (status && status !== "all") {
-        params.append("status", status);
-      }
-      params.append("limit", String(pageSize));
-      params.append("offset", String((page - 1) * pageSize));
+    const params = new URLSearchParams();
+    if (query.trim()) params.append("search", query.trim());
+    if (shopId) params.append("shop_id", shopId);
+    if (dateStr) {
+      params.append("date_from", dateStr);
+      params.append("date_to", dateStr);
+    }
+    if (status && status !== "all") {
+      params.append("status", status);
+    }
+    params.append("limit", String(pageSize));
+    params.append("offset", String((page - 1) * pageSize));
 
-      const res = await apiRequest<BillListResponse>(`/outward/bills/paginated?${params.toString()}`);
+    const endpoint = `/outward/bills/paginated?${params.toString()}`;
+    const hasCached = !forceRefresh && getCachedResponse<BillListResponse>(endpoint) !== null;
+    if (!hasCached) {
+      setLoading(true);
+    }
+    try {
+      const res = await apiRequest<BillListResponse>(endpoint, { forceRefresh });
       if (seq !== fetchSeqRef.current) return;
 
       const nextTotal = res.total || 0;
@@ -162,6 +182,38 @@ export const BillsPage: React.FC = () => {
     fetchShops();
   }, []);
 
+  // Sync Bill Edit/Delete setting from backend + localStorage / other tabs
+  useEffect(() => {
+    let active = true;
+    const applyEnabled = (enabled: boolean) => {
+      if (!active) return;
+      setBillEditDeleteEnabled(enabled);
+      if (!enabled) {
+        setEditingLineId(null);
+        setEditingSerialText("");
+        setLineEditError(null);
+        setLineToDelete(null);
+        setDeleteLineError(null);
+      }
+    };
+
+    fetchBillEditDeleteSetting().then(applyEnabled);
+
+    const syncSetting = (e?: Event) => {
+      if (e instanceof StorageEvent && e.key !== BILL_EDIT_DELETE_SETTING_KEY) return;
+      applyEnabled(isBillEditDeleteEnabled());
+    };
+    window.addEventListener("storage", syncSetting);
+    window.addEventListener(SETTINGS_CHANGED_EVENT, syncSetting);
+    window.addEventListener("focus", syncSetting);
+    return () => {
+      active = false;
+      window.removeEventListener("storage", syncSetting);
+      window.removeEventListener(SETTINGS_CHANGED_EVENT, syncSetting);
+      window.removeEventListener("focus", syncSetting);
+    };
+  }, []);
+
   // Debounce search input (250ms) and reset to page 1 when search changes
   useEffect(() => {
     if (search === debouncedSearch) return;
@@ -186,13 +238,27 @@ export const BillsPage: React.FC = () => {
     }
   }, [bills]);
 
-  useWebSocket((event) => {
+  useWebSocket((event, data) => {
     if (event === "stock_updated") {
       fetchBills(currentPage, statusFilter, debouncedSearch, selectedShopId, selectedDate);
+    } else if (event === "settings_updated" && typeof data?.bill_edit_delete_enabled === "boolean") {
+      const enabled = Boolean(data.bill_edit_delete_enabled);
+      cacheBillEditDeleteEnabled(enabled);
+      setBillEditDeleteEnabled(enabled);
+      if (!enabled) {
+        setEditingLineId(null);
+        setEditingSerialText("");
+        setLineEditError(null);
+        setLineToDelete(null);
+        setDeleteLineError(null);
+      }
     }
   });
 
   const openBillDetail = async (billNumber: string, isCancelled?: boolean) => {
+    fetchBillEditDeleteSetting().then((enabled) => {
+      setBillEditDeleteEnabled(enabled);
+    });
     setDetailLoading(true);
     setDetailError(null);
     setSerialSearch("");
@@ -343,6 +409,7 @@ export const BillsPage: React.FC = () => {
   };
 
   const handleStartEditLine = (lineId: string, currentSerial: string) => {
+    if (!billEditDeleteEnabled) return;
     setEditingLineId(lineId);
     setEditingSerialText(currentSerial);
     setLineEditError(null);
@@ -355,6 +422,7 @@ export const BillsPage: React.FC = () => {
   };
 
   const handleSaveEditLine = async (lineId: string) => {
+    if (!billEditDeleteEnabled) return;
     const trimmed = editingSerialText.trim().toUpperCase();
     if (!trimmed) {
       setLineEditError("Serial number cannot be blank");
@@ -388,7 +456,7 @@ export const BillsPage: React.FC = () => {
   };
 
   const handleExecuteDeleteLine = async () => {
-    if (!lineToDelete) return;
+    if (!billEditDeleteEnabled || !lineToDelete) return;
     setIsDeletingLine(true);
     setDeleteLineError(null);
     try {
@@ -475,7 +543,7 @@ export const BillsPage: React.FC = () => {
         </div>
 
         <button
-          onClick={() => fetchBills()}
+          onClick={() => fetchBills(currentPage, statusFilter, debouncedSearch, selectedShopId, selectedDate, true)}
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-xs transition-colors self-start sm:self-auto"
         >
           <RotateCcw size={14} className={loading ? "animate-spin" : ""} />
@@ -500,7 +568,7 @@ export const BillsPage: React.FC = () => {
       )}
 
       {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
+      {billEditDeleteEnabled && lineToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
@@ -1045,7 +1113,7 @@ export const BillsPage: React.FC = () => {
       )}
 
       {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
+      {billEditDeleteEnabled && lineToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
@@ -1156,7 +1224,7 @@ export const BillsPage: React.FC = () => {
       )}
 
       {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
+      {billEditDeleteEnabled && lineToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
@@ -1459,14 +1527,14 @@ export const BillsPage: React.FC = () => {
                           <th className="py-2 px-3">Serial Number</th>
                           <th className="py-2 px-3 text-center">Unit Type</th>
                           <th className="py-2 px-3 text-center">Verification</th>
-                          {isAdmin && !selectedBill.is_cancelled && (
+                          {isAdmin && !selectedBill.is_cancelled && billEditDeleteEnabled && (
                             <th className="py-2 px-3 text-right">Action</th>
                           )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 font-sans">
                         {filteredSerials.map((s, idx) => {
-                          const isEditing = editingLineId === s.line_id;
+                          const isEditing = billEditDeleteEnabled && editingLineId === s.line_id;
                           return (
                             <tr key={s.line_id || s.serial_text + idx} className="hover:bg-slate-50/50">
                               <td className="py-2 px-3 text-slate-400 text-[10px]">{idx + 1}</td>
@@ -1545,7 +1613,7 @@ export const BillsPage: React.FC = () => {
                                   {s.status_label}
                                 </span>
                               </td>
-                              {isAdmin && !selectedBill.is_cancelled && (
+                              {isAdmin && !selectedBill.is_cancelled && billEditDeleteEnabled && (
                                 <td className="py-2 px-3 text-right">
                                   {!isEditing && (
                                     <div className="inline-flex items-center gap-1.5 justify-end">
@@ -1628,7 +1696,7 @@ export const BillsPage: React.FC = () => {
       )}
 
       {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
+      {billEditDeleteEnabled && lineToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
@@ -1824,7 +1892,7 @@ export const BillsPage: React.FC = () => {
       )}
 
       {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
+      {billEditDeleteEnabled && lineToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"

@@ -8,6 +8,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_device_optional, get_current_user, require_admin
+from app.core.app_settings import is_bill_edit_delete_enabled
 from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
@@ -1980,6 +1981,12 @@ async def update_outward_bill_line(
     - If the previous serial on this line was matched from stock, it is returned to 'available' stock.
     - Accurately reconciles batch matched/unmatched counters, logs SerialHistory, and broadcasts stock_updated.
     """
+    if not is_bill_edit_delete_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bill serial edit/delete is currently deactivated in System Settings.",
+        )
+
     clean_new_serial = req.new_serial_number.strip().upper()
     if not clean_new_serial:
         raise HTTPException(status_code=400, detail="Serial number cannot be blank.")
@@ -2267,6 +2274,12 @@ async def delete_outward_bill_line(
     - Updates/reconciles OutwardBatch quantity, matched/unmatched counters.
     - Broadcasts stock_updated via WebSocket.
     """
+    if not is_bill_edit_delete_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bill serial edit/delete is currently deactivated in System Settings.",
+        )
+
     # 1. Fetch and lock OutwardLine
     line_res = await db.execute(
         select(OutwardLine).where(OutwardLine.id == line_id).with_for_update()

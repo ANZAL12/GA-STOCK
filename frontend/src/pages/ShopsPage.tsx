@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { Shop, ShopDispatchedSerial, ShopExcelColumnsResponse, ShopExcelImportResponse } from "../types";
@@ -23,7 +23,9 @@ import {
 
 export const ShopsPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [shops, setShops] = useState<Shop[]>([]);
+  const [shops, setShops] = useState<Shop[]>(() =>
+    getCachedResponse<Shop[]>("/shops?active_only=false") || []
+  );
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
   const [cleaningUp, setCleaningUp] = useState(false);

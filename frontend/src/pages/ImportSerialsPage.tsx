@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import * as XLSX from "xlsx";
-import { apiRequest } from "../api/client";
+import { apiRequest, getCachedResponse } from "../api/client";
 import { useWebSocket } from "../api/useWebSocket";
 import type { 
   Product, 
@@ -49,9 +49,17 @@ export const ImportSerialsPage: React.FC = () => {
   const navigate = useNavigate();
 
   // Reference Data
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
+  const [products, setProducts] = useState<Product[]>(
+    () => getCachedResponse<Product[]>("/products?active_only=true") || []
+  );
+  const [categories, setCategories] = useState<Category[]>(
+    () => getCachedResponse<Category[]>("/categories?active_only=true") || []
+  );
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(() => {
+    const hasProds = getCachedResponse<Product[]>("/products?active_only=true") !== null;
+    const hasCats = getCachedResponse<Category[]>("/categories?active_only=true") !== null;
+    return !(hasProds && hasCats);
+  });
 
   // File & Sheet State
   const [file, setFile] = useState<File | null>(null);
@@ -98,8 +106,11 @@ export const ImportSerialsPage: React.FC = () => {
 
   // Fetch products & categories on load
   const loadInitialData = async (silent = false) => {
+    const hasCached =
+      getCachedResponse<Product[]>("/products?active_only=true") !== null &&
+      getCachedResponse<Category[]>("/categories?active_only=true") !== null;
     try {
-      if (!silent) setIsLoadingCatalog(true);
+      if (!silent && !hasCached) setIsLoadingCatalog(true);
       const [prodRes, catRes] = await Promise.all([
         apiRequest<Product[]>("/products?active_only=true"),
         apiRequest<Category[]>("/categories?active_only=true"),

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import type { User } from "../types";
-import { apiRequest } from "../api/client";
+import { apiRequest, clearApiCache } from "../api/client";
 
 interface AuthContextType {
   user: User | null;
@@ -50,6 +50,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       body: JSON.stringify({ username, password }),
     });
 
+    clearApiCache();
     localStorage.setItem("access_token", res.access_token);
     localStorage.setItem("refresh_token", res.refresh_token);
     localStorage.setItem("user", JSON.stringify(res.user));
@@ -58,6 +59,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    clearApiCache();
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
     localStorage.removeItem("user");

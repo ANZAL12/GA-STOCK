@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { clearApiCache, invalidateCacheForWebSocketEvent } from "./cache";
 
 type WsCallback = (event: string, data: any) => void;
 
@@ -7,6 +8,7 @@ class WebSocketManager {
   private listeners: Set<WsCallback> = new Set();
   private reconnectTimer: any = null;
   private pingTimer: any = null;
+  private hasConnectedBefore = false;
 
   connect() {
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
@@ -26,6 +28,12 @@ class WebSocketManager {
       this.socket = new WebSocket(wsUrl);
 
       this.socket.onopen = () => {
+        // If reconnecting after a dropped socket, clear cache so any missed realtime events are re-fetched
+        if (this.hasConnectedBefore) {
+          clearApiCache();
+        }
+        this.hasConnectedBefore = true;
+
         // Ping every 25 seconds
         if (this.pingTimer) clearInterval(this.pingTimer);
         this.pingTimer = setInterval(() => {
@@ -40,6 +48,7 @@ class WebSocketManager {
         try {
           const parsed = JSON.parse(e.data);
           if (parsed && parsed.event) {
+            invalidateCacheForWebSocketEvent(parsed.event);
             this.listeners.forEach((listener) => listener(parsed.event, parsed.data));
           }
         } catch {
