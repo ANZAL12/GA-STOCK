@@ -109,7 +109,27 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
   }
 
-  void _persistDraft() {
+  Timer? _persistDraftDebounce;
+  void _persistDraft({bool immediate = false}) {
+    _persistDraftDebounce?.cancel();
+    if (_scannedItems.isEmpty) {
+      _persistDraftDebounce = null;
+      SessionRecoveryService().clearDraft();
+      return;
+    }
+    if (immediate) {
+      _persistDraftDebounce = null;
+      _doPersistDraft();
+      return;
+    }
+    // 600ms debounce prevents rapid 30+ burst scanning from mapping and serializing
+    // the full batch repeatedly on the main UI isolate!
+    _persistDraftDebounce = Timer(const Duration(milliseconds: 600), () {
+      if (mounted) _doPersistDraft();
+    });
+  }
+
+  void _doPersistDraft() {
     if (_scannedItems.isEmpty) {
       SessionRecoveryService().clearDraft();
       return;
@@ -426,6 +446,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
   @override
   void dispose() {
+    _persistDraftDebounce?.cancel();
     HardwareScannerService().isMismatchActive = false;
     _dismissSimpleAlert();
     _searchSyncDebounce?.cancel();
@@ -525,13 +546,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
     if (cleanSerial.isEmpty) return;
     _lastScanTime = DateTime.now();
 
-    // 1. Instant synchronous check in O(1): Reject immediately if already in batch OR currently in FIFO queue
+    // 1. Instant synchronous check in O(1): Reject immediately if already in batch OR currently in FIFO queue OR in flight
     if (_scannedSerialSet.contains(cleanSerial) ||
-        _scanQueue.contains(cleanSerial)) {
+        _scanQueue.contains(cleanSerial) ||
+        _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
       _showToast('Duplicate: Serial "$cleanSerial" already in batch', const Color(0xFFE11D48));
-      _showSimpleAlert('Duplicate Serial', 'Serial "$cleanSerial" is already in this dispatch batch.');
       return;
     }
 
@@ -802,7 +823,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
     } catch (e) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
-      _showSimpleAlert('Validation Error', 'Could not verify serial "$cleanSerial": $e');
+      _showToast('Validation Error for "$cleanSerial": $e', const Color(0xFFDC2626));
     } finally {
       _inFlightSerials.remove(cleanSerial);
       _persistDraft();

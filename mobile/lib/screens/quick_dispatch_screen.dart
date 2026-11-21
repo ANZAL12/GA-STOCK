@@ -126,7 +126,25 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
     }
   }
 
-  void _persistDraft() {
+  Timer? _persistDraftDebounce;
+  void _persistDraft({bool immediate = false}) {
+    _persistDraftDebounce?.cancel();
+    if (_scannedItems.isEmpty) {
+      _persistDraftDebounce = null;
+      SessionRecoveryService().clearDraft();
+      return;
+    }
+    if (immediate) {
+      _persistDraftDebounce = null;
+      _doPersistDraft();
+      return;
+    }
+    _persistDraftDebounce = Timer(const Duration(milliseconds: 600), () {
+      if (mounted) _doPersistDraft();
+    });
+  }
+
+  void _doPersistDraft() {
     if (_scannedItems.isEmpty) {
       SessionRecoveryService().clearDraft();
       return;
@@ -291,6 +309,7 @@ class _QuickDispatchScreenState extends State<QuickDispatchScreen> {
 
   @override
   void dispose() {
+    _persistDraftDebounce?.cancel();
     _scannerSub?.call();
     _wsSub?.cancel();
     _scrollController.dispose();

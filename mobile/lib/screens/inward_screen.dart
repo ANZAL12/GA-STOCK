@@ -127,7 +127,27 @@ class _InwardScreenState extends State<InwardScreen> {
     _warningDialogContext = null;
   }
 
-  void _persistDraft() {
+  Timer? _persistDraftDebounce;
+  void _persistDraft({bool immediate = false}) {
+    _persistDraftDebounce?.cancel();
+    if (_scannedItems.isEmpty) {
+      _persistDraftDebounce = null;
+      SessionRecoveryService().clearDraft();
+      return;
+    }
+    if (immediate) {
+      _persistDraftDebounce = null;
+      _doPersistDraft();
+      return;
+    }
+    // 600ms debounce prevents rapid 30+ burst scanning from mapping and serializing
+    // the full batch repeatedly on the main UI isolate!
+    _persistDraftDebounce = Timer(const Duration(milliseconds: 600), () {
+      if (mounted) _doPersistDraft();
+    });
+  }
+
+  void _doPersistDraft() {
     if (_scannedItems.isEmpty) {
       SessionRecoveryService().clearDraft();
       return;
@@ -230,34 +250,31 @@ class _InwardScreenState extends State<InwardScreen> {
         try {
           final newProd = Product.fromJson(data);
           _api.updateCachedProduct(newProd);
-          setState(() {
-            _products.removeWhere((p) => p.id == newProd.id);
-            _products.insert(0, newProd);
-          });
+          _products.removeWhere((p) => p.id == newProd.id);
+          _products.insert(0, newProd);
+          if (_stage != InwardStage.scanning) setState(() {});
         } catch (_) {}
       } else if (type == 'product_updated' && data is Map<String, dynamic>) {
         try {
           final updatedProd = Product.fromJson(data);
           _api.updateCachedProduct(updatedProd);
-          setState(() {
-            final idx = _products.indexWhere((p) => p.id == updatedProd.id);
-            if (idx != -1) {
-              _products[idx] = updatedProd;
-              if (_selectedProduct?.id == updatedProd.id) {
-                _selectedProduct = updatedProd;
-              }
+          final idx = _products.indexWhere((p) => p.id == updatedProd.id);
+          if (idx != -1) {
+            _products[idx] = updatedProd;
+            if (_selectedProduct?.id == updatedProd.id) {
+              _selectedProduct = updatedProd;
             }
-          });
+          }
+          if (_stage != InwardStage.scanning) setState(() {});
         } catch (_) {}
       } else if (type == 'product_deleted' && data is Map<String, dynamic>) {
         final id = data['id']?.toString();
         if (id != null) {
-          setState(() {
-            _products.removeWhere((p) => p.id == id);
-            if (_selectedProduct?.id == id) {
-              _selectedProduct = null;
-            }
-          });
+          _products.removeWhere((p) => p.id == id);
+          if (_selectedProduct?.id == id) {
+            _selectedProduct = null;
+          }
+          if (_stage != InwardStage.scanning) setState(() {});
         }
       } else if (type == 'stock_updated') {
         if (data is Map<String, dynamic>) {
@@ -266,19 +283,18 @@ class _InwardScreenState extends State<InwardScreen> {
           final newQty = rawQty is int ? rawQty : int.tryParse(rawQty?.toString() ?? '');
           if (pid != null && newQty != null) {
             _api.updateProductStock(pid, newQty);
-            setState(() {
-              final idx = _products.indexWhere((p) => p.id == pid);
-              if (idx != -1) {
-                _products[idx] = _products[idx].copyWith(currentStockQty: newQty);
-                if (_selectedProduct?.id == pid) {
-                  _selectedProduct = _products[idx];
-                }
+            final idx = _products.indexWhere((p) => p.id == pid);
+            if (idx != -1) {
+              _products[idx] = _products[idx].copyWith(currentStockQty: newQty);
+              if (_selectedProduct?.id == pid) {
+                _selectedProduct = _products[idx];
               }
-            });
-          } else {
+            }
+            if (_stage == InwardStage.selectModel) setState(() {});
+          } else if (_stage != InwardStage.scanning) {
             _loadProducts(forceRefresh: true);
           }
-        } else {
+        } else if (_stage != InwardStage.scanning) {
           _loadProducts(forceRefresh: true);
         }
       }
@@ -295,6 +311,7 @@ class _InwardScreenState extends State<InwardScreen> {
 
   @override
   void dispose() {
+    _persistDraftDebounce?.cancel();
     _dismissWarningDialog();
     _scannerSub?.call();
     _wsSubscription?.cancel();
@@ -562,8 +579,10 @@ class _InwardScreenState extends State<InwardScreen> {
     if (cleanSerial.isEmpty) return;
     _lastScanTime = DateTime.now();
 
-    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in FIFO queue
-    if (_scannedSerialSet.contains(cleanSerial) || _scanQueue.contains(cleanSerial)) {
+    // 1. Instant synchronous check: Reject immediately if already in batch OR currently in FIFO queue OR in flight
+    if (_scannedSerialSet.contains(cleanSerial) ||
+        _scanQueue.contains(cleanSerial) ||
+        _inFlightSerials.contains(cleanSerial)) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
       if (mounted) {
@@ -573,7 +592,6 @@ class _InwardScreenState extends State<InwardScreen> {
           backgroundColor: const Color(0xFFE11D48),
         );
       }
-      _showWarningDialog('Duplicate in Current Batch', 'Serial "$cleanSerial" is already scanned in this batch.');
       return;
     }
 
@@ -628,7 +646,13 @@ class _InwardScreenState extends State<InwardScreen> {
           final errStr = e.toString().replaceAll('Exception:', '').trim();
           HapticFeedback.heavyImpact();
           SoundService().playErrorSound();
-          _showWarningDialog('Validation Error', errStr);
+          if (mounted) {
+            TopToast.show(
+              context,
+              message: 'Validation Error: $errStr',
+              backgroundColor: const Color(0xFFDC2626),
+            );
+          }
           return;
         }
 
@@ -686,7 +710,13 @@ class _InwardScreenState extends State<InwardScreen> {
         final errStr = e.toString().replaceAll('Exception:', '').trim();
         HapticFeedback.heavyImpact();
         SoundService().playErrorSound();
-        _showWarningDialog('Validation Error', errStr);
+        if (mounted) {
+          TopToast.show(
+            context,
+            message: 'Validation Error: $errStr',
+            backgroundColor: const Color(0xFFDC2626),
+          );
+        }
         return;
       }
 
@@ -788,7 +818,13 @@ class _InwardScreenState extends State<InwardScreen> {
     } catch (e) {
       HapticFeedback.heavyImpact();
       SoundService().playErrorSound();
-      _showWarningDialog('Validation Error', 'Failed to validate serial "$cleanSerial": $e');
+      if (mounted) {
+        TopToast.show(
+          context,
+          message: 'Failed to validate "$cleanSerial": $e',
+          backgroundColor: const Color(0xFFDC2626),
+        );
+      }
     } finally {
       _inFlightSerials.remove(cleanSerial);
       _persistDraft();

@@ -1,15 +1,17 @@
 import 'package:flutter/material.dart';
 import 'screens/splash_screen.dart';
-import 'services/sound_service.dart';
 import 'services/hardware_scanner_service.dart';
+import 'services/memory_guard.dart';
+import 'services/sound_service.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Bound image memory cache to avoid garbage collection stutter on 3GB RAM devices
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 40 * 1024 * 1024; // 40 MB
-  PaintingBinding.instance.imageCache.maximumSize = 100;
-  await SoundService().init();
+  MemoryGuard.instance.attach();
   HardwareScannerService().init();
+  // Defer audio pool so the first frame is not blocked on 3GB devices
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    SoundService().init();
+  });
   runApp(const GodownScannerApp());
 }
 
@@ -23,7 +25,6 @@ class GodownScannerApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        fontFamily: 'Inter',
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF1E1B4B),
           primary: const Color(0xFF1E1B4B),
@@ -38,7 +39,17 @@ class GodownScannerApp extends StatelessWidget {
           centerTitle: false,
         ),
       ),
+      scrollBehavior: const _LowRamScrollBehavior(),
       home: const SplashScreen(),
     );
   }
+}
+
+/// Clamping overscroll avoids the glow/stretch saveLayer cost on Mali GPUs.
+class _LowRamScrollBehavior extends MaterialScrollBehavior {
+  const _LowRamScrollBehavior();
+
+  @override
+  ScrollPhysics getScrollPhysics(BuildContext context) =>
+      const ClampingScrollPhysics();
 }

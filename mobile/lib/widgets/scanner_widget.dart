@@ -37,10 +37,12 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
     with SingleTickerProviderStateMixin {
   final MobileScannerController _controller = MobileScannerController(
     detectionSpeed: DetectionSpeed.normal,
-    cameraResolution: const Size(1280, 720),
+    // 480p is enough for 1D serial barcodes and halves camera RAM vs 720p
+    cameraResolution: const Size(640, 480),
     facing: CameraFacing.back,
     torchEnabled: false,
     returnImage: false,
+    autoStart: true,
     formats: const [
       BarcodeFormat.code128,
       BarcodeFormat.code39,
@@ -606,23 +608,8 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                                           left: 10,
                                           right: 10,
                                           child: Container(
-                                            height: 2.5,
-                                            decoration: BoxDecoration(
-                                              gradient: LinearGradient(
-                                                colors: [
-                                                  Colors.transparent,
-                                                  lineColor,
-                                                  Colors.transparent,
-                                                ],
-                                              ),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: lineColor.withValues(alpha: 0.8),
-                                                  blurRadius: 6,
-                                                  spreadRadius: 1.5,
-                                                ),
-                                              ],
-                                            ),
+                                            height: 2,
+                                            color: lineColor,
                                           ),
                                         ),
                                       ],
@@ -971,7 +958,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                   ],
                 ),
                 const SizedBox(height: 2),
-                SelectableText(
+                Text(
                   lastScannedValue,
                   style: const TextStyle(
                     color: Colors.white,
@@ -980,6 +967,8 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget>
                     fontWeight: FontWeight.bold,
                     letterSpacing: 0.6,
                   ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),

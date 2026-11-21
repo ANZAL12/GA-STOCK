@@ -46,6 +46,7 @@ class ApiService {
   DateTime? _categoriesCacheTime;
   DateTime? _shopsCacheTime;
   DateTime? _billsCacheTime;
+  Timer? _productsPersistDebounce;
 
   // Recent serial check cache: key is "$productId:$serial" -> response Map
   final Map<String, Map<String, dynamic>> _outwardSerialCheckCache = {};
@@ -54,6 +55,29 @@ class ApiService {
   void clearSerialCaches() {
     _outwardSerialCheckCache.clear();
     _inwardSerialValidateCache.clear();
+  }
+
+  void _capSerialCheckCache(Map<String, Map<String, dynamic>> cache) {
+    const maxEntries = 280;
+    if (cache.length <= maxEntries) return;
+    final extra = cache.length - 200;
+    final keys = cache.keys.take(extra).toList();
+    for (final k in keys) {
+      cache.remove(k);
+    }
+  }
+
+  void _scheduleProductsPersist() {
+    _productsPersistDebounce?.cancel();
+    _productsPersistDebounce = Timer(const Duration(seconds: 12), () {
+      final products = _cachedProducts;
+      if (products == null) return;
+      _getPrefs().then((prefs) async {
+        final rawMaps = products.map((p) => p.toJson()).toList();
+        final encoded = rawMaps.length > 80 ? await compute(_apiBgEncodeJson, rawMaps) : jsonEncode(rawMaps);
+        await prefs.setString('cache_products_json', encoded);
+      }).catchError((_) {});
+    });
   }
 
   String get baseUrl => _baseUrl;
@@ -398,12 +422,7 @@ class ApiService {
       }
     }
     if (!persistToDisk) return;
-    // Update disk cache asynchronously
-    _getPrefs().then((prefs) async {
-      final rawMaps = _cachedProducts!.map((p) => p.toJson()).toList();
-      final encoded = rawMaps.length > 80 ? await compute(_apiBgEncodeJson, rawMaps) : jsonEncode(rawMaps);
-      await prefs.setString('cache_products_json', encoded);
-    }).catchError((_) {});
+    _scheduleProductsPersist();
   }
 
   /// Live update of a product's stock count in RAM and disk cache (e.g. from WebSocket push)
@@ -413,11 +432,7 @@ class ApiService {
     if (idx != -1) {
       _cachedProducts![idx] = _cachedProducts![idx].copyWith(currentStockQty: newQty);
       _productsCacheTime = DateTime.now();
-      _getPrefs().then((prefs) async {
-        final rawMaps = _cachedProducts!.map((p) => p.toJson()).toList();
-        final encoded = rawMaps.length > 80 ? await compute(_apiBgEncodeJson, rawMaps) : jsonEncode(rawMaps);
-        await prefs.setString('cache_products_json', encoded);
-      }).catchError((_) {});
+      _scheduleProductsPersist();
     } else {
       _refreshProductsInBackground();
     }
@@ -1016,10 +1031,27 @@ class ApiService {
     String inwardType = 'stock_in',
   }) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
+    final cacheKey = '${productId ?? "any"}:$cleanSerial:$inwardType';
+
+    // 1. Fast in-memory check (0ms response guarantee)
+    if (_inwardSerialValidateCache.containsKey(cacheKey)) {
+      return _inwardSerialValidateCache[cacheKey]!;
+    }
+
+    // 2. Fast-path check from local OfflineManager snapshot
+    final localEntry = OfflineManager().serials[cleanSerial];
+    if (inwardType == 'stock_in' && localEntry != null && localEntry['st'] == 'available') {
+      final dupRes = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = dupRes;
+      _capSerialCheckCache(_inwardSerialValidateCache);
+      return dupRes;
+    }
 
     // If offline or product is offline-created, validate offline directly!
     if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
-      return OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = offlineResult;
+      return offlineResult;
     }
 
     final queryParams = <String, String>{
@@ -1030,17 +1062,16 @@ class ApiService {
       queryParams['product_id'] = productId;
     }
 
-    // Network is #1 priority! Live validation with 8-second timeout before falling back to offline cache
+    // Network is #1 priority! Live validation with swift 2.0-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
       http.Response res;
       try {
-        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+        res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 2000));
       } catch (e) {
         if (_isTransientNetworkError(e)) {
           _resetClient();
-          await Future.delayed(const Duration(milliseconds: 300));
-          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+          res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1500));
         } else {
           rethrow;
         }
@@ -1050,6 +1081,8 @@ class ApiService {
         final data = jsonDecode(res.body);
         OfflineManager().markOnline();
         OfflineManager().updateSerialFromValidateInward(cleanSerial, data, inwardType: inwardType);
+        _inwardSerialValidateCache[cacheKey] = data;
+        _capSerialCheckCache(_inwardSerialValidateCache);
         return data;
       } else {
         String msg = 'Validation error';
@@ -1073,9 +1106,11 @@ class ApiService {
       }
 
       _resetClient();
-      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
+      // Fast fallback to local offline cache without blocking rapid scanning
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = offlineResult;
+      _capSerialCheckCache(_inwardSerialValidateCache);
       return offlineResult;
     }
   }
@@ -1155,10 +1190,27 @@ class ApiService {
     String serialNumber,
   ) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
+    final cacheKey = '${productId ?? "any"}:$cleanSerial';
+
+    // 1. Fast in-memory check (0ms response guarantee)
+    if (_outwardSerialCheckCache.containsKey(cacheKey)) {
+      return _outwardSerialCheckCache[cacheKey]!;
+    }
+
+    // 2. Fast-path check from local OfflineManager snapshot
+    // If unit is already marked dispatched in local snapshot, it can NEVER be dispatched again!
+    final localEntry = OfflineManager().serials[cleanSerial];
+    if (localEntry != null && (localEntry['d'] == true || localEntry['st'] == 'dispatched')) {
+      final blockedRes = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = blockedRes;
+      return blockedRes;
+    }
 
     // If offline or product is offline-created, check offline directly!
     if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
-      return OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = offlineResult;
+      return offlineResult;
     }
 
     final queryParams = <String, String>{
@@ -1168,17 +1220,16 @@ class ApiService {
       queryParams['product_id'] = productId;
     }
 
-    // Network is #1 priority! Live server query with 8-second timeout before falling back to offline cache
+    // Network is #1 priority! Live server query with swift 2.0-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
       http.Response res;
       try {
-        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+        res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 2000));
       } catch (e) {
         if (_isTransientNetworkError(e)) {
           _resetClient();
-          await Future.delayed(const Duration(milliseconds: 300));
-          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+          res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 1500));
         } else {
           rethrow;
         }
@@ -1188,6 +1239,8 @@ class ApiService {
         final data = jsonDecode(res.body);
         OfflineManager().markOnline();
         OfflineManager().updateSerialFromCheckOutward(cleanSerial, data);
+        _outwardSerialCheckCache[cacheKey] = data;
+        _capSerialCheckCache(_outwardSerialCheckCache);
         return data;
       } else {
         String msg = 'Serial check failed';
@@ -1210,9 +1263,11 @@ class ApiService {
       }
 
       _resetClient();
-      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
+      // Fast fallback to local offline cache without blocking rapid scanning
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = offlineResult;
+      _capSerialCheckCache(_outwardSerialCheckCache);
       return offlineResult;
     }
   }

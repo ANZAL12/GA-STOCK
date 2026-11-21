@@ -31,8 +31,8 @@ class SoundService {
       // 1. Initialize AudioPool with trimmed, 0-latency WAV asset
       _pool = await AudioPool.createFromAsset(
         path: 'sounds/scanner_beep.wav',
-        minPlayers: 2,
-        maxPlayers: 4,
+        minPlayers: 1,
+        maxPlayers: 2,
         playerMode: PlayerMode.lowLatency,
       );
       debugPrint('[SoundService] AudioPool initialized with zero-latency scanner_beep.wav');
@@ -56,7 +56,7 @@ class SoundService {
       _errorPool = await AudioPool.createFromAsset(
         path: 'sounds/universfield-error-notification-129258.mp3',
         minPlayers: 1,
-        maxPlayers: 3,
+        maxPlayers: 2,
         playerMode: PlayerMode.lowLatency,
       );
       if (kDebugMode) debugPrint('[SoundService] AudioPool initialized with error notification sound');
@@ -84,12 +84,7 @@ class SoundService {
     if (now - _lastBeepMs < 70) return;
     _lastBeepMs = now;
 
-    // 1. Immediate hardware system click (0ms response guarantee)
-    try {
-      SystemSound.play(SystemSoundType.click);
-    } catch (_) {}
-
-    // 2. Instant preloaded sound playback from pool or dedicated player
+    // Instant preloaded sound playback from pool or dedicated player
     try {
       if (_pool != null) {
         _pool!.start(volume: 1.0);

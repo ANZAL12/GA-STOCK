@@ -229,10 +229,15 @@ class OfflineManager {
         _queueDirty = false;
 
         if (writeSerials) {
-          final encodedSerials = _serials.length > 150
-              ? await compute(_bgEncodeJson, Map<String, dynamic>.from(_serials))
-              : jsonEncode(_serials);
-          await prefs.setString('cache_serials_snapshot_json', encodedSerials);
+          // Offload JSON encoding to background isolate via compute to protect UI thread
+          if (_serials.length <= 10000) {
+            final encodedSerials = _serials.length > 150
+                ? await compute(_bgEncodeJson, Map<String, dynamic>.from(_serials))
+                : jsonEncode(_serials);
+            if (encodedSerials.length <= 2500000) {
+              await prefs.setString('cache_serials_snapshot_json', encodedSerials);
+            }
+          }
         }
         if (writeQueue) {
           final encodedQueue = jsonEncode(_queuedDispatches);
@@ -247,8 +252,8 @@ class OfflineManager {
 
   void _startHealthChecks() {
     _healthCheckTimer?.cancel();
-    _healthCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
-      await checkServerHealth(timeoutSeconds: 6);
+    _healthCheckTimer = Timer.periodic(const Duration(seconds: 45), (_) async {
+      await checkServerHealth(timeoutSeconds: 4);
     });
   }
 
