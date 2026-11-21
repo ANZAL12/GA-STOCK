@@ -64,6 +64,7 @@ export const BillsPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "cancelled">("all");
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const [jumpPageInput, setJumpPageInput] = useState<string>("");
   const [totalCounts, setTotalCounts] = useState(() => ({
     total: initialBillsCache?.total || 0,
     all: initialBillsCache?.total_all ?? initialBillsCache?.total ?? 0,
@@ -353,6 +354,15 @@ export const BillsPage: React.FC = () => {
       isPageChangingRef.current = true;
       setCurrentPage(target);
       scrollToTableTop("smooth");
+    }
+  };
+
+  const handleJumpSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = parseInt(jumpPageInput.trim(), 10);
+    if (!isNaN(p) && p >= 1 && p <= totalPages) {
+      handlePageChange(p);
+      setJumpPageInput("");
     }
   };
 
@@ -799,7 +809,7 @@ export const BillsPage: React.FC = () => {
           <div className="absolute inset-0 z-10 bg-white/60 backdrop-blur-[1px] flex items-center justify-center">
             <div className="px-4 py-2 rounded-xl bg-white border border-slate-200 shadow-md flex items-center gap-2 text-xs font-semibold text-slate-700">
               <div className="w-4 h-4 border-2 border-[#3C3489] border-t-transparent rounded-full animate-spin" />
-              <span>Loading...</span>
+              <span>Loading page {currentPage}...</span>
             </div>
           </div>
         )}
@@ -983,77 +993,111 @@ export const BillsPage: React.FC = () => {
           </table>
         </div>
 
-        {/* Pagination Controls */}
-        {totalPages > 1 && (
-          <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-center gap-1 select-none">
-            <button
-              type="button"
-              onClick={() => handlePageChange(1)}
-              disabled={currentPage === 1 || loading}
-              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
-              title="First Page"
-            >
-              <ChevronsLeft size={15} />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handlePageChange(currentPage - 1)}
-              disabled={currentPage === 1 || loading}
-              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
-              title="Previous Page"
-            >
-              <ChevronLeft size={15} />
-            </button>
-
-            <div className="flex items-center gap-1 mx-1">
-              {getPageNumbers().map((pg, idx) => {
-                if (pg === "...") {
-                  return (
-                    <span key={`dots-${idx}`} className="px-2 py-1 text-xs text-slate-400">
-                      ...
-                    </span>
-                  );
-                }
-                const pageNum = Number(pg);
-                const isActive = pageNum === currentPage;
-                return (
-                  <button
-                    key={`page-${pageNum}`}
-                    type="button"
-                    onClick={() => handlePageChange(pageNum)}
-                    disabled={loading}
-                    className={`min-w-[32px] h-8 px-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                      isActive
-                        ? "bg-[#3C3489] text-white shadow-sm"
-                        : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900"
-                    }`}
-                  >
-                    {pageNum}
-                  </button>
-                );
-              })}
+        {/* Pagination Footer Bar */}
+        {totalCounts.total > 0 && (
+          <div className="px-5 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-col md:flex-row items-center justify-between gap-4 select-none">
+            {/* Left: Range and Total Counts */}
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="font-semibold text-slate-700">
+                Showing {((currentPage - 1) * pageSize + 1).toLocaleString()} – {Math.min(currentPage * pageSize, totalCounts.total).toLocaleString()}
+              </span>
+              <span>of</span>
+              <span className="font-bold text-slate-900">{totalCounts.total.toLocaleString()}</span>
+              <span>bills</span>
             </div>
 
-            <button
-              type="button"
-              onClick={() => handlePageChange(currentPage + 1)}
-              disabled={currentPage >= totalPages || loading}
-              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
-              title="Next Page"
-            >
-              <ChevronRight size={15} />
-            </button>
+            {/* Center: Pagination Buttons */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage === 1 || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="First Page"
+              >
+                <ChevronsLeft size={15} />
+              </button>
 
-            <button
-              type="button"
-              onClick={() => handlePageChange(totalPages)}
-              disabled={currentPage >= totalPages || loading}
-              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
-              title="Last Page"
-            >
-              <ChevronsRight size={15} />
-            </button>
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 1 || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Previous Page"
+              >
+                <ChevronLeft size={15} />
+              </button>
+
+              <div className="flex items-center gap-1 mx-1">
+                {getPageNumbers().map((pg, idx) => {
+                  if (pg === "...") {
+                    return (
+                      <span key={`dots-${idx}`} className="px-2 py-1 text-xs text-slate-400">
+                        ...
+                      </span>
+                    );
+                  }
+                  const pageNum = Number(pg);
+                  const isActive = pageNum === currentPage;
+                  return (
+                    <button
+                      key={`page-${pageNum}`}
+                      type="button"
+                      onClick={() => handlePageChange(pageNum)}
+                      disabled={loading}
+                      className={`min-w-[32px] h-8 px-2 text-xs font-semibold rounded-lg transition-all ${
+                        isActive
+                          ? "bg-[#3C3489] text-white shadow-sm"
+                          : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Next Page"
+              >
+                <ChevronRight size={15} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage >= totalPages || loading}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                title="Last Page"
+              >
+                <ChevronsRight size={15} />
+              </button>
+            </div>
+
+            {/* Right: Quick jump to page */}
+            <form onSubmit={handleJumpSubmit} className="flex items-center gap-1.5 text-xs">
+              <span className="text-slate-500">Go to:</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={jumpPageInput}
+                onChange={(e) => setJumpPageInput(e.target.value)}
+                placeholder={String(currentPage)}
+                className="w-14 px-2 py-1 text-center font-medium text-xs rounded-lg border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-40 transition-all cursor-pointer shadow-xs"
+              >
+                Go
+              </button>
+            </form>
           </div>
         )}
       </div>

@@ -3,7 +3,7 @@ from typing import Annotated, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import and_, case, cast, delete, func, or_, select, String
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1458,132 +1458,20 @@ async def get_outward_batch(
     )
 
 
-def _build_bill_key_expr():
-    return case(
-        (
-            and_(OutwardBatch.bill_number.is_not(None), func.trim(OutwardBatch.bill_number) != ""),
-            case(
-                (
-                    OutwardBatch.is_cancelled,
-                    func.upper(func.trim(OutwardBatch.bill_number))
-                    + "::CANCELLED::"
-                    + func.coalesce(
-                        func.to_char(OutwardBatch.cancelled_at, "YYYYMMDDHH24MISS"),
-                        func.to_char(OutwardBatch.created_at, "YYYYMMDDHH24MISS"),
-                        func.substring(cast(OutwardBatch.id, String), 1, 8),
-                    ),
-                ),
-                else_=func.upper(func.trim(OutwardBatch.bill_number)) + "::ACTIVE",
-            ),
-        ),
-        else_="NO-BILL-" + func.substring(cast(OutwardBatch.id, String), 1, 8) + "::"
-        + case((OutwardBatch.is_cancelled, "CANCELLED"), else_="ACTIVE"),
-    ).label("bill_key")
-
-
-async def _fetch_paginated_bills(
+async def _fetch_aggregated_bill_dicts(
     db: AsyncSession,
     search: Optional[str] = None,
     shop_id: Optional[uuid.UUID] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    bill_status: str = "all",
-    limit: int = 50,
-    offset: int = 0,
-) -> tuple[list[dict], int, int, int, int]:
+) -> list[dict]:
     """
-    Paginate outward dispatch bills directly at the database level.
-    Only loads batches and serial model summaries for the specific page slice requested.
-    Returns: (bill_dicts, total, total_all, total_active, total_cancelled)
+    Fetch outward batches matching filters and aggregate them into bill dictionaries,
+    separating active vs cancelled bills (and distinct cancellation groups).
     """
-    bill_key_expr = _build_bill_key_expr()
-
-    # Normalize parameters to primitive types
-    clean_search = search.strip() if isinstance(search, str) and search.strip() else None
-    clean_shop_id = shop_id if isinstance(shop_id, uuid.UUID) else None
-    clean_date_from = date_from if isinstance(date_from, (date, datetime)) else None
-    clean_date_to = date_to if isinstance(date_to, (date, datetime)) else None
-    clean_status = (bill_status if isinstance(bill_status, str) else "all").strip().lower()
-    clean_limit = limit if isinstance(limit, int) else 50
-    clean_offset = offset if isinstance(offset, int) else 0
-
-    # 1. Base grouping subquery with filters
-    subq_stmt = (
-        select(
-            bill_key_expr,
-            OutwardBatch.is_cancelled.label("is_cancelled"),
-            func.max(OutwardBatch.transaction_date).label("max_tx_date"),
-            func.max(OutwardBatch.created_at).label("max_created_at"),
-        )
-        .join(Shop, OutwardBatch.shop_id == Shop.id)
-    )
-
-    if clean_search:
-        s = f"%{clean_search}%"
-        subq_stmt = subq_stmt.where(
-            (OutwardBatch.bill_number.ilike(s))
-            | (Shop.name.ilike(s))
-            | (Shop.city.ilike(s))
-            | (OutwardBatch.delivery_reference.ilike(s))
-        )
-    if clean_shop_id:
-        subq_stmt = subq_stmt.where(OutwardBatch.shop_id == clean_shop_id)
-    if clean_date_from:
-        subq_stmt = subq_stmt.where(OutwardBatch.transaction_date >= clean_date_from)
-    if clean_date_to:
-        subq_stmt = subq_stmt.where(OutwardBatch.transaction_date <= clean_date_to)
-
-    subq_stmt = subq_stmt.group_by(bill_key_expr, OutwardBatch.is_cancelled)
-    bill_subq = subq_stmt.subquery("bill_groups")
-
-    # 2. Get accurate counts across all, active, and cancelled in a single SQL query
-    count_stmt = select(
-        func.count().label("total_all"),
-        func.count(case((bill_subq.c.is_cancelled == False, 1))).label("total_active"),
-        func.count(case((bill_subq.c.is_cancelled == True, 1))).label("total_cancelled"),
-    ).select_from(bill_subq)
-
-    count_res = await db.execute(count_stmt)
-    count_row = count_res.fetchone()
-    total_all = int(count_row.total_all) if count_row and count_row.total_all else 0
-    total_active = int(count_row.total_active) if count_row and count_row.total_active else 0
-    total_cancelled = int(count_row.total_cancelled) if count_row and count_row.total_cancelled else 0
-
-    normalized_status = clean_status
-    if normalized_status == "active":
-        total = total_active
-    elif normalized_status == "cancelled":
-        total = total_cancelled
-    else:
-        total = total_all
-
-    if total == 0 or clean_offset >= total:
-        return [], total, total_all, total_active, total_cancelled
-
-    # 3. Retrieve ONLY the 50 bill keys for this page
-    keys_stmt = select(bill_subq.c.bill_key).select_from(bill_subq)
-    if normalized_status == "active":
-        keys_stmt = keys_stmt.where(bill_subq.c.is_cancelled == False)
-    elif normalized_status == "cancelled":
-        keys_stmt = keys_stmt.where(bill_subq.c.is_cancelled == True)
-
-    keys_stmt = (
-        keys_stmt
-        .order_by(bill_subq.c.max_tx_date.desc(), bill_subq.c.max_created_at.desc())
-        .limit(clean_limit)
-        .offset(clean_offset)
-    )
-    keys_res = await db.execute(keys_stmt)
-    page_keys = keys_res.scalars().all()
-
-    if not page_keys:
-        return [], total, total_all, total_active, total_cancelled
-
-    # 4. Fetch outward batches and product info ONLY for the requested bill keys
     Canceller = aliased(User)
-    batches_stmt = (
+    query = (
         select(
-            bill_key_expr,
             OutwardBatch,
             Product.name.label("product_name"),
             Product.brand.label("product_brand"),
@@ -1597,14 +1485,39 @@ async def _fetch_paginated_bills(
         .join(Shop, OutwardBatch.shop_id == Shop.id)
         .join(User, OutwardBatch.dispatched_by_user_id == User.id)
         .outerjoin(Canceller, OutwardBatch.cancelled_by_user_id == Canceller.id)
-        .where(bill_key_expr.in_(page_keys))
         .order_by(OutwardBatch.transaction_date.desc(), OutwardBatch.created_at.desc())
     )
-    batches_res = await db.execute(batches_stmt)
-    rows = batches_res.all()
 
+    if search:
+        s = f"%{search.strip()}%"
+        query = query.where(
+            (OutwardBatch.bill_number.ilike(s))
+            | (Shop.name.ilike(s))
+            | (Shop.city.ilike(s))
+            | (OutwardBatch.delivery_reference.ilike(s))
+        )
+    if shop_id:
+        query = query.where(OutwardBatch.shop_id == shop_id)
+    if date_from:
+        query = query.where(OutwardBatch.transaction_date >= date_from)
+    if date_to:
+        query = query.where(OutwardBatch.transaction_date <= date_to)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Group batches by bill_number and status (separate active vs cancelled)
     bills_map: dict[str, dict] = {}
-    for b_key, b, p_name, p_brand, p_model, s_name, s_city, u_name, c_name in rows:
+    for b, p_name, p_brand, p_model, s_name, s_city, u_name, c_name in rows:
+        b_norm = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
+        if b.is_cancelled:
+            # Differentiate cancelled bills from active ones, and if the same bill number was cancelled multiple times,
+            # group by cancellation timestamp (or batch creation date if cancelled_at is null)
+            c_tag = b.cancelled_at.strftime("%Y%m%d%H%M%S") if b.cancelled_at else (b.created_at.strftime("%Y%m%d%H%M%S") if b.created_at else str(b.id)[:8])
+            b_key = f"{b_norm}::CANCELLED::{c_tag}"
+        else:
+            b_key = f"{b_norm}::ACTIVE"
+
         if b_key not in bills_map:
             bills_map[b_key] = {
                 "bill_number": b.bill_number or f"REF-{b.delivery_reference or str(b.id)[:8]}",
@@ -1640,32 +1553,7 @@ async def _fetch_paginated_bills(
         if summary_str not in item["models_summary"]:
             item["models_summary"].append(summary_str)
 
-    # Preserve the exact page_keys sorting
-    page_bills = [bills_map[k] for k in page_keys if k in bills_map]
-    return page_bills, total, total_all, total_active, total_cancelled
-
-
-async def _fetch_aggregated_bill_dicts(
-    db: AsyncSession,
-    search: Optional[str] = None,
-    shop_id: Optional[uuid.UUID] = None,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
-) -> list[dict]:
-    """
-    Fetch outward batches matching filters (compatibility helper).
-    """
-    page_bills, _, _, _, _ = await _fetch_paginated_bills(
-        db=db,
-        search=search,
-        shop_id=shop_id,
-        date_from=date_from,
-        date_to=date_to,
-        bill_status="all",
-        limit=1000,
-        offset=0,
-    )
-    return page_bills
+    return list(bills_map.values())
 
 
 @router.get("/bills", response_model=list[BillListItem])
@@ -1683,17 +1571,14 @@ async def list_outward_bills(
     List outward dispatches aggregated by Bill Number.
     Allows viewing all models/batches dispatched together under one invoice or bill.
     """
-    page_bills, _, _, _, _ = await _fetch_paginated_bills(
+    all_bill_dicts = await _fetch_aggregated_bill_dicts(
         db=db,
         search=search,
         shop_id=shop_id,
         date_from=date_from,
         date_to=date_to,
-        bill_status="all",
-        limit=limit,
-        offset=offset,
     )
-    return [BillListItem(**data) for data in page_bills]
+    return [BillListItem(**data) for data in all_bill_dicts[offset : offset + limit]]
 
 
 @router.get("/bills/paginated", response_model=BillListResponse)
@@ -1710,26 +1595,36 @@ async def list_outward_bills_paginated(
 ) -> BillListResponse:
     """
     Paginated list of outward dispatch bills with accurate totals for all, active, and cancelled bills.
-    Uses true database-level pagination so only the requested page of 50 bills is loaded.
     """
-    page_bills, total, total_all, total_active, total_cancelled = await _fetch_paginated_bills(
+    all_bill_dicts = await _fetch_aggregated_bill_dicts(
         db=db,
         search=search,
         shop_id=shop_id,
         date_from=date_from,
         date_to=date_to,
-        bill_status=bill_status,
-        limit=limit,
-        offset=offset,
     )
+
+    active_bills = [b for b in all_bill_dicts if not b["is_cancelled"]]
+    cancelled_bills = [b for b in all_bill_dicts if b["is_cancelled"]]
+
+    normalized_status = (bill_status or "all").strip().lower()
+    if normalized_status == "active":
+        filtered_bills = active_bills
+    elif normalized_status == "cancelled":
+        filtered_bills = cancelled_bills
+    else:
+        filtered_bills = all_bill_dicts
+
+    page_slice = filtered_bills[offset : offset + limit]
+
     return BillListResponse(
-        total=total,
-        total_all=total_all,
-        total_active=total_active,
-        total_cancelled=total_cancelled,
+        total=len(filtered_bills),
+        total_all=len(all_bill_dicts),
+        total_active=len(active_bills),
+        total_cancelled=len(cancelled_bills),
         limit=limit,
         offset=offset,
-        items=[BillListItem(**data) for data in page_bills],
+        items=[BillListItem(**data) for data in page_slice],
     )
 
 
