@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { apiCache } from "./cache";
 
 type WsCallback = (event: string, data: any) => void;
 
@@ -40,6 +41,8 @@ class WebSocketManager {
         try {
           const parsed = JSON.parse(e.data);
           if (parsed && parsed.event) {
+            // Instantly sync & invalidate client caches upon receiving live WebSocket messages
+            apiCache.handleWsEvent(parsed.event, parsed.data);
             this.listeners.forEach((listener) => listener(parsed.event, parsed.data));
           }
         } catch {

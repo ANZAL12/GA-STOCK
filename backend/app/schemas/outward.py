@@ -78,6 +78,7 @@ class OutwardSerialInput(BaseModel):
 class OutwardBatchCreate(BaseModel):
     product_id: Optional[Union[uuid.UUID, str]] = None
     shop_id: Optional[Union[uuid.UUID, str]] = None
+    shop_name: Optional[str] = None
     bill_number: Optional[str] = Field(None, max_length=100)
     delivery_reference: Optional[str] = Field(None, max_length=100)
     transaction_date: date = Field(default_factory=date.today)
@@ -291,6 +292,14 @@ class BillListItem(BaseModel):
     models_summary: list[str] = []
 
 
+class PaginatedBillsResponse(BaseModel):
+    items: list[BillListItem]
+    total: int
+    total_all: int
+    total_active: int
+    total_cancelled: int
+
+
 class CancelBillRequest(BaseModel):
     reason: Optional[str] = None
 
@@ -334,3 +343,33 @@ class DeleteOutwardLineResponse(BaseModel):
     batch_remaining_quantity: int
     product_id: uuid.UUID
     current_stock_qty: int
+
+
+class UpdateBillRequest(BaseModel):
+    vehicle_number: Optional[str] = None
+    transporter_name: Optional[str] = None
+    delivery_note: Optional[str] = None
+    destination: Optional[str] = None
+    remarks: Optional[str] = None
+    transaction_date: Optional[date] = None
+
+
+class UpdateBillResponse(BaseModel):
+    success: bool = True
+    bill_number: str
+    message: str
+    vehicle_number: Optional[str] = None
+    transporter_name: Optional[str] = None
+    delivery_note: Optional[str] = None
+    destination: Optional[str] = None
+    remarks: Optional[str] = None
+    transaction_date: Optional[date] = None
+
+
+class DeleteBillResponse(BaseModel):
+    success: bool = True
+    bill_number: str
+    message: str
+    deleted_batches_count: int
+    deleted_lines_count: int
+    restored_serials_count: int

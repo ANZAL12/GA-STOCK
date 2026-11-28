@@ -2,6 +2,10 @@
 """
 TallyPrime Local Connector Agent for GA STOCK
 ---------------------------------------------
+CRITICAL ARCHITECTURAL INVARIANT: TALLY IS STRICTLY READ-ONLY.
+Under NO circumstances does this agent write, alter, create, or import
+any records into Tally Prime. All operations are strictly Export / Read-Only.
+
 A lightweight, secure connector designed to run on the office PC where
 TallyPrime is hosted (default port 9000).
 
@@ -89,39 +93,56 @@ def build_tally_export_xml(
 
     return f"""<ENVELOPE>
   <HEADER>
-    <TALLYREQUEST>Export Data</TALLYREQUEST>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>GAStockSales</ID>
   </HEADER>
   <BODY>
-    <EXPORTDATA>
-      <REQUESTDESC>
-        <STATICVARIABLES>
-          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-          {company_tag}
-          {from_tag}
-          {to_tag}
-        </STATICVARIABLES>
-        <TDL>
-          <TDLMESSAGE>
-            <COLLECTION NAME="GAStockSales" ISINITIALIZE="Yes">
-              <TYPE>Voucher</TYPE>
-              <FILTER>IsSalesVch</FILTER>
-              <!-- STRICTLY NON-FINANCIAL TAGS ONLY -->
-              <FETCH>GUID,ALTERID,MASTERID,DATE,VOUCHERNUMBER,VOUCHERTYPENAME,PARTYNAME,PARTYLEDGERNAME,BASICBUYERNAME,ADDRESS.LIST,STATENAME,ISCANCELLED,ISDELETED,NARRATION</FETCH>
-              <FETCH>ALLINVENTORYENTRIES.STOCKITEMNAME,ALLINVENTORYENTRIES.ACTUALQTY,ALLINVENTORYENTRIES.BILLEDQTY,ALLINVENTORYENTRIES.UNIT,ALLINVENTORYENTRIES.BATCHALLOCATIONS.*</FETCH>
-              <FETCH>INVENTORYENTRIES.STOCKITEMNAME,INVENTORYENTRIES.ACTUALQTY,INVENTORYENTRIES.BILLEDQTY,INVENTORYENTRIES.UNIT,INVENTORYENTRIES.BATCHALLOCATIONS.*</FETCH>
-            </COLLECTION>
-            <SYSTEM TYPE="Formulae" NAME="IsSalesVch">
-              $$IsSales:$VoucherTypeName
-            </SYSTEM>
-          </TDLMESSAGE>
-        </TDL>
-      </REQUESTDESC>
-    </EXPORTDATA>
+    <DESC>
+      <STATICVARIABLES>
+        {company_tag}
+        {from_tag}
+        {to_tag}
+      </STATICVARIABLES>
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="GAStockSales" ISINITIALIZE="Yes">
+            <TYPE>Voucher</TYPE>
+            <FILTER>IsSalesVch</FILTER>
+            <!-- STRICTLY NON-FINANCIAL TAGS ONLY -->
+            <FETCH>GUID,ALTERID,MASTERID,DATE,VOUCHERNUMBER,VOUCHERTYPENAME,PARTYNAME,PARTYLEDGERNAME,BASICBUYERNAME,ADDRESS.LIST,STATENAME,ISCANCELLED,ISDELETED,NARRATION</FETCH>
+            <FETCH>ALLINVENTORYENTRIES.STOCKITEMNAME,ALLINVENTORYENTRIES.STOCKGROUP,ALLINVENTORYENTRIES.PARENT,ALLINVENTORYENTRIES.ACTUALQTY,ALLINVENTORYENTRIES.BILLEDQTY,ALLINVENTORYENTRIES.UNIT,ALLINVENTORYENTRIES.BATCHALLOCATIONS.*</FETCH>
+            <FETCH>INVENTORYENTRIES.STOCKITEMNAME,INVENTORYENTRIES.STOCKGROUP,INVENTORYENTRIES.PARENT,INVENTORYENTRIES.ACTUALQTY,INVENTORYENTRIES.BILLEDQTY,INVENTORYENTRIES.UNIT,INVENTORYENTRIES.BATCHALLOCATIONS.*</FETCH>
+          </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="IsSalesVch">
+            $$IsSales:$VoucherTypeName
+          </SYSTEM>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
   </BODY>
 </ENVELOPE>"""
 
 
-def parse_vouchers_from_xml(xml_content: str, company_name: Optional[str] = None) -> List[Dict[str, Any]]:
+def sanitize_tally_xml(xml_content: str) -> str:
+    """
+    Sanitizes Tally XML responses by stripping illegal character entities and control characters.
+    """
+    if not xml_content:
+        return ""
+    s = re.sub(r'&#[0-9]+;', '', xml_content)
+    s = re.sub(r'&#x[0-9a-fA-F]+;', '', s)
+    s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
+    s = re.sub(r'&(?!amp;|lt;|gt;|apos;|quot;)', '&amp;', s)
+    return s
+
+
+def parse_vouchers_from_xml(
+    xml_content: str,
+    company_name: Optional[str] = None,
+    item_parents: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Parses Tally XML response into non-financial voucher dictionaries.
     ABSOLUTELY NO RATE, AMOUNT, TAX, DISCOUNT OR FINANCIAL INFO IS EXTRACTED.
@@ -131,7 +152,8 @@ def parse_vouchers_from_xml(xml_content: str, company_name: Optional[str] = None
         return vouchers
 
     try:
-        root = ET.fromstring(xml_content)
+        clean_xml = sanitize_tally_xml(xml_content)
+        root = ET.fromstring(clean_xml)
     except ET.ParseError as e:
         logger.error(f"XML parse error from Tally response: {e}")
         return vouchers
@@ -191,6 +213,16 @@ def parse_vouchers_from_xml(xml_content: str, company_name: Optional[str] = None
             qty, uom_from_qty = parse_quantity(raw_qty)
             uom = clean_text(inv.find("UNIT")) or uom_from_qty
 
+            category_name = (
+                clean_text(inv.find("PARENT"))
+                or clean_text(inv.find("STOCKGROUP"))
+                or clean_text(inv.find("HSNSTOCKGROUPSOURCE"))
+                or clean_text(inv.find("GSTSTOCKGROUPSOURCE"))
+                or clean_text(inv.find("CATEGORY"))
+                or (item_parents.get(stock_name.strip().lower()) if item_parents else None)
+                or None
+            )
+
             godown_name = None
             batch_name = None
             batches: List[Dict[str, Any]] = []
@@ -219,6 +251,7 @@ def parse_vouchers_from_xml(xml_content: str, company_name: Optional[str] = None
             items.append({
                 "item_name": stock_name,
                 "item_code": item_code,
+                "category_name": category_name,
                 "quantity": qty,
                 "uom": uom,
                 "raw_qty_text": raw_qty or None,
@@ -265,6 +298,51 @@ def post_to_tally(tally_url: str, xml_body: str, timeout: int = 15) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def fetch_item_parents_from_tally(tally_url: str, company_name: Optional[str] = None) -> Dict[str, str]:
+    """
+    Fetches the mapping of Stock Item Name -> Parent Group (Category) from TallyPrime.
+    e.g. {'testing1': 'LED  FORMENTY', 'voltas 1.5t split': 'AC'}
+    """
+    company_tag = f"<STATICVARIABLES><SVCURRENTCOMPANY>{company_name}</SVCURRENTCOMPANY></STATICVARIABLES>" if company_name else ""
+    req_xml = f"""<ENVELOPE>
+  <HEADER>
+    <VERSION>1</VERSION>
+    <TALLYREQUEST>Export</TALLYREQUEST>
+    <TYPE>Collection</TYPE>
+    <ID>StockItemParentMap</ID>
+  </HEADER>
+  <BODY>
+    <DESC>
+      {company_tag}
+      <TDL>
+        <TDLMESSAGE>
+          <COLLECTION NAME="StockItemParentMap">
+            <TYPE>StockItem</TYPE>
+            <FETCH>Name, Parent</FETCH>
+          </COLLECTION>
+        </TDLMESSAGE>
+      </TDL>
+    </DESC>
+  </BODY>
+</ENVELOPE>"""
+    try:
+        resp = post_to_tally(tally_url, req_xml, timeout=10)
+        clean_resp = sanitize_tally_xml(resp)
+        root = ET.fromstring(clean_resp)
+        mapping: Dict[str, str] = {}
+        for elem in root.iter():
+            tag = elem.tag.upper().split("}")[-1]
+            if tag in ("STOCKITEM", "ITEM"):
+                name = clean_text(elem.find("NAME")) or elem.attrib.get("NAME")
+                parent = clean_text(elem.find("PARENT"))
+                if name and parent:
+                    mapping[name.strip().lower()] = parent.strip()
+        return mapping
+    except Exception as e:
+        logger.debug(f"Could not fetch item parents from Tally: {e}")
+        return {}
+
+
 def push_to_backend(backend_url: str, agent_token: str, payload: Dict[str, Any], timeout: int = 20) -> Dict[str, Any]:
     url = f"{backend_url.rstrip('/')}/api/v1/tally/agent/push"
     data_bytes = json.dumps(payload).encode("utf-8")
@@ -292,8 +370,8 @@ def main():
     parser.add_argument("--tally-host", default=os.getenv("TALLY_HOST", "localhost"), help="Tally host")
     parser.add_argument("--tally-port", type=int, default=int(os.getenv("TALLY_PORT", "9000")), help="Tally port (default 9000)")
     parser.add_argument("--company", default=os.getenv("TALLY_COMPANY", ""), help="Active Tally company name")
-    parser.add_argument("--interval", type=int, default=60, help="Loop interval in seconds (default 60)")
-    parser.add_argument("--days", type=int, default=30, help="Days back to sync on full run (default 30)")
+    parser.add_argument("--interval", type=int, default=180, help="Loop interval in seconds (default 180)")
+    parser.add_argument("--days", type=int, default=1, help="Days back to sync on loop run (default 1 to minimize Tally load)")
     parser.add_argument("--test", action="store_true", help="Test connectivity to Tally and backend")
     parser.add_argument("--once", action="store_true", help="Perform single synchronization and exit")
     parser.add_argument("--loop", action="store_true", help="Run continuous background loop")
@@ -305,7 +383,7 @@ def main():
     if args.test:
         logger.info(f"Testing local connection to Tally at {tally_url}...")
         try:
-            test_xml = """<ENVELOPE><HEADER><TALLYREQUEST>Export Data</TALLYREQUEST></HEADER><BODY><EXPORTDATA><REQUESTDESC><REPORTNAME>List of Companies</REPORTNAME><STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES></REQUESTDESC></EXPORTDATA></BODY></ENVELOPE>"""
+            test_xml = """<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>Company Collection</ID></HEADER><BODY><DESC><TDL><TDLMESSAGE><COLLECTION NAME="Company Collection"><TYPE>Company</TYPE><FETCH>Name, StartingFrom, EndingAt, Guid</FETCH></COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>"""
             resp = post_to_tally(tally_url, test_xml, timeout=5)
             logger.info("✓ TallyPrime is reachable and responding!")
         except Exception as e:
@@ -327,7 +405,7 @@ def main():
         active_company = args.company
         if not active_company:
             try:
-                comp_req = """<ENVELOPE><HEADER><TALLYREQUEST>Export Data</TALLYREQUEST></HEADER><BODY><EXPORTDATA><REQUESTDESC><REPORTNAME>List of Companies</REPORTNAME><STATICVARIABLES><SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT></STATICVARIABLES></REQUESTDESC></EXPORTDATA></BODY></ENVELOPE>"""
+                comp_req = """<ENVELOPE><HEADER><VERSION>1</VERSION><TALLYREQUEST>Export</TALLYREQUEST><TYPE>Collection</TYPE><ID>Company Collection</ID></HEADER><BODY><DESC><TDL><TDLMESSAGE><COLLECTION NAME="Company Collection"><TYPE>Company</TYPE><FETCH>Name, StartingFrom, EndingAt, Guid</FETCH></COLLECTION></TDLMESSAGE></TDL></DESC></BODY></ENVELOPE>"""
                 c_resp = post_to_tally(tally_url, comp_req, timeout=5)
                 c_root = ET.fromstring(c_resp)
                 for comp_elem in c_root.iter():
@@ -349,8 +427,9 @@ def main():
         )
 
         try:
+            item_parents = fetch_item_parents_from_tally(tally_url, company_name=active_company)
             xml_resp = post_to_tally(tally_url, xml_req, timeout=30)
-            vouchers = parse_vouchers_from_xml(xml_resp, company_name=active_company)
+            vouchers = parse_vouchers_from_xml(xml_resp, company_name=active_company, item_parents=item_parents)
             logger.info(f"Extracted {len(vouchers)} sales vouchers from Tally ({active_company or 'Default Company'}, Non-financial data only).")
 
             if not args.agent_token:

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import * as XLSX from "xlsx";
 import { apiRequest } from "../api/client";
+import { apiCache } from "../api/cache";
 import { useWebSocket } from "../api/useWebSocket";
 import type { 
   Product, 
@@ -49,9 +50,9 @@ export const ImportSerialsPage: React.FC = () => {
   const navigate = useNavigate();
 
   // Reference Data
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
+  const [products, setProducts] = useState<Product[]>(() => apiCache.get<Product[]>("/products") || []);
+  const [categories, setCategories] = useState<Category[]>(() => apiCache.get<Category[]>("/categories") || []);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState(() => !apiCache.hasValid("/products") || !apiCache.hasValid("/categories"));
 
   // File & Sheet State
   const [file, setFile] = useState<File | null>(null);
@@ -984,11 +985,13 @@ export const ImportSerialsPage: React.FC = () => {
                       className="text-[11px] font-medium px-2 py-1.5 rounded-lg border border-slate-200 bg-white"
                     >
                       <option value="all">All Categories</option>
-                      {categories.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
+                      {categories
+                        .filter((c) => (c.product_count ?? 0) > 0)
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
                     </select>
 
                     <div className="relative flex-1">

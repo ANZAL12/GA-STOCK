@@ -90,6 +90,12 @@ class BulkProductCreateResponse(BaseModel):
     skipped_models: list[str] = []
 
 
+class ProductBrandAssignRequest(BaseModel):
+    brand: str = Field(..., min_length=1, max_length=100)
+    has_dual_serial: Optional[bool] = None
+    category_id: Optional[uuid.UUID] = None
+
+
 class ProductSerialItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

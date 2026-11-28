@@ -18,6 +18,7 @@ import 'godown_report_print_screen.dart';
 import 'tally_bills_screen.dart';
 import '../models/models.dart';
 import '../services/sound_service.dart';
+import '../widgets/brand_selection_dialog.dart';
 import '../widgets/flush_lag_button.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -807,11 +808,27 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: TextStyle(fontSize: isTablet ? 14 : 13, fontWeight: FontWeight.bold),
               ),
               onPressed: () async {
+                TallySalesVoucher fullV = tv;
+                if (fullV.items.isEmpty) {
+                  try {
+                    fullV = await ApiService().getTallyVoucherDetail(tv.id);
+                  } catch (_) {}
+                }
+                if (!mounted) return;
+                final confirmed = await TallyBrandHelper.checkAndPromptBrands(
+                  context: context,
+                  voucher: fullV,
+                  api: ApiService(),
+                  products: ApiService().cachedProducts,
+                );
+                if (!confirmed) return;
+
                 ApiService().clearLatestTallyBill();
+                if (!mounted) return;
                 await Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => OutwardScreen(fromTallyVoucher: tv),
+                    builder: (_) => OutwardScreen(fromTallyVoucher: fullV),
                   ),
                 );
                 _refreshQueueCount();

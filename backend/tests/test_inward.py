@@ -14,14 +14,15 @@ async def test_inward_stock_flow():
         assert staff_res.status_code == 200
         staff_headers = {"Authorization": f"Bearer {staff_res.json()['access_token']}"}
 
-        # 2. Get a sample product (Samsung TV)
-        prod_res = await client.get("/api/v1/products?q=samsung", headers=staff_headers)
+        # 2. Get two sample products
+        prod_res = await client.get("/api/v1/products?limit=10", headers=staff_headers)
         assert prod_res.status_code == 200
         products = prod_res.json()
-        assert len(products) >= 1
+        assert len(products) >= 2
         tv_product = products[0]
         tv_prod_id = tv_product["id"]
         initial_stock = tv_product["current_stock_qty"]
+        other_product = products[1]
 
         # 3. Real-time validation for an unused serial
         serial_1 = f"SMTV-{run_id}-001"
@@ -85,17 +86,14 @@ async def test_inward_stock_flow():
         val_existing_data = val_existing.json()
         assert val_existing_data["is_valid"] is False
         assert val_existing_data["already_exists"] is True
-        assert "Samsung" in val_existing_data["registered_model_name"]
+        assert (tv_product["brand"] in val_existing_data["registered_model_name"] or tv_product["model"] in val_existing_data["registered_model_name"])
         assert "already registered" in val_existing_data["message"]
 
-        # 8. Attempt to inward the same serial under a different product (e.g. LG Fridge)
-        fridge_res = await client.get("/api/v1/products?q=refrigerator", headers=staff_headers)
-        fridge_prod = fridge_res.json()[0]
-
+        # 8. Attempt to inward the same serial under a different product
         clash_batch_res = await client.post(
             "/api/v1/inward/batches",
             json={
-                "product_id": fridge_prod["id"],
+                "product_id": other_product["id"],
                 "invoice_reference": f"INV-{run_id}-CLASH",
                 "serials": [serial_1],
             },
@@ -104,7 +102,7 @@ async def test_inward_stock_flow():
         assert clash_batch_res.status_code == 400
         detail_msg = clash_batch_res.json()["detail"]
         assert serial_1 in detail_msg
-        assert "Samsung" in detail_msg  # Informs staff of the model it's already registered under!
+        assert (tv_product["brand"] in detail_msg or tv_product["model"] in detail_msg)  # Informs staff of the model it's already registered under!
 
         # 9. List inward batches
         list_res = await client.get(f"/api/v1/inward/batches?product_id={tv_prod_id}", headers=staff_headers)

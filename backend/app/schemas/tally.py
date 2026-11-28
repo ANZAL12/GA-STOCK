@@ -71,6 +71,19 @@ class TallyStatusResponse(BaseModel):
     pending_vouchers: int = 0
     is_syncing: bool = False
     agent_configured: bool = False
+    enable_tally_1: bool = True
+    enable_tally_2: bool = True
+    tally_1_name: Optional[str] = "Global Agencies (2026-2027)"
+    tally_2_name: Optional[str] = "GLOBAL AGENCIES - 2025-26"
+    tally_1_connected: bool = False
+    tally_2_connected: bool = False
+
+
+class TallyToggleReadingRequest(BaseModel):
+    auto_sync: Optional[bool] = None
+    enable_tally_1: Optional[bool] = None
+    enable_tally_2: Optional[bool] = None
+    sync_interval_minutes: Optional[int] = None
 
 
 class TallyVoucherItemResponse(BaseModel):
@@ -89,6 +102,9 @@ class TallyVoucherItemResponse(BaseModel):
     batch_details: Optional[Dict[str, Any]] = None
     matched_product_name: Optional[str] = None
     matched_product_model: Optional[str] = None
+    matched_product_brand: Optional[str] = None
+    is_new_model: bool = False
+    has_dual_serial: bool = False
     created_at: datetime
 
 
@@ -119,13 +135,14 @@ class TallySalesVoucherResponse(BaseModel):
     processed_at: Optional[datetime] = None
     item_count: int = 0
     total_quantity: float = 0.0
+    has_dual_serial_items: bool = False
     godowns: List[str] = []
+    items: List[TallyVoucherItemResponse] = []
     created_at: datetime
     updated_at: datetime
 
 
 class TallySalesVoucherDetailResponse(TallySalesVoucherResponse):
-    items: List[TallyVoucherItemResponse] = []
     notes: Optional[str] = None
     raw_metadata: Optional[Dict[str, Any]] = None
 
@@ -183,4 +200,13 @@ class TallyAgentPushResponse(BaseModel):
     created_count: int
     updated_count: int
     cancelled_count: int
+
+
+class TallyAssignBrandRequest(BaseModel):
+    brand: str = Field(..., min_length=1, max_length=100)
+    has_dual_serial: Optional[bool] = None
+    product_id: Optional[uuid.UUID] = None
+    voucher_item_id: Optional[uuid.UUID] = None
+    item_name: Optional[str] = None
+    category_id: Optional[uuid.UUID] = None
 

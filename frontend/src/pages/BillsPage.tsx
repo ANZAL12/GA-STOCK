@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { apiRequest } from "../api/client";
+import { apiCache } from "../api/cache";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type {
@@ -9,6 +10,8 @@ import type {
   CancelBillResponse,
   UpdateOutwardLineResponse,
   DeleteOutwardLineResponse,
+  UpdateBillResponse,
+  DeleteBillResponse,
 } from "../types";
 import { generateBillPdf, printBillPdf } from "../utils/generateBillPdf";
 import {
@@ -38,9 +41,10 @@ import {
 
 export const BillsPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [bills, setBills] = useState<BillListItem[]>([]);
-  const [shops, setShops] = useState<Shop[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [bills, setBills] = useState<BillListItem[]>(() => apiCache.get<BillListItem[]>("/outward/bills?limit=150") || []);
+  const [shops, setShops] = useState<Shop[]>(() => apiCache.get<Shop[]>("/shops?active_only=false") || []);
+  const [loading, setLoading] = useState(() => !apiCache.hasValid("/outward/bills?limit=150"));
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   // Filters
   const [search, setSearch] = useState("");
@@ -55,7 +59,6 @@ export const BillsPage: React.FC = () => {
   const [serialSearch, setSerialSearch] = useState("");
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [printingPdf, setPrintingPdf] = useState(false);
-  const [pullingTallyBills, setPullingTallyBills] = useState(false);
 
   // Cancellation State (Admin Only)
   const [billToCancel, setBillToCancel] = useState<{
@@ -84,17 +87,60 @@ export const BillsPage: React.FC = () => {
   const [isDeletingLine, setIsDeletingLine] = useState(false);
   const [deleteLineError, setDeleteLineError] = useState<string | null>(null);
 
-  const fetchShops = async () => {
+  // Settings-controlled toggle: Allow Bill Edit & Deletion
+  const [allowBillModifications, setAllowBillModifications] = useState<boolean>(() => {
+    return localStorage.getItem("feature_allow_bill_delete_update") === "true";
+  });
+
+  useEffect(() => {
+    const handleStorageChange = () => {
+      setAllowBillModifications(localStorage.getItem("feature_allow_bill_delete_update") === "true");
+    };
+    window.addEventListener("storage", handleStorageChange);
+    window.addEventListener("focus", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("focus", handleStorageChange);
+    };
+  }, []);
+
+  // Bill Permanent Deletion State (Admin Only)
+  const [billToDelete, setBillToDelete] = useState<{
+    bill_number: string;
+    total_units: number;
+    shop_name?: string;
+    is_cancelled?: boolean;
+  } | null>(null);
+  const [isDeletingBill, setIsDeletingBill] = useState(false);
+  const [deleteBillError, setDeleteBillError] = useState<string | null>(null);
+
+  // Bill Metadata Edit/Update State (Admin Only)
+  const [billToEdit, setBillToEdit] = useState<{
+    bill_number: string;
+    vehicle_number: string;
+    transporter_name: string;
+    delivery_note: string;
+    destination: string;
+    remarks: string;
+    transaction_date: string;
+  } | null>(null);
+  const [isUpdatingBill, setIsUpdatingBill] = useState(false);
+  const [updateBillError, setUpdateBillError] = useState<string | null>(null);
+
+  const fetchShops = async (force: boolean | unknown = false) => {
     try {
-      const data = await apiRequest<Shop[]>("/shops?active_only=false");
+      const data = await apiRequest<Shop[]>("/shops?active_only=false", { forceRefresh: force === true });
       setShops(data);
     } catch (e) {
       console.error("Failed to load shops", e);
     }
   };
 
-  const fetchBills = async () => {
-    setLoading(true);
+  const fetchBills = async (force: boolean | unknown = false) => {
+    if (bills.length === 0) {
+      setLoading(true);
+    }
+    setFetchError(null);
     try {
       const params = new URLSearchParams();
       if (search.trim()) params.append("search", search.trim());
@@ -105,28 +151,13 @@ export const BillsPage: React.FC = () => {
       }
       params.append("limit", "150");
 
-      const data = await apiRequest<BillListItem[]>(`/outward/bills?${params.toString()}`);
+      const data = await apiRequest<BillListItem[]>(`/outward/bills?${params.toString()}`, { forceRefresh: force === true });
       setBills(data);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to load bills", e);
+      setFetchError(e.message || "Failed to load dispatch bills from server.");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handlePullTallyBills = async () => {
-    setPullingTallyBills(true);
-    try {
-      const res = await apiRequest<{ status: string; message: string }>("/tally/sync", {
-        method: "POST",
-      });
-      await fetchBills();
-      setActionSuccessNotice(res.message || "Tally bills pulled successfully.");
-      setTimeout(() => setActionSuccessNotice(null), 5000);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to pull bills from Tally.");
-    } finally {
-      setPullingTallyBills(false);
     }
   };
 
@@ -313,6 +344,61 @@ export const BillsPage: React.FC = () => {
     }
   };
 
+  const handleExecuteDeleteBill = async () => {
+    if (!billToDelete) return;
+    setIsDeletingBill(true);
+    setDeleteBillError(null);
+    try {
+      const res = await apiRequest<DeleteBillResponse>(
+        `/outward/bills/${encodeURIComponent(billToDelete.bill_number)}`,
+        { method: "DELETE" }
+      );
+      setActionSuccessNotice(res.message);
+      setBillToDelete(null);
+      if (selectedBill && selectedBill.bill_number === billToDelete.bill_number) {
+        setSelectedBill(null);
+      }
+      await fetchBills();
+    } catch (err: any) {
+      setDeleteBillError(err.message || "Failed to delete bill");
+    } finally {
+      setIsDeletingBill(false);
+    }
+  };
+
+  const handleExecuteUpdateBill = async () => {
+    if (!billToEdit) return;
+    setIsUpdatingBill(true);
+    setUpdateBillError(null);
+    try {
+      const res = await apiRequest<UpdateBillResponse>(
+        `/outward/bills/${encodeURIComponent(billToEdit.bill_number)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            vehicle_number: billToEdit.vehicle_number.trim() || null,
+            transporter_name: billToEdit.transporter_name.trim() || null,
+            delivery_note: billToEdit.delivery_note.trim() || null,
+            destination: billToEdit.destination.trim() || null,
+            remarks: billToEdit.remarks.trim() || null,
+            transaction_date: billToEdit.transaction_date.trim() || null,
+          }),
+        }
+      );
+      setActionSuccessNotice(res.message);
+      const updatedNo = billToEdit.bill_number;
+      setBillToEdit(null);
+      if (selectedBill && selectedBill.bill_number === updatedNo) {
+        await openBillDetail(updatedNo, selectedBill.is_cancelled);
+      }
+      await fetchBills();
+    } catch (err: any) {
+      setUpdateBillError(err.message || "Failed to update bill details");
+    } finally {
+      setIsUpdatingBill(false);
+    }
+  };
+
   // Filtered serials in detail modal
   const filteredSerials = useMemo(() => {
     if (!selectedBill) return [];
@@ -376,17 +462,6 @@ export const BillsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
-          {isAdmin && (
-            <button
-              type="button"
-              onClick={handlePullTallyBills}
-              disabled={pullingTallyBills}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-[#3C3489] hover:bg-[#302970] shadow-xs transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <RotateCcw size={14} className={pullingTallyBills ? "animate-spin" : ""} />
-              {pullingTallyBills ? "Pulling Bills..." : "Pull Tally Bills"}
-            </button>
-          )}
           <button
             onClick={fetchBills}
             className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-xs transition-colors"
@@ -410,107 +485,6 @@ export const BillsPage: React.FC = () => {
           >
             <X size={16} />
           </button>
-        </div>
-      )}
-
-      {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className={`p-2.5 rounded-xl border shrink-0 ${
-                  lineToDelete.is_matched
-                    ? "bg-amber-50 text-amber-700 border-amber-200"
-                    : "bg-rose-50 text-rose-700 border-rose-200"
-                }`}
-              >
-                <Trash2 size={22} />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  {lineToDelete.is_matched ? "Delete & Return to Inward Stock?" : "Discard Recorded Serial?"}
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Serial <span className="font-mono font-bold text-slate-900">{lineToDelete.serial_text}</span> ({lineToDelete.model})
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-xs text-slate-700 space-y-1.5">
-              <p className="font-semibold text-slate-900">Effect of deletion:</p>
-              {lineToDelete.is_matched ? (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-emerald-700">Stock Reversal:</span> This matched serial will be returned to inward warehouse stock and marked as available.
-                  </li>
-                  <li>
-                    <span className="font-medium text-indigo-700">Model Stock Count:</span> Product warehouse stock will be restored by 1 unit.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1.
-                  </li>
-                </ul>
-              ) : (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-rose-700">Recorded Discard:</span> This serial was recorded only (not in inventory). It will be permanently deleted from this bill.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">History Cleanup:</span> All dispatch history entries for this recorded serial will be discarded.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1 (warehouse inventory count unaffected).
-                  </li>
-                </ul>
-              )}
-            </div>
-
-            {deleteLineError && (
-              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle size={15} className="shrink-0" />
-                <span>{deleteLineError}</span>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                disabled={isDeletingLine}
-                onClick={() => {
-                  setLineToDelete(null);
-                  setDeleteLineError(null);
-                }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                disabled={isDeletingLine}
-                onClick={handleExecuteDeleteLine}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
-              >
-                {isDeletingLine ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Deleting...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 size={14} />
-                    <span>
-                      {lineToDelete.is_matched ? "Yes, Delete & Return to Stock" : "Yes, Discard Serial & History"}
-                    </span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
@@ -670,6 +644,22 @@ export const BillsPage: React.FC = () => {
                     </div>
                   </td>
                 </tr>
+              ) : fetchError ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-12">
+                    <div className="flex flex-col items-center gap-2.5 text-rose-600">
+                      <AlertCircle size={26} className="text-rose-500" />
+                      <p className="font-semibold text-xs text-rose-800">{fetchError}</p>
+                      <button
+                        type="button"
+                        onClick={fetchBills}
+                        className="mt-1 px-3 py-1.5 rounded-xl text-xs font-semibold bg-[#3C3489] text-white hover:bg-[#302970] cursor-pointer shadow-xs"
+                      >
+                        Retry Loading Bills
+                      </button>
+                    </div>
+                  </td>
+                </tr>
               ) : displayedBills.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="text-center py-14 text-slate-400">
@@ -812,27 +802,41 @@ export const BillsPage: React.FC = () => {
                           PDF
                         </button>
 
-                        {/* Admin Cancel Button */}
-                        {isAdmin && (
-                          bill.is_cancelled ? (
-                            <span className="text-[10px] font-semibold text-rose-500 italic px-1">
-                              Cancelled
-                            </span>
-                          ) : (
+                        {/* Admin Cancel & Delete Buttons (Gated by allowBillModifications in Settings) */}
+                        {isAdmin && allowBillModifications && (
+                          <>
+                            {bill.is_cancelled ? (
+                              <span className="text-[10px] font-semibold text-rose-500 italic px-1">
+                                Cancelled
+                              </span>
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setBillToCancel(bill);
+                                  setCancelReason("");
+                                  setCancelModalError(null);
+                                }}
+                                title="Cancel Bill & Return Serials to Stock (Admin Only)"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors shadow-xs cursor-pointer"
+                              >
+                                <Ban size={12} />
+                                Cancel
+                              </button>
+                            )}
+
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setBillToCancel(bill);
-                                setCancelReason("");
-                                setCancelModalError(null);
+                                setBillToDelete(bill);
+                                setDeleteBillError(null);
                               }}
-                              title="Cancel Bill & Return Serials to Stock (Admin Only)"
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition-colors shadow-xs"
+                              title="Permanently Delete Bill Record"
+                              className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                             >
-                              <Ban size={12} />
-                              Cancel
+                              <Trash2 size={13} />
                             </button>
-                          )
+                          </>
                         )}
                       </div>
                     </td>
@@ -854,215 +858,13 @@ export const BillsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className={`p-2.5 rounded-xl border shrink-0 ${
-                  lineToDelete.is_matched
-                    ? "bg-amber-50 text-amber-700 border-amber-200"
-                    : "bg-rose-50 text-rose-700 border-rose-200"
-                }`}
-              >
-                <Trash2 size={22} />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  {lineToDelete.is_matched ? "Delete & Return to Inward Stock?" : "Discard Recorded Serial?"}
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Serial <span className="font-mono font-bold text-slate-900">{lineToDelete.serial_text}</span> ({lineToDelete.model})
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-xs text-slate-700 space-y-1.5">
-              <p className="font-semibold text-slate-900">Effect of deletion:</p>
-              {lineToDelete.is_matched ? (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-emerald-700">Stock Reversal:</span> This matched serial will be returned to inward warehouse stock and marked as available.
-                  </li>
-                  <li>
-                    <span className="font-medium text-indigo-700">Model Stock Count:</span> Product warehouse stock will be restored by 1 unit.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1.
-                  </li>
-                </ul>
-              ) : (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-rose-700">Recorded Discard:</span> This serial was recorded only (not in inventory). It will be permanently deleted from this bill.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">History Cleanup:</span> All dispatch history entries for this recorded serial will be discarded.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1 (warehouse inventory count unaffected).
-                  </li>
-                </ul>
-              )}
-            </div>
-
-            {deleteLineError && (
-              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle size={15} className="shrink-0" />
-                <span>{deleteLineError}</span>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                disabled={isDeletingLine}
-                onClick={() => {
-                  setLineToDelete(null);
-                  setDeleteLineError(null);
-                }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                disabled={isDeletingLine}
-                onClick={handleExecuteDeleteLine}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
-              >
-                {isDeletingLine ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Deleting...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 size={14} />
-                    <span>
-                      {lineToDelete.is_matched ? "Yes, Delete & Return to Stock" : "Yes, Discard Serial & History"}
-                    </span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Error Toast */}
       {detailError && (
         <div className="fixed bottom-4 right-4 z-50 bg-rose-600 text-white text-xs px-4 py-2.5 rounded-xl shadow-lg flex items-center gap-2">
           <span>{detailError}</span>
-          <button onClick={() => setDetailError(null)} className="p-0.5 hover:bg-white/20 rounded">
+          <button onClick={() => setDetailError(null)} className="p-0.5 hover:bg-white/20 rounded cursor-pointer">
             <X size={14} />
           </button>
-        </div>
-      )}
-
-      {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className={`p-2.5 rounded-xl border shrink-0 ${
-                  lineToDelete.is_matched
-                    ? "bg-amber-50 text-amber-700 border-amber-200"
-                    : "bg-rose-50 text-rose-700 border-rose-200"
-                }`}
-              >
-                <Trash2 size={22} />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900">
-                  {lineToDelete.is_matched ? "Delete & Return to Inward Stock?" : "Discard Recorded Serial?"}
-                </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Serial <span className="font-mono font-bold text-slate-900">{lineToDelete.serial_text}</span> ({lineToDelete.model})
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-xs text-slate-700 space-y-1.5">
-              <p className="font-semibold text-slate-900">Effect of deletion:</p>
-              {lineToDelete.is_matched ? (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-emerald-700">Stock Reversal:</span> This matched serial will be returned to inward warehouse stock and marked as available.
-                  </li>
-                  <li>
-                    <span className="font-medium text-indigo-700">Model Stock Count:</span> Product warehouse stock will be restored by 1 unit.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1.
-                  </li>
-                </ul>
-              ) : (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-rose-700">Recorded Discard:</span> This serial was recorded only (not in inventory). It will be permanently deleted from this bill.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">History Cleanup:</span> All dispatch history entries for this recorded serial will be discarded.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1 (warehouse inventory count unaffected).
-                  </li>
-                </ul>
-              )}
-            </div>
-
-            {deleteLineError && (
-              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
-                <AlertCircle size={15} className="shrink-0" />
-                <span>{deleteLineError}</span>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                disabled={isDeletingLine}
-                onClick={() => {
-                  setLineToDelete(null);
-                  setDeleteLineError(null);
-                }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                disabled={isDeletingLine}
-                onClick={handleExecuteDeleteLine}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
-              >
-                {isDeletingLine ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Deleting...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 size={14} />
-                    <span>
-                      {lineToDelete.is_matched ? "Yes, Delete & Return to Stock" : "Yes, Discard Serial & History"}
-                    </span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
@@ -1105,6 +907,28 @@ export const BillsPage: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {isAdmin && allowBillModifications && (
+                    <button
+                      onClick={() => {
+                        setBillToEdit({
+                          bill_number: selectedBill.bill_number,
+                          vehicle_number: selectedBill.vehicle_number || selectedBill.delivery_reference || "",
+                          transporter_name: selectedBill.transporter_name || "",
+                          delivery_note: selectedBill.delivery_note || "",
+                          destination: selectedBill.destination || "",
+                          remarks: selectedBill.remarks || "",
+                          transaction_date: selectedBill.transaction_date || "",
+                        });
+                        setUpdateBillError(null);
+                      }}
+                      title="Edit Bill Details (Vehicle, Transporter, Remarks, Date)"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-bold hover:bg-indigo-700 transition-colors shadow-sm cursor-pointer"
+                    >
+                      <Pencil size={13} />
+                      Edit Details
+                    </button>
+                  )}
+
                   <button
                     onClick={handlePrintDetailPdf}
                     disabled={printingPdf}
@@ -1375,7 +1199,7 @@ export const BillsPage: React.FC = () => {
                           <th className="py-2 px-3">Serial Number</th>
                           <th className="py-2 px-3 text-center">Unit Type</th>
                           <th className="py-2 px-3 text-center">Verification</th>
-                          {isAdmin && !selectedBill.is_cancelled && (
+                          {isAdmin && allowBillModifications && !selectedBill.is_cancelled && (
                             <th className="py-2 px-3 text-right">Action</th>
                           )}
                         </tr>
@@ -1461,7 +1285,7 @@ export const BillsPage: React.FC = () => {
                                   {s.status_label}
                                 </span>
                               </td>
-                              {isAdmin && !selectedBill.is_cancelled && (
+                              {isAdmin && allowBillModifications && !selectedBill.is_cancelled && (
                                 <td className="py-2 px-3 text-right">
                                   {!isEditing && (
                                     <div className="inline-flex items-center gap-1.5 justify-end">
@@ -1475,11 +1299,11 @@ export const BillsPage: React.FC = () => {
                                       <button
                                         onClick={() =>
                                           setLineToDelete({
-                                            line_id: s.line_id,
-                                            serial_text: s.serial_text,
-                                            is_matched: s.status_label === "Matched",
-                                            model: `${s.brand} ${s.model}`,
-                                          })
+                                             line_id: s.line_id,
+                                             serial_text: s.serial_text,
+                                             is_matched: s.status_label === "Matched",
+                                             model: `${s.brand} ${s.model}`,
+                                           })
                                         }
                                         title={
                                           s.status_label === "Matched"
@@ -1511,28 +1335,42 @@ export const BillsPage: React.FC = () => {
                     : "Ready to print or share delivery challan with dealer."}
                 </span>
                 <div className="flex items-center gap-2">
-                  {isAdmin && !selectedBill.is_cancelled && (
-                    <button
-                      onClick={() => {
-                        setBillToCancel(selectedBill);
-                        setCancelReason("");
-                        setCancelModalError(null);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold hover:bg-rose-100 transition-colors shadow-xs"
-                    >
-                      <Ban size={14} />
-                      Cancel Bill
-                    </button>
+                  {isAdmin && allowBillModifications && (
+                    <>
+                      {!selectedBill.is_cancelled && (
+                        <button
+                          onClick={() => {
+                            setBillToCancel(selectedBill);
+                            setCancelReason("");
+                            setCancelModalError(null);
+                          }}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold hover:bg-rose-100 transition-colors shadow-xs cursor-pointer"
+                        >
+                          <Ban size={14} />
+                          Cancel Bill
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setBillToDelete(selectedBill);
+                          setDeleteBillError(null);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
+                      >
+                        <Trash2 size={14} />
+                        Delete Bill
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={() => setSelectedBill(null)}
-                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200/60 transition-colors"
+                    className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-200/60 transition-colors cursor-pointer"
                   >
                     Close
                   </button>
                   <button
                     onClick={handleDownloadDetailPdf}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#3C3489] text-white text-xs font-bold hover:bg-[#2E286B] transition-colors shadow-sm"
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#3C3489] text-white text-xs font-bold hover:bg-[#2E286B] transition-colors shadow-sm cursor-pointer"
                   >
                     <FileDown size={14} />
                     Download PDF Challan
@@ -1543,7 +1381,7 @@ export const BillsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 7. Delete Serial Confirmation Modal */}
+      {/* 7. Delete Serial Confirmation Modal (Single clean instance) */}
       {lineToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
@@ -1644,7 +1482,7 @@ export const BillsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 6. Admin Cancel Confirmation Modal */}
+      {/* 8. Admin Cancel Confirmation Modal */}
       {billToCancel && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
@@ -1711,7 +1549,7 @@ export const BillsPage: React.FC = () => {
                   setCancelReason("");
                   setCancelModalError(null);
                 }}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors"
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 Keep Bill
               </button>
@@ -1720,7 +1558,7 @@ export const BillsPage: React.FC = () => {
                 type="button"
                 disabled={isCancelling}
                 onClick={handleExecuteCancel}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
               >
                 {isCancelling ? (
                   <>
@@ -1739,77 +1577,225 @@ export const BillsPage: React.FC = () => {
         </div>
       )}
 
-      {/* 7. Delete Serial Confirmation Modal */}
-      {lineToDelete && (
+      {/* 9. Permanently Delete Bill Modal */}
+      {billToDelete && (
         <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start gap-3">
-              <div
-                className={`p-2.5 rounded-xl border shrink-0 ${
-                  lineToDelete.is_matched
-                    ? "bg-amber-50 text-amber-700 border-amber-200"
-                    : "bg-rose-50 text-rose-700 border-rose-200"
-                }`}
-              >
-                <Trash2 size={22} />
+              <div className="p-2.5 rounded-xl bg-rose-50 text-rose-600 border border-rose-100 shrink-0">
+                <Trash2 size={24} />
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-900">
-                  {lineToDelete.is_matched ? "Delete & Return to Inward Stock?" : "Discard Recorded Serial?"}
+                  Permanently Delete Bill #{billToDelete.bill_number}?
                 </h3>
-                <p className="text-xs text-slate-500 mt-1">
-                  Serial <span className="font-mono font-bold text-slate-900">{lineToDelete.serial_text}</span> ({lineToDelete.model})
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {billToDelete.shop_name
+                    ? `Dispatched to ${billToDelete.shop_name} (${billToDelete.total_units} unit${billToDelete.total_units > 1 ? "s" : ""})`
+                    : "This outward bill dispatch record will be permanently deleted"}
                 </p>
               </div>
             </div>
 
             <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 text-xs text-slate-700 space-y-1.5">
-              <p className="font-semibold text-slate-900">Effect of deletion:</p>
-              {lineToDelete.is_matched ? (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
+              <p className="font-semibold text-slate-900">What happens on permanent deletion:</p>
+              <ul className="list-disc pl-4 space-y-1 text-slate-600">
+                <li>
+                  <span className="font-medium text-rose-700">Dispatch Record Removed:</span> The outward batches, serial scan lines, and dispatch history will be permanently deleted from GA STOCK.
+                </li>
+                {!billToDelete.is_cancelled && (
                   <li>
-                    <span className="font-medium text-emerald-700">Stock Reversal:</span> This matched serial will be returned to inward warehouse stock and marked as available.
+                    <span className="font-medium text-emerald-700">Stock Reversal:</span> All verified serial numbers will return to available warehouse stock, and product stock counts will be restored.
                   </li>
-                  <li>
-                    <span className="font-medium text-indigo-700">Model Stock Count:</span> Product warehouse stock will be restored by 1 unit.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1.
-                  </li>
-                </ul>
-              ) : (
-                <ul className="list-disc pl-4 space-y-1 text-slate-600">
-                  <li>
-                    <span className="font-medium text-rose-700">Recorded Discard:</span> This serial was recorded only (not in inventory). It will be permanently deleted from this bill.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">History Cleanup:</span> All dispatch history entries for this recorded serial will be discarded.
-                  </li>
-                  <li>
-                    <span className="font-medium text-slate-700">Bill Adjustment:</span> Total units on this bill will decrease by 1 (warehouse inventory count unaffected).
-                  </li>
-                </ul>
-              )}
+                )}
+                <li>
+                  <span className="font-medium text-slate-700">Tally Invariant:</span> Your Tally accounting data is never altered or written to (read-only).
+                </li>
+              </ul>
             </div>
 
-            {deleteLineError && (
+            {deleteBillError && (
               <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
                 <AlertCircle size={15} className="shrink-0" />
-                <span>{deleteLineError}</span>
+                <span>{deleteBillError}</span>
               </div>
             )}
 
             <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
               <button
                 type="button"
-                disabled={isDeletingLine}
+                disabled={isDeletingBill}
                 onClick={() => {
-                  setLineToDelete(null);
-                  setDeleteLineError(null);
+                  setBillToDelete(null);
+                  setDeleteBillError(null);
                 }}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                Keep Bill
+              </button>
+
+              <button
+                type="button"
+                disabled={isDeletingBill}
+                onClick={handleExecuteDeleteBill}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
+              >
+                {isDeletingBill ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Deleting Bill...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={14} />
+                    <span>Yes, Permanently Delete Bill</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 10. Edit / Update Bill Details Modal */}
+      {billToEdit && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className="bg-white w-full max-w-lg rounded-2xl shadow-2xl border border-slate-200 overflow-hidden space-y-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
+                  <Pencil size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Update Bill #{billToEdit.bill_number} Details
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Edit delivery reference, vehicle number, transporter, or remarks
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setBillToEdit(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Vehicle / Reg Number
+                </label>
+                <input
+                  type="text"
+                  value={billToEdit.vehicle_number}
+                  onChange={(e) =>
+                    setBillToEdit({ ...billToEdit, vehicle_number: e.target.value.toUpperCase() })
+                  }
+                  placeholder="e.g. KL-11-AB-1234 or Direct / Local"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50 uppercase font-mono"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Transporter Name
+                  </label>
+                  <input
+                    type="text"
+                    value={billToEdit.transporter_name}
+                    onChange={(e) =>
+                      setBillToEdit({ ...billToEdit, transporter_name: e.target.value })
+                    }
+                    placeholder="e.g. VRL Logistics, Speed Courier"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Delivery Note / LR No
+                  </label>
+                  <input
+                    type="text"
+                    value={billToEdit.delivery_note}
+                    onChange={(e) =>
+                      setBillToEdit({ ...billToEdit, delivery_note: e.target.value })
+                    }
+                    placeholder="e.g. LR-987654"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Destination City / Place
+                  </label>
+                  <input
+                    type="text"
+                    value={billToEdit.destination}
+                    onChange={(e) =>
+                      setBillToEdit({ ...billToEdit, destination: e.target.value })
+                    }
+                    placeholder="e.g. Calicut, Kannur, Cochin"
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Dispatch Date
+                  </label>
+                  <input
+                    type="date"
+                    value={billToEdit.transaction_date}
+                    onChange={(e) =>
+                      setBillToEdit({ ...billToEdit, transaction_date: e.target.value })
+                    }
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Remarks / Notes
+                </label>
+                <textarea
+                  rows={2}
+                  value={billToEdit.remarks}
+                  onChange={(e) =>
+                    setBillToEdit({ ...billToEdit, remarks: e.target.value })
+                  }
+                  placeholder="Optional delivery instructions or notes..."
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489] bg-slate-50/50 resize-none"
+                />
+              </div>
+            </div>
+
+            {updateBillError && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
+                <AlertCircle size={15} className="shrink-0" />
+                <span>{updateBillError}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isUpdatingBill}
+                onClick={() => setBillToEdit(null)}
                 className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
               >
                 Cancel
@@ -1817,21 +1803,19 @@ export const BillsPage: React.FC = () => {
 
               <button
                 type="button"
-                disabled={isDeletingLine}
-                onClick={handleExecuteDeleteLine}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
+                disabled={isUpdatingBill}
+                onClick={handleExecuteUpdateBill}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#3C3489] hover:bg-[#2E286B] text-white text-xs font-bold transition-colors shadow-sm disabled:opacity-60 cursor-pointer"
               >
-                {isDeletingLine ? (
+                {isUpdatingBill ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Deleting...</span>
+                    <span>Saving...</span>
                   </>
                 ) : (
                   <>
-                    <Trash2 size={14} />
-                    <span>
-                      {lineToDelete.is_matched ? "Yes, Delete & Return to Stock" : "Yes, Discard Serial & History"}
-                    </span>
+                    <Check size={14} />
+                    <span>Save Bill Details</span>
                   </>
                 )}
               </button>
@@ -1842,3 +1826,4 @@ export const BillsPage: React.FC = () => {
     </div>
   );
 };
+export default BillsPage;

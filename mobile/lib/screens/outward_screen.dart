@@ -17,6 +17,7 @@ import '../widgets/office_pc_confirm_dialog.dart';
 import '../services/sound_service.dart';
 import '../services/session_recovery_service.dart';
 import 'print_bill_screen.dart';
+import '../widgets/brand_selection_dialog.dart';
 import '../widgets/flush_lag_button.dart';
 
 class OutwardScreen extends StatefulWidget {
@@ -75,6 +76,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
   bool _isMismatchDialogOpen = false;
   void Function(void Function())? _setMismatchDialogState;
   String? _mismatchScanWarning;
+
+  // Model triple-tap toggle for new/unsynced Tally models
+  String? _lastTappedModelKey;
+  int _modelTapCount = 0;
+  DateTime? _lastModelTapTime;
+  final Map<String, bool> _modelDualSerialOverride = {};
 
   void _dismissSimpleAlert() {
     _alertTimer?.cancel();
@@ -480,7 +487,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
           SoundService().playErrorSound();
           _showSimpleAlert(
             'Bill Cancelled in Tally',
-            'Tally Bill ${_tallyVoucher!.voucherNumber} has been cancelled in TallyPrime.\n\nDispatch cannot continue for a cancelled bill.',
+            'Bill ${_tallyVoucher!.voucherNumber} has been cancelled in TallyPrime.\n\nDispatch cannot continue for a cancelled bill.',
           );
         }
       }
@@ -587,6 +594,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
     try {
       final fresh = await _api.getTallyVoucherDetail(voucherId);
       if (mounted) {
+        // If any item does not have a confirmed brand in DB, prompt staff
+        await TallyBrandHelper.checkAndPromptBrands(
+          context: context,
+          voucher: fresh,
+          api: _api,
+          products: _products,
+        );
+
         setState(() {
           _tallyVoucher = fresh;
           if (fresh.shopId != null && fresh.shopId!.isNotEmpty) {
@@ -625,9 +640,81 @@ class _OutwardScreenState extends State<OutwardScreen> {
   }
 
   Product _resolveTallyProduct(TallyVoucherItem item) {
+    Product ensureDualSerial(Product p) {
+      final override = _modelDualSerialOverride[item.id] ??
+          _modelDualSerialOverride[p.id] ??
+          _modelDualSerialOverride[item.itemName.trim().toLowerCase()] ??
+          _modelDualSerialOverride[p.model.trim().toLowerCase()];
+      if (override != null) {
+        return p.copyWith(hasDualSerial: override);
+      }
+
+      String catName = p.categoryName ?? '';
+      if (catName.isEmpty && p.categoryId.isNotEmpty) {
+        final c = OfflineManager().getCategoryById(p.categoryId);
+        if (c != null) catName = c.name;
+      }
+      final catU = catName.trim().toUpperCase();
+
+      // 1. If product's brand has already been assigned/confirmed in DB,
+      // its category / hasDualSerial in DB is authoritative:
+      if (item.matchedProductBrand != null && !item.isNewModel) {
+        return p.copyWith(
+          hasDualSerial: item.hasDualSerial,
+          categoryName: catName.isNotEmpty ? catName : p.categoryName,
+        );
+      }
+      if (p.categoryId.isNotEmpty) {
+        final c = OfflineManager().getCategoryById(p.categoryId);
+        if (c != null) {
+          return p.copyWith(hasDualSerial: c.hasDualSerial, categoryName: c.name);
+        }
+      }
+
+      final bool isDual = item.hasDualSerial ||
+          isDualSerialModelName(item.itemName, catName.isNotEmpty ? catName : p.brand) ||
+          isDualSerialModelName(p.model, catName.isNotEmpty ? catName : p.brand);
+
+      if (p.hasDualSerial || (catU.isNotEmpty && isDualSerialCategoryName(catU))) {
+        // If the product is an appliance / non-dual product (e.g. COOLER, CHILLER, FREEZER, REFRIGERATOR, TV, LED, etc.),
+        // it must NEVER be treated as dual serial, even if categorized under AC FORMENTY or GENERAL!
+        final nameU = item.itemName.trim().toUpperCase();
+        final modelU = p.model.trim().toUpperCase();
+        const nonDualKeywords = [
+          'COOLER', 'AIR COOLER', 'WATER COOLER', 'DESERT COOLER',
+          'CHILLER', 'FREEZER', 'DEEP FREEZER', 'CHEST FREEZER', 'VISI COOLER', 'SHOWCASE',
+          'REFRIGERATOR', 'REF ', 'REF/', 'FRIDGE',
+          'WASHING', 'WM ', 'W/M', 'DRYER',
+          'TV', 'SMART TV', 'LED', 'OLED', 'QLED', 'MONITOR',
+          'FAN', 'GEYSER', 'HEATER', 'DISPENSER', 'PURIFIER', 'MICROWAVE', 'OVEN',
+          'STAND', 'TROLLEY', 'PIPE', 'TUBE', 'BLENDER', 'CUTTER', 'GEAR', 'JAR',
+          'STABILIZER', 'REMOTE', 'BRACKET', 'DRAIN', 'COVER', 'ACCESSORY', 'COPPER TUBE',
+          'ZAROOKY', 'BOARD', 'MOTOR', 'PCB'
+        ];
+        if (nonDualKeywords.any((kw) => nameU.contains(kw) || modelU.contains(kw) || catU.contains(kw))) {
+          return p.copyWith(hasDualSerial: false);
+        }
+
+        // If the product belongs to an AC dual serial category and is NOT an accessory/appliance, keep it dual serial!
+        if (catU.isNotEmpty && isDualSerialCategoryName(catU)) {
+          return p.copyWith(hasDualSerial: true);
+        }
+
+        if (!item.hasDualSerial && !isDualSerialModelName(item.itemName) && !isDualSerialModelName(p.model)) {
+          return p.copyWith(hasDualSerial: false);
+        }
+        return p;
+      }
+
+      if (isDual) {
+        return p.copyWith(hasDualSerial: true);
+      }
+      return p;
+    }
+
     if (item.productId != null && item.productId!.isNotEmpty) {
       final p = _products.where((prod) => prod.id.toLowerCase() == item.productId!.toLowerCase()).firstOrNull;
-      if (p != null) return p;
+      if (p != null) return ensureDualSerial(p);
     }
 
     final itemClean = item.itemName.trim().toLowerCase();
@@ -638,27 +725,27 @@ class _OutwardScreenState extends State<OutwardScreen> {
     // 1. Exact match by itemCode or matchedProductModel
     if (codeClean != null && codeClean.isNotEmpty) {
       final p = _products.where((prod) => prod.model.trim().toLowerCase() == codeClean).firstOrNull;
-      if (p != null) return p;
+      if (p != null) return ensureDualSerial(p);
     }
     if (matchedModelClean != null && matchedModelClean.isNotEmpty) {
       final p = _products.where((prod) => prod.model.trim().toLowerCase() == matchedModelClean).firstOrNull;
-      if (p != null) return p;
+      if (p != null) return ensureDualSerial(p);
     }
 
     // 2. Exact match by model or name
     for (final prod in _products) {
       final pModel = prod.model.trim().toLowerCase();
       final pName = prod.name.trim().toLowerCase();
-      if (pModel.isNotEmpty && pModel == itemClean) return prod;
-      if (pName.isNotEmpty && pName == itemClean) return prod;
-      if (matchedNameClean != null && matchedNameClean.isNotEmpty && pName == matchedNameClean) return prod;
+      if (pModel.isNotEmpty && pModel == itemClean) return ensureDualSerial(prod);
+      if (pName.isNotEmpty && pName == itemClean) return ensureDualSerial(prod);
+      if (matchedNameClean != null && matchedNameClean.isNotEmpty && pName == matchedNameClean) return ensureDualSerial(prod);
     }
 
     // 3. High-confidence model substring match
     for (final prod in _products) {
       final pModel = prod.model.trim().toLowerCase();
       if (pModel.length >= 3 && itemClean.contains(pModel)) {
-        return prod;
+        return ensureDualSerial(prod);
       }
     }
 
@@ -667,7 +754,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
       final pModel = prod.model.trim().toLowerCase();
       final tokens = pModel.split(RegExp(r'[\s\-_]+')).where((t) => t.length >= 3).toList();
       if (tokens.isNotEmpty && tokens.every((t) => itemClean.contains(t))) {
-        return prod;
+        return ensureDualSerial(prod);
       }
     }
 
@@ -676,6 +763,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
         RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(item.productId!.trim());
     final brandGuess = item.itemName.split(' ').first;
     final catId = _products.isNotEmpty ? _products.first.categoryId : 'tally_category';
+    final bool isDualFallback = _modelDualSerialOverride[item.id] ??
+        _modelDualSerialOverride[item.itemName.trim().toLowerCase()] ??
+        item.hasDualSerial ||
+        isDualSerialModelName(item.itemName, brandGuess);
     return Product(
       id: hasValidProductId ? item.productId!.trim() : 'tally_item_${item.id}',
       name: item.matchedProductName ?? item.itemName,
@@ -688,7 +779,176 @@ class _OutwardScreenState extends State<OutwardScreen> {
       serialNumberRequired: true,
       currentStockQty: item.quantity.toInt(),
       outOfStockReminder: false,
-      hasDualSerial: false,
+      hasDualSerial: isDualFallback,
+    );
+  }
+
+  bool _isModelEligibleForDualSerialToggle(Product prod, [TallyVoucherItem? item]) {
+    // Triple-tap toggle is strictly ONLY for models that DO NOT exist in GA STOCK DB.
+    // Models that already exist in GA STOCK DB must NEVER be modified via this secret gesture.
+
+    // 1. If not scanning from a Tally voucher, every model is an existing GA STOCK catalog product
+    if (_tallyVoucher == null) {
+      return false;
+    }
+
+    // 2. Check if product exists by real DB ID in GA STOCK catalog
+    if (!prod.id.startsWith('tally_')) {
+      final existsById = _products.any((p) => !p.id.startsWith('tally_') && p.id.toLowerCase() == prod.id.toLowerCase());
+      if (existsById) return false;
+    }
+
+    // 3. Check if voucher item has a valid DB productId matching a GA STOCK catalog product
+    if (item != null && item.productId != null && !item.productId!.startsWith('tally_')) {
+      final existsByItemPid = _products.any((p) => !p.id.startsWith('tally_') && p.id.toLowerCase() == item.productId!.toLowerCase());
+      if (existsByItemPid) return false;
+    }
+
+    // 4. Check if model name matches an existing GA STOCK product
+    final pModel = prod.model.trim().toLowerCase();
+    if (pModel.isNotEmpty) {
+      final existsByModel = _products.any((p) => !p.id.startsWith('tally_') && p.model.trim().isNotEmpty && p.model.trim().toLowerCase() == pModel);
+      if (existsByModel) return false;
+    }
+
+    // 5. Check if product name matches an existing GA STOCK product
+    final pName = prod.name.trim().toLowerCase();
+    if (pName.isNotEmpty) {
+      final existsByName = _products.any((p) => !p.id.startsWith('tally_') && p.name.trim().isNotEmpty && p.name.trim().toLowerCase() == pName);
+      if (existsByName) return false;
+    }
+
+    // 6. Check if voucher item's matched model or item name matches an existing GA STOCK product
+    if (item != null) {
+      final itmModel = item.matchedProductModel?.trim().toLowerCase();
+      if (itmModel != null && itmModel.isNotEmpty) {
+        final existsByItmModel = _products.any((p) => !p.id.startsWith('tally_') && p.model.trim().isNotEmpty && p.model.trim().toLowerCase() == itmModel);
+        if (existsByItmModel) return false;
+      }
+
+      final itmName = item.matchedProductName?.trim().toLowerCase();
+      if (itmName != null && itmName.isNotEmpty) {
+        final existsByItmName = _products.any((p) => !p.id.startsWith('tally_') && p.name.trim().isNotEmpty && p.name.trim().toLowerCase() == itmName);
+        if (existsByItmName) return false;
+      }
+
+      final rawName = item.itemName.trim().toLowerCase();
+      if (rawName.isNotEmpty) {
+        final existsByRaw = _products.any((p) => !p.id.startsWith('tally_') &&
+            ((p.model.trim().isNotEmpty && p.model.trim().toLowerCase() == rawName) ||
+             (p.name.trim().isNotEmpty && p.name.trim().toLowerCase() == rawName)));
+        if (existsByRaw) return false;
+      }
+    }
+
+    // If none of the above matched, this model genuinely does not exist in GA STOCK DB.
+    return true;
+  }
+
+  bool _handleModelTapForTripleClick(Product prod, [TallyVoucherItem? item]) {
+    if (!_isModelEligibleForDualSerialToggle(prod, item)) {
+      return false;
+    }
+
+    final now = DateTime.now();
+    final modelKey = item?.id ?? prod.id;
+
+    if (_lastTappedModelKey == modelKey &&
+        _lastModelTapTime != null &&
+        now.difference(_lastModelTapTime!) < const Duration(milliseconds: 700)) {
+      _modelTapCount++;
+    } else {
+      _modelTapCount = 1;
+      _lastTappedModelKey = modelKey;
+    }
+    _lastModelTapTime = now;
+
+    if (_modelTapCount >= 3) {
+      _modelTapCount = 0;
+      _lastModelTapTime = null;
+      _toggleModelDualSerial(prod, item);
+      return true;
+    }
+    return false;
+  }
+
+  void _toggleModelDualSerial(Product prod, [TallyVoucherItem? item]) {
+    HapticFeedback.heavyImpact();
+
+    final bool currentDual = prod.hasDualSerial;
+    final bool newDual = !currentDual;
+
+    // 1. Store in session override map
+    _modelDualSerialOverride[prod.id] = newDual;
+    _modelDualSerialOverride[prod.model.trim().toLowerCase()] = newDual;
+    if (item != null) {
+      _modelDualSerialOverride[item.id] = newDual;
+      _modelDualSerialOverride[item.itemName.trim().toLowerCase()] = newDual;
+    }
+
+    // 2. Update Product in local lists & cache
+    final updatedProd = prod.copyWith(hasDualSerial: newDual);
+    final pIdx = _products.indexWhere((p) => p.id == prod.id || p.model.trim().toLowerCase() == prod.model.trim().toLowerCase());
+    if (pIdx != -1) {
+      _products[pIdx] = _products[pIdx].copyWith(hasDualSerial: newDual);
+      try {
+        OfflineManager().updateProduct(_products[pIdx]);
+      } catch (_) {}
+    }
+
+    // 3. Update active selected product
+    if (_selectedProduct?.id == prod.id ||
+        _selectedProduct?.model.trim().toLowerCase() == prod.model.trim().toLowerCase()) {
+      _selectedProduct = updatedProd;
+      if (newDual) {
+        _outwardUnitType = 'indoor';
+      }
+    }
+
+    // 4. Update Tally Voucher items if in Tally mode
+    if (_tallyVoucher != null) {
+      final updatedItems = _tallyVoucher!.items.map((it) {
+        final matches = it.id == item?.id ||
+            it.productId == prod.id ||
+            it.itemName.trim().toLowerCase() == prod.name.trim().toLowerCase() ||
+            (it.itemCode != null && it.itemCode!.trim().toLowerCase() == prod.model.trim().toLowerCase());
+        if (matches) {
+          return it.copyWith(hasDualSerial: newDual);
+        }
+        return it;
+      }).toList();
+
+      _tallyVoucher = _tallyVoucher!.copyWith(
+        items: updatedItems,
+        hasDualSerialItems: updatedItems.any((i) => i.hasDualSerial),
+      );
+    }
+
+    // 5. Update backend in background if valid UUID exists
+    final realPid = item?.productId ?? (RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(prod.id) ? prod.id : null);
+    _api.assignProductBrand(
+      brand: prod.brand.isNotEmpty && prod.brand != 'Tally' ? prod.brand : 'FORMENTY',
+      hasDualSerial: newDual,
+      productId: realPid,
+      voucherItemId: item?.id,
+      itemName: item?.itemName ?? prod.name,
+    ).then((updated) {
+      if (updated != null && mounted) {
+        final idx = _products.indexWhere((p) => p.id == updated.id);
+        if (idx != -1) {
+          _products[idx] = updated;
+        } else {
+          _products.add(updated);
+        }
+      }
+    }).catchError((_) {});
+
+    setState(() {});
+    _persistDraft();
+
+    _showToast(
+      newDual ? 'Switched to Dual Serial' : 'Switched to Single Unit',
+      const Color(0xFF4F46E5),
     );
   }
 
@@ -703,12 +963,21 @@ class _OutwardScreenState extends State<OutwardScreen> {
     final itemModelClean = (item.matchedProductModel ?? item.itemCode ?? '').trim().toLowerCase();
     final prodModelClean = prod.model.trim().toLowerCase();
     final prodNameClean = prod.name.trim().toLowerCase();
+    final prodFullClean = '${prod.brand} ${prod.model}'.trim().toLowerCase();
 
     if (prodModelClean.isNotEmpty) {
       if (prodModelClean == itemClean || prodModelClean == itemModelClean) return true;
       if (prodModelClean.length >= 3 && itemClean.contains(prodModelClean)) return true;
+      if (itemClean.length >= 3 && prodModelClean.contains(itemClean)) return true;
     }
-    if (prodNameClean.isNotEmpty && prodNameClean == itemClean) return true;
+    if (prodNameClean.isNotEmpty) {
+      if (prodNameClean == itemClean) return true;
+      if (prodNameClean.length >= 3 && itemClean.contains(prodNameClean)) return true;
+      if (itemClean.length >= 3 && prodNameClean.contains(itemClean)) return true;
+    }
+    if (prodFullClean.isNotEmpty) {
+      if (prodFullClean == itemClean || itemClean.contains(prodFullClean) || prodFullClean.contains(itemClean)) return true;
+    }
 
     return false;
   }
@@ -732,17 +1001,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
     return uniqueProds.values.toList();
   }
 
-  TallyVoucherItem? _getCurrentTallyItem() {
-    if (_tallyVoucher == null) return null;
-    if (_selectedTallyItemId != null) {
-      final itm = _tallyVoucher!.items.where((it) => it.id == _selectedTallyItemId).firstOrNull;
-      if (itm != null) return itm;
-    }
-    if (_selectedProduct != null) {
-      return _findTallyItemForProduct(_selectedProduct);
-    }
-    return _tallyVoucher!.items.firstOrNull;
-  }
 
   int _getScannedCountForProduct(Product prod) {
     return _scannedItems.where((s) {
@@ -750,6 +1008,20 @@ class _OutwardScreenState extends State<OutwardScreen> {
       if (p == null) return false;
       return p.id.toLowerCase() == prod.id.toLowerCase() ||
           p.model.trim().toLowerCase() == prod.model.trim().toLowerCase();
+    }).length;
+  }
+
+  int _getScannedCountForProductAndUnit(Product prod, {String? unitType}) {
+    return _scannedItems.where((s) {
+      final p = s.product;
+      if (p == null) return false;
+      final match = p.id.toLowerCase() == prod.id.toLowerCase() ||
+          p.model.trim().toLowerCase() == prod.model.trim().toLowerCase();
+      if (!match) return false;
+      if (unitType != null) {
+        return (s.unitType ?? '').toLowerCase() == unitType.toLowerCase();
+      }
+      return true;
     }).length;
   }
 
@@ -780,7 +1052,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
       MaterialPageRoute(
         builder: (_) => BarcodeScannerWidget(
           title: 'Dispatch: ${_selectedShop!.name}',
-          prompt: 'Scanning: ${_selectedProduct!.brand} ${_selectedProduct!.model}',
+          prompt: _selectedProduct!.hasDualSerial
+              ? 'Scanning: ${_selectedProduct!.brand} ${_selectedProduct!.model} (${_outwardUnitType.toUpperCase()})'
+              : 'Scanning: ${_selectedProduct!.brand} ${_selectedProduct!.model}',
           initialLastScanned: _scannedItems.isNotEmpty ? _scannedItems.first.serialNumber : null,
           initialCount: _scannedItems.length,
           itemCountProvider: () => _scannedItems.length,
@@ -813,6 +1087,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
     }
 
     _scanQueue.add(cleanSerial);
+
+    // Eagerly prefetch validation in parallel so it resolves instantaneously when processed
+    final String? pidToSend = (_selectedProduct != null &&
+            !_selectedProduct!.id.startsWith('tally_') &&
+            !_selectedProduct!.id.startsWith('offline_'))
+        ? _selectedProduct!.id
+        : null;
+    unawaited(_api.checkOutwardSerial(pidToSend, cleanSerial));
 
     if (!_isProcessingQueue) {
       _processOutwardScanQueue();
@@ -902,11 +1184,22 @@ class _OutwardScreenState extends State<OutwardScreen> {
         final existingModelName = (res['registered_model_name'] ?? serialDetail?['product_name'])?.toString().trim();
         if (existingModelName != null && existingModelName.isNotEmpty) {
           final cleanM = existingModelName.toLowerCase();
-          realProd = _products.where((p) => p.model.trim().toLowerCase() == cleanM || p.name.trim().toLowerCase() == cleanM).firstOrNull ??
-              OfflineManager().products.where((p) => p.model.trim().toLowerCase() == cleanM || p.name.trim().toLowerCase() == cleanM).firstOrNull;
+          realProd = _products.where((p) => p.model.trim().toLowerCase() == cleanM || p.name.trim().toLowerCase() == cleanM || cleanM.contains(p.model.trim().toLowerCase()) || cleanM.contains(p.name.trim().toLowerCase())).firstOrNull ??
+              OfflineManager().products.where((p) => p.model.trim().toLowerCase() == cleanM || p.name.trim().toLowerCase() == cleanM || cleanM.contains(p.model.trim().toLowerCase()) || cleanM.contains(p.name.trim().toLowerCase())).firstOrNull;
           if (realProd == null && _tallyVoucher != null) {
             for (final itm in _tallyVoucher!.items) {
-              if (itm.itemName.trim().toLowerCase() == cleanM || (itm.itemCode != null && itm.itemCode!.trim().toLowerCase() == cleanM)) {
+              final itmName = itm.itemName.trim().toLowerCase();
+              final itmCode = itm.itemCode?.trim().toLowerCase();
+              final itmModel = itm.matchedProductModel?.trim().toLowerCase();
+              if (itmName == cleanM || cleanM.contains(itmName) || itmName.contains(cleanM)) {
+                realProd = _resolveTallyProduct(itm);
+                break;
+              }
+              if (itmCode != null && itmCode.isNotEmpty && (itmCode == cleanM || cleanM.contains(itmCode))) {
+                realProd = _resolveTallyProduct(itm);
+                break;
+              }
+              if (itmModel != null && itmModel.isNotEmpty && (itmModel == cleanM || cleanM.contains(itmModel))) {
                 realProd = _resolveTallyProduct(itm);
                 break;
               }
@@ -915,12 +1208,35 @@ class _OutwardScreenState extends State<OutwardScreen> {
         }
       }
 
+      // Check OfflineManager local serial cache entry
+      if (realProd == null) {
+        final offlineEntry = OfflineManager().serials[cleanSerial];
+        if (offlineEntry != null && offlineEntry['p'] != null) {
+          final offPid = offlineEntry['p'].toString().toLowerCase();
+          realProd = _products.where((p) => p.id.toLowerCase() == offPid).firstOrNull ??
+              OfflineManager().products.where((p) => p.id.toLowerCase() == offPid).firstOrNull;
+          if (realProd == null && _tallyVoucher != null) {
+            for (final itm in _tallyVoucher!.items) {
+              if (itm.productId != null && itm.productId!.toLowerCase() == offPid) {
+                realProd = _resolveTallyProduct(itm);
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // If backend confirmed Case 1 (matched to currently sent product):
+      if ((caseVal == 1 || isMatched) && realProd == null && _selectedProduct != null) {
+        if (_findTallyItemForProduct(_selectedProduct) != null) {
+          realProd = _selectedProduct;
+        }
+      }
+
       // =========================================================================
       // STRICT TALLY BILL ENFORCEMENT: ONLY MODELS IN THIS BILL MAY BE SCANNED
       // =========================================================================
       if (_tallyVoucher != null) {
-        final currentTallyItem = _getCurrentTallyItem();
-
         // 1. If serial belongs to a known registered product in the warehouse
         if (realProd != null) {
           final Product targetProd = realProd;
@@ -929,6 +1245,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
           if (billItemForProd == null) {
             HapticFeedback.heavyImpact();
             SoundService().playErrorSound();
+            _showToast(
+              'Model not in this Tally bill',
+              const Color(0xFFDC2626),
+            );
             _showSimpleAlert(
               'Model Not In Tally Bill',
               'Serial "$cleanSerial" is registered under "${targetProd.brand} ${targetProd.model}", which is NOT in Tally Bill ${_tallyVoucher!.voucherNumber}.\n\nStrictly only models present in this Tally bill can be scanned.',
@@ -938,16 +1258,42 @@ class _OutwardScreenState extends State<OutwardScreen> {
           }
 
           // Check B: Has the target quantity for this model already been reached?
-          final targetQty = billItemForProd.quantity.toInt();
-          final scannedQty = _getScannedCountForProduct(targetProd);
-          if (scannedQty >= targetQty && targetQty > 0) {
+          final billedUnits = billItemForProd.quantity.toInt();
+          final isDual = targetProd.hasDualSerial;
+          final targetSerials = isDual ? (billedUnits * 2) : billedUnits;
+          final scannedTotal = _getScannedCountForProduct(targetProd);
+          final inScanned = _getScannedCountForProductAndUnit(targetProd, unitType: 'indoor');
+          final outScanned = _getScannedCountForProductAndUnit(targetProd, unitType: 'outdoor');
+
+          if (scannedTotal >= targetSerials && targetSerials > 0) {
             HapticFeedback.heavyImpact();
             SoundService().playErrorSound();
             _showSimpleAlert(
               'Target Quantity Reached',
-              'All $targetQty units of "${targetProd.model}" in Tally Bill ${_tallyVoucher!.voucherNumber} have already been scanned ($scannedQty/$targetQty).\n\nCannot scan extra units.',
+              'All $targetSerials serials for $billedUnits unit(s) of "${targetProd.model}" in Tally Bill ${_tallyVoucher!.voucherNumber} have already been scanned ($scannedTotal/$targetSerials${isDual ? ": $inScanned Indoor, $outScanned Outdoor" : ""}).\n\nCannot scan extra units.',
             );
             return; // STRICTLY REJECTED!
+          }
+
+          if (isDual && billedUnits > 0) {
+            if (_outwardUnitType == 'indoor' && inScanned >= billedUnits) {
+              HapticFeedback.heavyImpact();
+              SoundService().playErrorSound();
+              _showSimpleAlert(
+                'Indoor Target Reached',
+                'All $billedUnits Indoor unit(s) of "${targetProd.model}" have already been scanned ($inScanned/$billedUnits).\n\nPlease toggle to Outdoor to scan the remaining ${billedUnits - outScanned} Outdoor unit(s).',
+              );
+              return; // STRICTLY REJECTED!
+            }
+            if (_outwardUnitType == 'outdoor' && outScanned >= billedUnits) {
+              HapticFeedback.heavyImpact();
+              SoundService().playErrorSound();
+              _showSimpleAlert(
+                'Outdoor Target Reached',
+                'All $billedUnits Outdoor unit(s) of "${targetProd.model}" have already been scanned ($outScanned/$billedUnits).\n\nPlease toggle to Indoor to scan the remaining ${billedUnits - inScanned} Indoor unit(s).',
+              );
+              return; // STRICTLY REJECTED!
+            }
           }
 
           // Check C: Auto-switch active model to this model without any mismatch warning!
@@ -957,12 +1303,6 @@ class _OutwardScreenState extends State<OutwardScreen> {
               _selectedProduct = targetProd;
               _selectedTallyItemId = billItemForProd.id;
               _activeFilterModelId = targetProd.id;
-              if (targetProd.hasDualSerial) {
-                final detectedUnit = res['unit_type']?.toString().toLowerCase();
-                if (detectedUnit == 'indoor' || detectedUnit == 'outdoor') {
-                  _outwardUnitType = detectedUnit!;
-                }
-              }
             });
           }
 
@@ -985,9 +1325,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   sequenceNumber: seq,
                 ),
               );
-              if (targetProd.hasDualSerial) {
-                _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
-              }
+              // Unit type toggle strictly remains manual (NO auto-toggle)
               _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${targetProd.brand} ${targetProd.model}';
             });
             HapticFeedback.lightImpact();
@@ -1005,6 +1343,10 @@ class _OutwardScreenState extends State<OutwardScreen> {
           HapticFeedback.heavyImpact();
           SoundService().playErrorSound();
           final existingModel = res['registered_model_name'] ?? serialDetail?['product_name'] ?? 'another model';
+          _showToast(
+            'Model not in this Tally bill',
+            const Color(0xFFDC2626),
+          );
           _showSimpleAlert(
             'Model Not In Tally Bill',
             'Serial "$cleanSerial" is registered under "$existingModel", which is NOT in Tally Bill ${_tallyVoucher!.voucherNumber}.\n\nStrictly only models present in this Tally bill can be scanned.',
@@ -1012,21 +1354,20 @@ class _OutwardScreenState extends State<OutwardScreen> {
           );
           return; // STRICTLY REJECTED!
         }
-        // 3. For pre-go-live untracked stock (Case 2) or Case 1 without registered realProd:
+        // 3. Serial does NOT exist for ANY model in this Tally bill:
         else {
-          if (currentTallyItem != null && _selectedProduct != null) {
-            final targetQty = currentTallyItem.quantity.toInt();
-            final scannedQty = _getScannedCountForProduct(_selectedProduct!);
-            if (scannedQty >= targetQty && targetQty > 0) {
-              HapticFeedback.heavyImpact();
-              SoundService().playErrorSound();
-              _showSimpleAlert(
-                'Target Quantity Reached',
-                'All $targetQty units of "${_selectedProduct!.model}" in Tally Bill ${_tallyVoucher!.voucherNumber} have already been scanned ($scannedQty/$targetQty).\n\nCannot scan extra units.',
-              );
-              return; // STRICTLY REJECTED!
-            }
-          }
+          HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
+          _showToast(
+            'Error: Serial "$cleanSerial" does not exist for any model in this bill',
+            const Color(0xFFDC2626),
+          );
+          _showSimpleAlert(
+            'Serial Not Found in Bill',
+            'Serial "$cleanSerial" does not exist in stock for any model in Tally Bill ${_tallyVoucher!.voucherNumber}.\n\nStrictly only serials registered in GA Stock for the models in this bill can be scanned.',
+            autoDismissDuration: const Duration(seconds: 12),
+          );
+          return; // STRICTLY REJECTED! NEVER ADD UNTRACKED / NON-EXISTENT SERIALS IN TALLY MODE!
         }
       } else {
         // Non-Tally manual dispatch: upgrade placeholder product if applicable
@@ -1080,9 +1421,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
-            if (_selectedProduct!.hasDualSerial) {
-              _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
-            }
+            // Unit type toggle strictly remains manual (NO auto-toggle)
             _lastScanFeedback = '✓ Scanned #$seq: $cleanSerial • ${_selectedProduct!.brand} ${_selectedProduct!.model}';
           });
         }
@@ -1090,6 +1429,21 @@ class _OutwardScreenState extends State<OutwardScreen> {
 
       // --- CASE 2: RECORDED ONLY (Unmatched pre-go-live stock) ---
       else if (caseVal == 2 || caseName == 'unmatched') {
+        if (_tallyVoucher != null) {
+          HapticFeedback.heavyImpact();
+          SoundService().playErrorSound();
+          _showToast(
+            'Error: Serial "$cleanSerial" does not exist for any model in this bill',
+            const Color(0xFFDC2626),
+          );
+          _showSimpleAlert(
+            'Serial Not Found in Bill',
+            'Serial "$cleanSerial" does not exist in stock for any model in Tally Bill ${_tallyVoucher!.voucherNumber}.\n\nStrictly only serials registered in GA Stock for the models in this bill can be scanned.',
+            autoDismissDuration: const Duration(seconds: 12),
+          );
+          return;
+        }
+
         HapticFeedback.lightImpact();
         final unitType = _selectedProduct?.hasDualSerial == true ? _outwardUnitType : null;
         if (!_scannedItems.any((item) => item.serialNumber == cleanSerial)) {
@@ -1108,9 +1462,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
-            if (_selectedProduct!.hasDualSerial) {
-              _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
-            }
+            // Unit type toggle strictly remains manual (NO auto-toggle)
             _lastScanFeedback = '✓ Scanned #$seq (Old Stock): $cleanSerial • ${_selectedProduct!.brand} ${_selectedProduct!.model}';
           });
         }
@@ -1165,9 +1517,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 sequenceNumber: seq,
               ),
             );
-            if (_selectedProduct!.hasDualSerial) {
-              _outwardUnitType = (_outwardUnitType == 'indoor') ? 'outdoor' : 'indoor';
-            }
+            // Unit type toggle strictly remains manual (NO auto-toggle)
           });
           _showToast(
             'Added $cleanSerial (${_selectedProduct!.model})${isDamaged ? " • DAMAGED" : ""}',
@@ -1235,16 +1585,12 @@ class _OutwardScreenState extends State<OutwardScreen> {
                 // Switch active model to matchedProd so staff can see and scan the matching unit!
                 _selectedProduct = matchedProd;
                 _activeFilterModelId = matchedProd!.id;
-                if (matchedProd.hasDualSerial && chosenUnitType != null) {
-                  // Auto-toggle to the companion unit so the next scan is ready for the other unit!
-                  _outwardUnitType = (chosenUnitType == 'indoor') ? 'outdoor' : 'indoor';
-                }
                 FocusManager.instance.primaryFocus?.unfocus();
                 SystemChannels.textInput.invokeMethod('TextInput.hide');
                 HardwareScannerService().clearBuffer();
               });
               _showToast(
-                'Added $cleanSerial (${matchedProd.model})${isDamaged ? " • DAMAGED" : ""}${matchedProd.hasDualSerial ? " • Next unit: ${_outwardUnitType.toUpperCase()}" : ""}',
+                'Added $cleanSerial (${matchedProd.model})${isDamaged ? " • DAMAGED" : ""}',
                 isDamaged ? const Color(0xFFD97706) : const Color(0xFF059669),
               );
             }
@@ -1879,9 +2225,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                 final p = filteredProds[i];
                                 final isSelected = p.id == _selectedProduct?.id;
                                 final itm = isTallyMode ? _findTallyItemForProduct(p) : null;
-                                final target = itm?.quantity.toInt() ?? 0;
+                                final billedUnits = itm?.quantity.toInt() ?? 0;
+                                final isDual = p.hasDualSerial;
+                                final targetSerials = isDual ? (billedUnits * 2) : billedUnits;
+                                final inCount = _getScannedCountForProductAndUnit(p, unitType: 'indoor');
+                                final outCount = _getScannedCountForProductAndUnit(p, unitType: 'outdoor');
                                 final countInBatch = _getScannedCountForProduct(p);
-                                final isDone = isTallyMode && target > 0 && countInBatch >= target;
+                                final isDone = isTallyMode && targetSerials > 0 &&
+                                    (isDual ? (inCount >= billedUnits && outCount >= billedUnits) : countInBatch >= targetSerials);
 
                                 return ListTile(
                                   tileColor: isSelected
@@ -1912,7 +2263,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                   ),
                                   subtitle: Text(
                                     isTallyMode
-                                        ? '${p.brand} • ${p.model} • Target: $target units'
+                                        ? '${p.brand} • ${p.model} • Target: $billedUnits unit(s)${isDual ? " ($targetSerials serials)" : ""}'
                                         : (p.currentStockQty < 0
                                             ? '${p.brand} • ${p.model} (${p.currentStockQty} - Negative Stock)'
                                             : '${p.brand} • ${p.model} (${p.currentStockQty} on shelves)'),
@@ -1930,7 +2281,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                             borderRadius: BorderRadius.circular(10),
                                           ),
                                           child: Text(
-                                            isDone ? 'Completed ($countInBatch/$target)' : '$countInBatch / $target',
+                                            isDone
+                                                ? 'Completed ($countInBatch/$targetSerials)'
+                                                : (isDual ? '$countInBatch/$targetSerials (In: $inCount, Out: $outCount)' : '$countInBatch / $targetSerials'),
                                             style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
                                           ),
                                         )
@@ -1951,6 +2304,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                     FocusManager.instance.primaryFocus?.unfocus();
                                     SystemChannels.textInput.invokeMethod('TextInput.hide');
                                     HardwareScannerService().clearBuffer();
+                                    final didTriple = _handleModelTapForTripleClick(p, itm);
+                                    if (didTriple) {
+                                      setSheetState(() {});
+                                      return;
+                                    }
                                     setState(() {
                                       _selectedProduct = p;
                                       _activeFilterModelId = p.id;
@@ -3677,7 +4035,11 @@ class _OutwardScreenState extends State<OutwardScreen> {
           backgroundColor: Colors.white,
           elevation: 0,
           foregroundColor: const Color(0xFF0F172A),
-          title: const Text('Outward Dispatch Scan', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          titleSpacing: 0,
+          title: Text(
+            _tallyVoucher != null ? 'Dispatch Bill' : 'Outward Scan',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
           leading: Focus(
             canRequestFocus: false,
             descendantsAreFocusable: false,
@@ -4180,9 +4542,14 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   (ctx, idx) {
                     final p = filtered[idx];
                     final itm = isTallyMode ? _findTallyItemForProduct(p) : null;
-                    final target = itm?.quantity.toInt() ?? 0;
+                    final billedUnits = itm?.quantity.toInt() ?? 0;
+                    final isDual = p.hasDualSerial;
+                    final targetSerials = isDual ? (billedUnits * 2) : billedUnits;
+                    final inCount = _getScannedCountForProductAndUnit(p, unitType: 'indoor');
+                    final outCount = _getScannedCountForProductAndUnit(p, unitType: 'outdoor');
                     final count = _getScannedCountForProduct(p);
-                    final isDone = isTallyMode && target > 0 && count >= target;
+                    final isDone = isTallyMode && targetSerials > 0 &&
+                        (isDual ? (inCount >= billedUnits && outCount >= billedUnits) : count >= targetSerials);
 
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 8),
@@ -4229,7 +4596,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                       const SizedBox(height: 2),
                                       Text(
                                         isTallyMode
-                                            ? '${p.brand} • ${p.model} • Target: $target units'
+                                            ? '${p.brand} • ${p.model} • Target: $billedUnits unit(s)${isDual ? " ($targetSerials serials)" : ""}'
                                             : '${p.brand} • ${p.model}',
                                         style: TextStyle(
                                           fontSize: 11,
@@ -4264,7 +4631,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                                       borderRadius: BorderRadius.circular(10),
                                     ),
                                     child: Text(
-                                      isDone ? 'Completed ($count/$target)' : '$count / $target',
+                                      isDone
+                                          ? 'Completed ($count/$targetSerials)'
+                                          : (isDual ? '$count/$targetSerials (In: $inCount, Out: $outCount)' : '$count / $targetSerials'),
                                       style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
                                     ),
                                   ),
@@ -4300,13 +4669,22 @@ class _OutwardScreenState extends State<OutwardScreen> {
     if (_tallyVoucher == null) return const SizedBox.shrink();
     final v = _tallyVoucher!;
 
+    final vehicleNum = _deliveryRefController.text.trim().isNotEmpty
+        ? _deliveryRefController.text.trim()
+        : (v.vehicleNumber?.trim() ?? '');
+    final transporter = v.transporterName?.trim() ?? '';
+    final metaParts = <String>[];
+    if (vehicleNum.isNotEmpty) metaParts.add('Vehicle: $vehicleNum');
+    if (transporter.isNotEmpty) metaParts.add('Transporter: $transporter');
+    if (v.destination != null && v.destination!.trim().isNotEmpty) metaParts.add('Dest: ${v.destination!.trim()}');
+
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(14, 8, 14, 4),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFFF0FDF4),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0xFFBBF7D0)),
       ),
       child: Column(
@@ -4314,7 +4692,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
         children: [
           Row(
             children: [
-              const Icon(Icons.receipt_long_rounded, color: Color(0xFF16A34A), size: 18),
+              const Icon(Icons.receipt_long_rounded, color: Color(0xFF16A34A), size: 17),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -4337,172 +4715,23 @@ class _OutwardScreenState extends State<OutwardScreen> {
               ),
             ],
           ),
-          const SizedBox(height: 5),
-          Row(
-            children: [
-              InkWell(
-                onTap: () => _showVehicleInputDialog(context),
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(
-                      color: _deliveryRefController.text.trim().isNotEmpty
-                          ? const Color(0xFF86EFAC)
-                          : const Color(0xFFFCD34D),
+          if (metaParts.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            InkWell(
+              onTap: () => _showVehicleInputDialog(context),
+              child: Row(
+                children: [
+                  const Icon(Icons.local_shipping_outlined, size: 13, color: Color(0xFF15803D)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      metaParts.join(' • '),
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF15803D)),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.local_shipping_outlined,
-                        size: 14,
-                        color: _deliveryRefController.text.trim().isNotEmpty
-                            ? const Color(0xFF15803D)
-                            : const Color(0xFFB45309),
-                      ),
-                      const SizedBox(width: 5),
-                      Text(
-                        _deliveryRefController.text.trim().isNotEmpty
-                            ? 'Vehicle: ${_deliveryRefController.text.trim()}'
-                            : '+ Input Vehicle No',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: _deliveryRefController.text.trim().isNotEmpty
-                              ? const Color(0xFF15803D)
-                              : const Color(0xFFB45309),
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Icon(
-                        Icons.edit,
-                        size: 11,
-                        color: _deliveryRefController.text.trim().isNotEmpty
-                            ? const Color(0xFF15803D)
-                            : const Color(0xFFB45309),
-                      ),
-                    ],
-                  ),
-                ),
+                ],
               ),
-              if (v.transporterName != null && v.transporterName!.trim().isNotEmpty) ...[
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Transporter: ${v.transporterName!.trim()}',
-                    style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF15803D)),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ],
-          ),
-          if (v.items.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            const Text(
-              'TAP MODEL TO SCAN:',
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFF15803D),
-                letterSpacing: 0.5,
-              ),
-            ),
-            const SizedBox(height: 5),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              children: v.items.map((item) {
-                final prod = _resolveTallyProduct(item);
-                final isSelected = _selectedTallyItemId != null
-                    ? _selectedTallyItemId == item.id
-                    : _selectedProduct?.id == prod.id;
-                final count = _scannedItems.where((s) {
-                  final p = s.product;
-                  if (p == null) return false;
-                  return p.id == prod.id ||
-                         p.name.trim().toLowerCase() == prod.name.trim().toLowerCase() ||
-                         p.model.trim().toLowerCase() == prod.model.trim().toLowerCase();
-                }).length;
-
-                final target = item.quantity.toInt();
-                final isDone = count >= target && target > 0;
-
-                return InkWell(
-                  onTap: () {
-                    setState(() {
-                      _selectedTallyItemId = item.id;
-                      _selectedProduct = prod;
-                      _activeFilterModelId = prod.id;
-                      if (prod.hasDualSerial) _outwardUnitType = 'indoor';
-                    });
-                    _showToast('Scanning: ${prod.model}', const Color(0xFF16A34A));
-                  },
-                  borderRadius: BorderRadius.circular(8),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? const Color(0xFF1E1B4B)
-                          : (isDone ? const Color(0xFFDCFCE7) : Colors.white),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: isSelected
-                            ? const Color(0xFF4F46E5)
-                            : (isDone ? const Color(0xFF86EFAC) : const Color(0xFFCBD5E1)),
-                        width: isSelected ? 2 : 1,
-                      ),
-                      boxShadow: isSelected
-                          ? [const BoxShadow(color: Color(0x224F46E5), blurRadius: 4, offset: Offset(0, 2))]
-                          : null,
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          isSelected
-                              ? Icons.bolt
-                              : (isDone ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded),
-                          size: 14,
-                          color: isSelected
-                              ? Colors.amber
-                              : (isDone ? const Color(0xFF16A34A) : const Color(0xFF64748B)),
-                        ),
-                        const SizedBox(width: 5),
-                        Text(
-                          '${item.itemName} ($count/$target)',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.bold,
-                            color: isSelected
-                                ? Colors.white
-                                : (isDone ? const Color(0xFF166534) : const Color(0xFF1E293B)),
-                          ),
-                        ),
-                        if (isSelected) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: Colors.amber,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: const Text(
-                              'ACTIVE',
-                              style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Color(0xFF1E1B4B)),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                );
-              }).toList(),
             ),
           ],
         ],
@@ -4609,64 +4838,16 @@ class _OutwardScreenState extends State<OutwardScreen> {
                       ],
                     ),
                   ),
-                  InkWell(
-                    onTap: () => _showVehicleInputDialog(context),
-                    borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
-                    child: Container(
-                      padding: EdgeInsets.symmetric(
-                        horizontal: context.isTablet ? 10 : 7,
-                        vertical: context.isLandscapeTablet ? 3 : (context.isTablet ? 5 : 3),
-                      ),
-                      decoration: BoxDecoration(
-                        color: _deliveryRefController.text.trim().isNotEmpty
-                            ? const Color(0xFFF1F5F9)
-                            : const Color(0xFFFEF3C7),
-                        borderRadius: BorderRadius.circular(context.isTablet ? 8 : 6),
-                        border: Border.all(
-                          color: _deliveryRefController.text.trim().isNotEmpty
-                              ? const Color(0xFFCBD5E1)
-                              : const Color(0xFFFDE68A),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.local_shipping_outlined,
-                            size: context.isTablet ? 15 : 12,
-                            color: _deliveryRefController.text.trim().isNotEmpty
-                                ? const Color(0xFF475569)
-                                : const Color(0xFF92400E),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _deliveryRefController.text.trim().isNotEmpty
-                                ? 'Vehicle: ${_deliveryRefController.text.trim()}'
-                                : '+ Vehicle No',
-                            style: TextStyle(
-                              fontSize: context.isLandscapeTablet ? 11 : (context.isTablet ? 12 : 10),
-                              fontWeight: FontWeight.bold,
-                              color: _deliveryRefController.text.trim().isNotEmpty
-                                  ? const Color(0xFF334155)
-                                  : const Color(0xFF92400E),
-                            ),
-                          ),
-                          const SizedBox(width: 3),
-                          Icon(
-                            Icons.edit,
-                            size: context.isTablet ? 12 : 10,
-                            color: _deliveryRefController.text.trim().isNotEmpty
-                                ? const Color(0xFF94A3B8)
-                                : const Color(0xFFB45309),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: context.isTablet ? 8 : 6),
                   // Active Model Switch pill
                   InkWell(
-                    onTap: _showModelSwitchBottomSheet,
+                    onTap: () {
+                      if (_selectedProduct != null) {
+                        final itm = _tallyVoucher != null ? _findTallyItemForProduct(_selectedProduct!) : null;
+                        final didTriple = _handleModelTapForTripleClick(_selectedProduct!, itm);
+                        if (didTriple) return;
+                      }
+                      _showModelSwitchBottomSheet();
+                    },
                     borderRadius: BorderRadius.circular(context.isTablet ? 10 : 8),
                     child: Container(
                       padding: EdgeInsets.symmetric(
@@ -4682,7 +4863,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           ConstrainedBox(
-                            constraints: BoxConstraints(maxWidth: context.isTablet ? 260 : 130),
+                            constraints: BoxConstraints(maxWidth: context.isTablet ? 280 : 160),
                             child: Text(
                               '${_selectedProduct?.brand ?? ""} ${_selectedProduct?.model ?? ""}',
                               style: TextStyle(
@@ -4840,22 +5021,13 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     ),
                   ],
                   const Spacer(),
-                  Builder(
-                    builder: (context) {
-                      final dualIn = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'indoor').length;
-                      final dualOut = _scannedItems.where((e) => e.unitType?.toLowerCase() == 'outdoor').length;
-                      final hasDual = dualIn > 0 || dualOut > 0 || _selectedProduct?.hasDualSerial == true;
-                      return Text(
-                        hasDual
-                            ? '${_scannedItems.length} Serials (Indoor: $dualIn, Outdoor: $dualOut)'
-                            : '${_scannedItems.length} Serials',
-                        style: TextStyle(
-                          fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
-                          fontWeight: FontWeight.bold,
-                          color: const Color(0xFF0F172A),
-                        ),
-                      );
-                    },
+                  Text(
+                    '${_scannedItems.length} Scanned',
+                    style: TextStyle(
+                      fontSize: context.isLandscapeTablet ? 12 : (context.isTablet ? 14 : 11),
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF0F172A),
+                    ),
                   ),
                 ],
               ),
@@ -4917,6 +5089,19 @@ class _OutwardScreenState extends State<OutwardScreen> {
                     final isSelected = _activeFilterModelId == prod.id;
                     final isCurrentActive = prod.id == _selectedProduct?.id;
 
+                    final itm = _tallyVoucher != null ? _findTallyItemForProduct(prod) : null;
+                    final billedUnits = itm?.quantity.toInt() ?? 0;
+                    final targetSerials = prod.hasDualSerial ? (billedUnits * 2) : billedUnits;
+
+                    String chipLabel;
+                    if (itm != null) {
+                      chipLabel = showDual
+                          ? '${prod.model} ($count/$targetSerials [In: $mIn/$billedUnits, Out: $mOut/$billedUnits])'
+                          : '${prod.model} ($count/$targetSerials)';
+                    } else {
+                      chipLabel = showDual ? '${prod.model} ($count [In: $mIn, Out: $mOut])' : '${prod.model} ($count)';
+                    }
+
                     return Padding(
                       padding: EdgeInsets.only(right: context.isTablet ? 8 : 6),
                       child: ChoiceChip(
@@ -4925,7 +5110,7 @@ class _OutwardScreenState extends State<OutwardScreen> {
                         avatar: isCurrentActive
                             ? Icon(Icons.bolt, size: context.isLandscapeTablet ? 13 : (context.isTablet ? 16 : 13), color: isSelected ? Colors.amber : const Color(0xFF4F46E5))
                             : null,
-                        label: Text(showDual ? '${prod.model} ($count [In: $mIn, Out: $mOut])' : '${prod.model} ($count)'),
+                        label: Text(chipLabel),
                         selected: isSelected,
                         selectedColor: const Color(0xFF4F46E5),
                         labelStyle: TextStyle(
@@ -4944,10 +5129,15 @@ class _OutwardScreenState extends State<OutwardScreen> {
                           FocusManager.instance.primaryFocus?.unfocus();
                           SystemChannels.textInput.invokeMethod('TextInput.hide');
                           HardwareScannerService().clearBuffer();
+                          final didTriple = _handleModelTapForTripleClick(prod, itm);
+                          if (didTriple) return;
                           setState(() {
                             _activeFilterModelId = val ? prod.id : 'ALL';
                             if (val) {
                               _selectedProduct = prod;
+                              if (prod.hasDualSerial && itm != null) {
+                                _outwardUnitType = (mIn < billedUnits) ? 'indoor' : 'outdoor';
+                              }
                               if (_tallyVoucher != null) {
                                 final matchItem = _tallyVoucher!.items.where((it) {
                                   final p = _resolveTallyProduct(it);
@@ -5405,26 +5595,9 @@ class _OutwardScreenState extends State<OutwardScreen> {
                   ),
                 if (item.unitType != null) ...[
                   SizedBox(width: context.isTablet ? 8 : 5),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
-                    onTap: () {
-                      setState(() {
-                        item.unitType = (item.unitType == 'indoor') ? 'outdoor' : 'indoor';
-                      });
-                      _persistDraft();
-                      ScaffoldMessenger.of(context).removeCurrentSnackBar();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            '${item.serialNumber} toggled to ${item.unitType!.toUpperCase()}',
-                            style: const TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          duration: const Duration(seconds: 1),
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    },
-                    child: Container(
+                  if (item.isMatched)
+                    // Matched serial: fixed unit type from DB, non-toggleable badge
+                    Container(
                       padding: EdgeInsets.symmetric(
                         horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
                         vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
@@ -5440,31 +5613,79 @@ class _OutwardScreenState extends State<OutwardScreen> {
                               : const Color(0xFF99F6E4),
                         ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
-                            style: TextStyle(
-                              fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 12 : 9.5),
-                              fontWeight: FontWeight.bold,
+                      child: Text(
+                        item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                        style: TextStyle(
+                          fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 12 : 9.5),
+                          fontWeight: FontWeight.bold,
+                          color: item.unitType == 'indoor'
+                              ? const Color(0xFF3C3489)
+                              : const Color(0xFF0D9488),
+                        ),
+                      ),
+                    )
+                  else
+                    // Unmatched / recorded-only serial: allows manual unit toggle
+                    InkWell(
+                      borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                      onTap: () {
+                        setState(() {
+                          item.unitType = (item.unitType == 'indoor') ? 'outdoor' : 'indoor';
+                        });
+                        _persistDraft();
+                        ScaffoldMessenger.of(context).removeCurrentSnackBar();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              '${item.serialNumber} toggled to ${item.unitType!.toUpperCase()}',
+                              style: const TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                            duration: const Duration(seconds: 1),
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                      },
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: context.isLandscapeTablet ? 6 : (context.isTablet ? 10 : 6),
+                          vertical: context.isLandscapeTablet ? 2 : (context.isTablet ? 4 : 2),
+                        ),
+                        decoration: BoxDecoration(
+                          color: item.unitType == 'indoor'
+                              ? const Color(0xFFEEF2FF)
+                              : const Color(0xFFF0FDFA),
+                          borderRadius: BorderRadius.circular(context.isTablet ? 6 : 4),
+                          border: Border.all(
+                            color: item.unitType == 'indoor'
+                                ? const Color(0xFFC7D2FE)
+                                : const Color(0xFF99F6E4),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              item.unitType == 'indoor' ? 'Indoor' : 'Outdoor',
+                              style: TextStyle(
+                                fontSize: context.isLandscapeTablet ? 9.5 : (context.isTablet ? 12 : 9.5),
+                                fontWeight: FontWeight.bold,
+                                color: item.unitType == 'indoor'
+                                    ? const Color(0xFF3C3489)
+                                    : const Color(0xFF0D9488),
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.swap_vert,
+                              size: context.isLandscapeTablet ? 11 : (context.isTablet ? 14 : 11),
                               color: item.unitType == 'indoor'
                                   ? const Color(0xFF3C3489)
                                   : const Color(0xFF0D9488),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          Icon(
-                            Icons.swap_vert,
-                            size: context.isLandscapeTablet ? 11 : (context.isTablet ? 14 : 11),
-                            color: item.unitType == 'indoor'
-                                ? const Color(0xFF3C3489)
-                                : const Color(0xFF0D9488),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ],
             ),

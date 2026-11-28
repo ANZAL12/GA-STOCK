@@ -405,6 +405,36 @@ export interface DeleteOutwardLineResponse {
   current_stock_qty: number;
 }
 
+export interface UpdateBillRequest {
+  vehicle_number?: string;
+  transporter_name?: string;
+  delivery_note?: string;
+  destination?: string;
+  remarks?: string;
+  transaction_date?: string;
+}
+
+export interface UpdateBillResponse {
+  success: boolean;
+  bill_number: string;
+  message: string;
+  vehicle_number?: string | null;
+  transporter_name?: string | null;
+  delivery_note?: string | null;
+  destination?: string | null;
+  remarks?: string | null;
+  transaction_date?: string | null;
+}
+
+export interface DeleteBillResponse {
+  success: boolean;
+  bill_number: string;
+  message: string;
+  deleted_batches_count: number;
+  deleted_lines_count: number;
+  restored_serials_count: number;
+}
+
 export interface BulkSerialCheckItem {
   serial_number: string;
   exists: boolean;

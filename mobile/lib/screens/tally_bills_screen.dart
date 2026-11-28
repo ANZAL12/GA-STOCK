@@ -6,6 +6,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/sound_service.dart';
 import '../services/websocket_service.dart';
+import '../widgets/brand_selection_dialog.dart';
 import '../widgets/top_toast.dart';
 import 'outward_screen.dart';
 
@@ -26,17 +27,37 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
   bool _syncing = false;
   String? _errorMessage;
 
+  DateTime get _effectiveFromDate {
+    final now = DateTime.now();
+    // Strictly current day and previous day only (today & yesterday)
+    return DateTime(now.year, now.month, now.day).subtract(const Duration(days: 1));
+  }
+
   TallyStatus? _tallyStatus;
   List<TallySalesVoucher> _vouchers = [];
   StreamSubscription? _wsSubscription;
   VoidCallback? _newBillSub;
+  String? _openingVoucherId;
 
   @override
   void initState() {
     super.initState();
     _api.tallyBillProcessedNotifier.addListener(_onBillProcessed);
     _initLiveUpdates();
-    _loadData();
+    // 0ms instant display from cache
+    if (_api.cachedTallyVouchers != null && _api.cachedTallyVouchers!.isNotEmpty) {
+      final cachedFiltered = _api.cachedTallyVouchers!
+          .where((v) => !v.isProcessed && !v.isCancelled && !v.isDeleted)
+          .toList();
+      if (cachedFiltered.isNotEmpty) {
+        _vouchers = cachedFiltered;
+        _loading = false;
+      }
+    }
+    if (_api.cachedTallyStatus != null) {
+      _tallyStatus = _api.cachedTallyStatus;
+    }
+    _loadData(showIndicator: _vouchers.isEmpty);
   }
 
   void _initLiveUpdates() {
@@ -49,6 +70,17 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
       if (type == 'tally_bill_created' && data is Map<String, dynamic>) {
         try {
           final vch = TallySalesVoucher.fromJson(data);
+
+          // Strictly ignore dispatched, cancelled, or deleted bills
+          if (vch.isProcessed || vch.isCancelled || vch.isDeleted) {
+            setState(() {
+              _vouchers.removeWhere((v) =>
+                  v.id == vch.id ||
+                  v.voucherNumber.trim().toLowerCase() == vch.voucherNumber.trim().toLowerCase());
+            });
+            return;
+          }
+
           final query = _searchController.text.trim().toLowerCase();
           final matches = query.isEmpty ||
               vch.voucherNumber.toLowerCase().contains(query) ||
@@ -74,11 +106,12 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
         }
       } else if ((type == 'tally_bill_cancelled' || type == 'bill_cancelled') && data is Map<String, dynamic>) {
         final bNum = (data['bill_number'] ?? data['voucher_number'])?.toString().trim().toLowerCase();
-        if (bNum != null && bNum.isNotEmpty) {
-          setState(() {
-            _vouchers.removeWhere((v) => v.voucherNumber.trim().toLowerCase() == bNum);
-          });
-        }
+        final bId = data['id']?.toString();
+        setState(() {
+          _vouchers.removeWhere((v) =>
+              (bId != null && v.id == bId) ||
+              (bNum != null && bNum.isNotEmpty && v.voucherNumber.trim().toLowerCase() == bNum));
+        });
       } else if (type == 'tally_bill_processed' && data is Map<String, dynamic>) {
         final processedId = data['id']?.toString();
         final voucherNum = data['voucher_number']?.toString().trim().toLowerCase();
@@ -137,7 +170,18 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
   }
 
   Future<void> _loadData({bool showIndicator = true}) async {
-    if (showIndicator) {
+    // 1. Instant 0ms render from in-memory cache if available
+    if (_vouchers.isEmpty && _api.cachedTallyVouchers != null && _api.cachedTallyVouchers!.isNotEmpty) {
+      final cachedFiltered = _api.cachedTallyVouchers!
+          .where((v) => !v.isProcessed && !v.isCancelled && !v.isDeleted)
+          .toList();
+      if (cachedFiltered.isNotEmpty) {
+        setState(() {
+          _vouchers = cachedFiltered;
+          _loading = false;
+        });
+      }
+    } else if (showIndicator && _vouchers.isEmpty) {
       setState(() {
         _loading = true;
         _errorMessage = null;
@@ -145,20 +189,32 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
     }
 
     try {
-      final statusFuture = _api.getTallyStatus();
+      // 2. Fetch vouchers first and render IMMEDIATELY (< 100ms)
       final vouchersFuture = _api.getTallyVouchers(
         query: _searchController.text.trim().isEmpty ? null : _searchController.text.trim(),
+        fromDate: _effectiveFromDate,
         isProcessed: false,
         isCancelled: false,
-        limit: 100,
+        limit: 150,
       );
 
-      final results = await Future.wait([statusFuture, vouchersFuture]);
+      // Status check runs asynchronously in background, NEVER blocking the bills list
+      _api.getTallyStatus().then((status) {
+        if (mounted) {
+          setState(() => _tallyStatus = status);
+        }
+      }).catchError((_) {});
+
+      final rawVouchers = await vouchersFuture;
       if (!mounted) return;
 
+      final strictlyFiltered = rawVouchers.where((v) {
+        if (v.isProcessed || v.isCancelled || v.isDeleted) return false;
+        return true;
+      }).toList();
+
       setState(() {
-        _tallyStatus = results[0] as TallyStatus;
-        _vouchers = results[1] as List<TallySalesVoucher>;
+        _vouchers = strictlyFiltered;
         _loading = false;
         _errorMessage = null;
       });
@@ -177,7 +233,7 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
     HapticFeedback.lightImpact();
 
     try {
-      final res = await _api.triggerTallySync(forceFull: forceFull);
+      final res = await _api.triggerTallySync(forceFull: forceFull, fromDate: _effectiveFromDate);
       if (!mounted) return;
       final msg = res['message'] ?? 'Tally synchronization completed!';
       TopToast.show(context, message: msg, backgroundColor: const Color(0xFF059669));
@@ -196,6 +252,51 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
     _debounceTimer = Timer(const Duration(milliseconds: 350), () {
       _loadData(showIndicator: false);
     });
+  }
+
+  Future<void> _openOutwardScan(TallySalesVoucher v) async {
+    if (_openingVoucherId != null) return;
+    setState(() => _openingVoucherId = v.id);
+    HapticFeedback.lightImpact();
+
+    try {
+      // Ensure full voucher items are loaded
+      TallySalesVoucher fullV = v;
+      if (fullV.items.isEmpty) {
+        try {
+          fullV = await _api.getTallyVoucherDetail(v.id);
+        } catch (_) {}
+      }
+
+      // Check if any items need brand selection
+      if (mounted) {
+        final confirmed = await TallyBrandHelper.checkAndPromptBrands(
+          context: context,
+          voucher: fullV,
+          api: _api,
+          products: _api.cachedProducts,
+        );
+        if (!confirmed) return;
+      }
+
+      if (!mounted) return;
+      final didDispatch = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => OutwardScreen(fromTallyVoucher: fullV),
+        ),
+      );
+      if (didDispatch == true && mounted) {
+        setState(() {
+          _vouchers.removeWhere((x) => x.id == v.id);
+        });
+      }
+      _loadData(showIndicator: false);
+    } finally {
+      if (mounted) {
+        setState(() => _openingVoucherId = null);
+      }
+    }
   }
 
   Future<void> _openVoucherDetail(TallySalesVoucher summary) async {
@@ -255,12 +356,15 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
         ],
       ),
       body: RefreshIndicator(
-        onRefresh: () => _loadData(showIndicator: false),
+        onRefresh: () => _triggerSync(),
         color: const Color(0xFF3C3489),
         child: Column(
           children: [
             // Search Bar
             _buildSearchBar(),
+
+            // Filter Chips (Today vs All Pending)
+            _buildFilterChips(),
 
             // List of Sales Bills
             Expanded(
@@ -301,6 +405,52 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
             contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChips() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEEF2FF),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFC7D2FE)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.receipt_long_rounded,
+                  size: 14,
+                  color: Color(0xFF3C3489),
+                ),
+                SizedBox(width: 5),
+                Text(
+                  "Pending Bills",
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF3C3489),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(),
+          Text(
+            '${_vouchers.length} pending',
+            style: const TextStyle(
+              fontSize: 12,
+              color: Color(0xFF64748B),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -359,12 +509,12 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
               const Icon(Icons.receipt_long_outlined, size: 54, color: Color(0xFF94A3B8)),
               const SizedBox(height: 14),
               const Text(
-                'No Sales Bills Found',
+                'No Pending Bills',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF1E293B)),
               ),
               const SizedBox(height: 6),
               const Text(
-                'Pull down to refresh or tap below to sync from TallyPrime.',
+                'All sales bills have been dispatched or no new bills were generated in Tally.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
               ),
@@ -385,25 +535,240 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
       itemCount: _vouchers.length,
       itemBuilder: (ctx, idx) {
         final v = _vouchers[idx];
-        return _buildVoucherCard(v);
+        return _buildDismissibleVoucherCard(v);
       },
     );
   }
 
+  Widget _buildDismissibleVoucherCard(TallySalesVoucher v) {
+    return Dismissible(
+      key: ValueKey('voucher_${v.id}'),
+      direction: DismissDirection.endToStart,
+      background: const SizedBox.shrink(),
+      secondaryBackground: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        decoration: BoxDecoration(
+          color: const Color(0xFFDC2626),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        alignment: Alignment.centerRight,
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.delete_outline_rounded, color: Colors.white, size: 24),
+            SizedBox(width: 8),
+            Text(
+              'Delete',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.endToStart) {
+          HapticFeedback.mediumImpact();
+          return await _confirmAndDeleteBill(v);
+        }
+        return false;
+      },
+      child: _buildVoucherCard(v),
+    );
+  }
+
+  Future<bool> _confirmAndDeleteBill(TallySalesVoucher v) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogCtx) {
+        bool deleting = false;
+        String? deleteError;
+
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 10),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+              actionsPadding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.delete_outline_rounded,
+                      color: Color(0xFFDC2626),
+                      size: 24,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Delete Bill?',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 6),
+                  RichText(
+                    text: TextSpan(
+                      style: const TextStyle(fontSize: 14, color: Color(0xFF334155), height: 1.4),
+                      children: [
+                        const TextSpan(text: 'Are you sure you want to delete bill '),
+                        TextSpan(
+                          text: v.voucherNumber,
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF0F172A)),
+                        ),
+                        if (v.partyName.isNotEmpty) ...[
+                          const TextSpan(text: ' for '),
+                          TextSpan(
+                            text: v.partyName,
+                            style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF0F172A)),
+                          ),
+                        ],
+                        const TextSpan(text: '?'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF3C7),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline_rounded, color: Color(0xFFB45309), size: 18),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Note: This deletes the bill from GA STOCK so it will not appear for scanning.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF92400E),
+                              height: 1.35,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (deleteError != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      deleteError!,
+                      style: const TextStyle(fontSize: 12, color: Color(0xFFDC2626), fontWeight: FontWeight.w500),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: deleting ? null : () => Navigator.pop(dialogCtx, false),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(color: Color(0xFF64748B), fontWeight: FontWeight.w600),
+                  ),
+                ),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFDC2626),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: deleting
+                      ? null
+                      : () async {
+                          setDialogState(() {
+                            deleting = true;
+                            deleteError = null;
+                          });
+                          try {
+                            await _api.deleteTallyVoucher(v.id);
+                            if (dialogCtx.mounted) {
+                              Navigator.pop(dialogCtx, true);
+                            }
+                          } catch (e) {
+                            setDialogState(() {
+                              deleting = false;
+                              deleteError = e.toString().replaceAll('Exception:', '').trim();
+                            });
+                          }
+                        },
+                  icon: deleting
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.delete_rounded, size: 16),
+                  label: Text(deleting ? 'Deleting...' : 'Delete Bill'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      if (mounted) {
+        setState(() {
+          _vouchers.removeWhere((item) => item.id == v.id);
+        });
+        HapticFeedback.lightImpact();
+        TopToast.show(
+          context,
+          message: 'Bill ${v.voucherNumber} removed from GA STOCK',
+          backgroundColor: const Color(0xFFDC2626),
+        );
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   Widget _buildVoucherCard(TallySalesVoucher v) {
+    final bool isOpening = _openingVoucherId == v.id;
+    final bool anyOpening = _openingVoucherId != null;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isOpening ? const Color(0xFFF5F3FF) : Colors.white,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: const Color(0xFFE2E8F0),
+          color: isOpening ? const Color(0xFF6366F1) : const Color(0xFFE2E8F0),
+          width: isOpening ? 1.8 : 1.0,
         ),
-        boxShadow: const [
+        boxShadow: [
           BoxShadow(
-            color: Color(0x06000000),
-            blurRadius: 4,
-            offset: Offset(0, 2),
+            color: isOpening ? const Color(0x1F6366F1) : const Color(0x06000000),
+            blurRadius: isOpening ? 8 : 4,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
@@ -411,14 +776,14 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
-          onTap: () => _openVoucherDetail(v),
+          onTap: anyOpening ? null : () => _openOutwardScan(v),
           borderRadius: BorderRadius.circular(14),
           child: Padding(
             padding: const EdgeInsets.all(14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Row: Invoice # + Date
+                // Top Row: Invoice # + Date + Details Icon
                 Row(
                   children: [
                     Container(
@@ -441,6 +806,14 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                     Text(
                       v.voucherDate,
                       style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.info_outline, size: 18, color: Color(0xFF94A3B8)),
+                      tooltip: 'View Bill Info',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: () => _openVoucherDetail(v),
                     ),
                   ],
                 ),
@@ -516,6 +889,32 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                         ),
                       ),
                     ),
+                    if (v.hasDualSerialItems) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFAF5FF),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: const Color(0xFFE9D5FF), width: 0.8),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.call_split_rounded, size: 11, color: Color(0xFF7E22CE)),
+                            SizedBox(width: 3),
+                            Text(
+                              'Dual Series',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF7E22CE),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     if (v.godowns.isNotEmpty) ...[
                       const SizedBox(width: 8),
                       Expanded(
@@ -530,42 +929,68 @@ class _TallyBillsScreenState extends State<TallyBillsScreen> {
                       const Spacer(),
                     const SizedBox(width: 8),
                     InkWell(
-                      onTap: () async {
-                        final didDispatch = await Navigator.push<bool>(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => OutwardScreen(fromTallyVoucher: v),
-                          ),
-                        );
-                        if (didDispatch == true && mounted) {
-                          setState(() {
-                            _vouchers.removeWhere((x) => x.id == v.id);
-                          });
-                        }
-                        _loadData(showIndicator: false);
-                      },
+                      onTap: anyOpening ? null : () => _openOutwardScan(v),
                       borderRadius: BorderRadius.circular(6),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF4F46E5),
+                          color: isOpening
+                              ? const Color(0xFF6366F1)
+                              : const Color(0xFF4F46E5),
                           borderRadius: BorderRadius.circular(6),
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.barcode_reader, size: 12, color: Colors.white),
-                            SizedBox(width: 4),
-                            Text(
-                              'Start Scan',
-                              style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
-                            ),
+                            if (isOpening) ...[
+                              const SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Opening...',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ] else ...[
+                              const Icon(Icons.barcode_reader, size: 12, color: Colors.white),
+                              const SizedBox(width: 4),
+                              const Text(
+                                'Start Scan',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
                     ),
                     const SizedBox(width: 4),
-                    const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
+                    if (isOpening)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: Padding(
+                          padding: EdgeInsets.all(2),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Color(0xFF6366F1),
+                          ),
+                        ),
+                      )
+                    else
+                      const Icon(Icons.chevron_right, size: 18, color: Color(0xFF94A3B8)),
                   ],
                 ),
               ],
@@ -627,52 +1052,23 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
 
   void _copyToOutward() async {
     final v = _detail ?? widget.initialSummary;
+
+    // Check if any items need brand selection
+    final confirmed = await TallyBrandHelper.checkAndPromptBrands(
+      context: context,
+      voucher: v,
+      api: _api,
+      products: _api.cachedProducts,
+    );
+    if (!confirmed) return;
+
+    if (!mounted) return;
     Navigator.pop(context, true);
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => OutwardScreen(fromTallyVoucher: v)),
     );
     widget.onStatusChanged();
-  }
-
-  Future<void> _deleteVoucher() async {
-    final v = _detail ?? widget.initialSummary;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: const Text('Delete Bill?', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-        content: Text('Are you sure you want to remove bill ${v.voucherNumber}? This cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Color(0xFF64748B))),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFDC2626),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete Bill'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true && mounted) {
-      try {
-        await _api.deleteTallyVoucher(v.id);
-        if (!mounted) return;
-        Navigator.pop(context, true);
-        widget.onStatusChanged();
-        TopToast.show(context, message: 'Bill ${v.voucherNumber} removed.', backgroundColor: const Color(0xFF059669));
-      } catch (e) {
-        if (!mounted) return;
-        TopToast.show(context, message: 'Delete failed: $e', backgroundColor: const Color(0xFFDC2626));
-      }
-    }
   }
 
   @override
@@ -716,11 +1112,6 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
                         ),
                       ],
                     ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Color(0xFFFCA5A5)),
-                    tooltip: 'Delete Bill',
-                    onPressed: _deleteVoucher,
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: Colors.white),
@@ -923,15 +1314,56 @@ class _VoucherDetailDialogState extends State<_VoucherDetailDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
-                child: Text(
-                  itm.itemName,
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF0F172A),
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      itm.itemName,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF0F172A),
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: itm.hasDualSerial ? const Color(0xFFFAF5FF) : const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(5),
+                            border: Border.all(
+                              color: itm.hasDualSerial ? const Color(0xFFE9D5FF) : const Color(0xFFE2E8F0),
+                              width: 0.8,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                itm.hasDualSerial ? Icons.call_split_rounded : Icons.check_circle_outline_rounded,
+                                size: 10.5,
+                                color: itm.hasDualSerial ? const Color(0xFF7E22CE) : const Color(0xFF475569),
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                itm.hasDualSerial ? 'Dual Unit (Indoor + Outdoor)' : 'Single Unit',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: itm.hasDualSerial ? const Color(0xFF7E22CE) : const Color(0xFF475569),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(

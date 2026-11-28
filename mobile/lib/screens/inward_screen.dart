@@ -557,6 +557,10 @@ class _InwardScreenState extends State<InwardScreen> {
     // 2. Enqueue in strict FIFO order
     _scanQueue.add(cleanSerial);
 
+    // Eagerly prefetch validation in parallel so it resolves instantaneously when processed
+    final String? pidToSend = _selectedProduct?.id;
+    unawaited(_api.validateInwardSerial(pidToSend, cleanSerial, inwardType: _inwardType));
+
     // 3. Start processing loop if idle
     if (!_isProcessingQueue) {
       _processScanQueue();

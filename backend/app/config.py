@@ -26,8 +26,9 @@ class Settings(BaseSettings):
     tally_hosts: str | None = None  # Comma-separated: "localhost:9000, 100.x.y.z:9000"
     tally_company_name: str | None = None
     tally_auto_sync: bool = True
-    tally_sync_interval_minutes: int = 1
-    tally_sync_interval_seconds: int = 10
+    tally_sync_interval_minutes: int = 60
+    tally_sync_interval_seconds: int = 8  # Fast 8s check for newly created bills via lightweight AlterID
+    tally_stock_sync_interval_seconds: int = 3600  # 1 hour relaxed interval for heavy stock ClosingBalance calculations
     tally_agent_token: str = "ga-tally-secret-2026"
 
 

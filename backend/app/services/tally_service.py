@@ -1,3 +1,16 @@
+"""
+=============================================================================
+CRITICAL ARCHITECTURAL INVARIANT: TALLY IS STRICTLY READ-ONLY
+-----------------------------------------------------------------------------
+Under NO circumstances does this system write, alter, create, import, or
+modify any records in Tally Prime.
+- All requests sent to Tally use `<TALLYREQUEST>Export</TALLYREQUEST>` or
+  `<TALLYREQUEST>Export Data</TALLYREQUEST>`.
+- No `<TALLYREQUEST>Import</TALLYREQUEST>` or `<ACTION>ALTER/CREATE</ACTION>`
+  payloads are ever sent.
+- All data flow is one-way: TALLY -> GODOWN MANAGEMENT SYSTEM (READ ONLY).
+=============================================================================
+"""
 import asyncio
 import json
 import logging
@@ -12,15 +25,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import delete, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import AsyncSessionLocal
 from app.config import settings
 from app.core.websocket_manager import ws_manager
 from app.models.category import Category
+from app.models.inward import InwardBatch
 from app.models.outward import OutwardBatch, OutwardLine
 from app.models.product import Product
+from app.models.return_ import Return
+from app.models.serial import SerialNumber
 from app.models.shop import Shop
 from app.models.tally import (
     TallyConfig,
@@ -346,21 +362,8 @@ def _clean_sv_company(company_name: Optional[str]) -> str:
 class TallyXmlBuilder:
     @staticmethod
     def build_company_list_request() -> str:
-        return """<ENVELOPE>
-  <HEADER>
-    <TALLYREQUEST>Export Data</TALLYREQUEST>
-  </HEADER>
-  <BODY>
-    <EXPORTDATA>
-      <REQUESTDESC>
-        <REPORTNAME>List of Companies</REPORTNAME>
-        <STATICVARIABLES>
-          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        </STATICVARIABLES>
-      </REQUESTDESC>
-    </EXPORTDATA>
-  </BODY>
-</ENVELOPE>"""
+        # Strictly return pure TDL Company Collection: ZERO GUI or Report interference
+        return TallyXmlBuilder.build_company_collection_request()
 
     @staticmethod
     def build_company_collection_request() -> str:
@@ -373,9 +376,6 @@ class TallyXmlBuilder:
   </HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES>
-        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-      </STATICVARIABLES>
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="Company Collection">
@@ -407,14 +407,17 @@ class TallyXmlBuilder:
             if from_date:
                 tdl_from = format_date_for_tdl(from_date)
                 filters.append("<FILTER>FromDateFilt</FILTER>")
-                formulae.append(f'<SYSTEM TYPE="Formulae" NAME="FromDateFilt">$Date &gt;= $$Date:"{tdl_from}"</SYSTEM>')
-            if to_date:
+                formulae.append(f'<SYSTEM TYPE="Formulae" NAME="FromDateFilt">$Date &gt;= $$Date:\'{tdl_from}\'</SYSTEM>')
+            if to_date and to_date < date.today():
                 tdl_to = format_date_for_tdl(to_date)
                 filters.append("<FILTER>ToDateFilt</FILTER>")
-                formulae.append(f'<SYSTEM TYPE="Formulae" NAME="ToDateFilt">$Date &lt;= $$Date:"{tdl_to}"</SYSTEM>')
+                formulae.append(f'<SYSTEM TYPE="Formulae" NAME="ToDateFilt">$Date &lt;= $$Date:\'{tdl_to}\'</SYSTEM>')
 
         filter_tags_str = "\n            ".join(filters)
         formulae_tags_str = "\n          ".join(formulae)
+        sv_block = f"""<STATICVARIABLES>
+        {sv_company}
+      </STATICVARIABLES>""" if sv_company else ""
 
         return f"""<ENVELOPE>
   <HEADER>
@@ -425,10 +428,7 @@ class TallyXmlBuilder:
   </HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES>
-        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        {sv_company}
-      </STATICVARIABLES>
+      {sv_block}
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="SalesInvoiceCollection">
@@ -449,33 +449,19 @@ class TallyXmlBuilder:
         from_date: Optional[date] = None,
         to_date: Optional[date] = None,
     ) -> str:
-        sv_company = _clean_sv_company(company_name)
-        sv_from = f"<SVFROMDATE>{format_date_for_tally(from_date)}</SVFROMDATE>" if from_date else ""
-        sv_to = f"<SVTODATE>{format_date_for_tally(to_date)}</SVTODATE>" if to_date else ""
-
-        return f"""<ENVELOPE>
-  <HEADER>
-    <TALLYREQUEST>Export Data</TALLYREQUEST>
-  </HEADER>
-  <BODY>
-    <EXPORTDATA>
-      <REQUESTDESC>
-        <REPORTNAME>Day Book</REPORTNAME>
-        <STATICVARIABLES>
-          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-          <EXPLODEFLAG>Yes</EXPLODEFLAG>
-          {sv_company}
-          {sv_from}
-          {sv_to}
-        </STATICVARIABLES>
-      </REQUESTDESC>
-    </EXPORTDATA>
-  </BODY>
-</ENVELOPE>"""
+        # Strictly return pure TDL SalesInvoiceCollection: NEVER invoke Day Book or GUI reports
+        return TallyXmlBuilder.build_sales_vouchers_request(
+            company_name=company_name,
+            from_date=from_date,
+            to_date=to_date,
+        )
 
     @staticmethod
     def build_stock_items_request(company_name: Optional[str] = None) -> str:
         sv_company = _clean_sv_company(company_name)
+        sv_block = f"""<STATICVARIABLES>
+        {sv_company}
+      </STATICVARIABLES>""" if sv_company else ""
         return f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -485,16 +471,15 @@ class TallyXmlBuilder:
   </HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES>
-        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        {sv_company}
-      </STATICVARIABLES>
+      {sv_block}
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="StockItemsCollection">
             <TYPE>StockItem</TYPE>
-            <FETCH>Name, Parent, Guid, PartNo, MailingName, BaseUnits, Description</FETCH>
+            <FETCH>Name, Parent, Guid, PartNo, MailingName, BaseUnits, Description, ClosingBalance</FETCH>
+            <FILTER>ActiveIn2026</FILTER>
           </COLLECTION>
+          <SYSTEM TYPE="Formulae" NAME="ActiveIn2026">NOT $$IsEmpty:$ClosingBalance</SYSTEM>
         </TDLMESSAGE>
       </TDL>
     </DESC>
@@ -504,6 +489,9 @@ class TallyXmlBuilder:
     @staticmethod
     def build_stock_groups_request(company_name: Optional[str] = None) -> str:
         sv_company = _clean_sv_company(company_name)
+        sv_block = f"""<STATICVARIABLES>
+        {sv_company}
+      </STATICVARIABLES>""" if sv_company else ""
         return f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -513,10 +501,7 @@ class TallyXmlBuilder:
   </HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES>
-        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        {sv_company}
-      </STATICVARIABLES>
+      {sv_block}
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="StockGroupsCollection">
@@ -532,6 +517,9 @@ class TallyXmlBuilder:
     @staticmethod
     def build_stock_summary_request(company_name: Optional[str] = None) -> str:
         sv_company = _clean_sv_company(company_name)
+        sv_block = f"""<STATICVARIABLES>
+        {sv_company}
+      </STATICVARIABLES>""" if sv_company else ""
         return f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -541,10 +529,7 @@ class TallyXmlBuilder:
   </HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES>
-        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        {sv_company}
-      </STATICVARIABLES>
+      {sv_block}
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="StockBalanceCollection">
@@ -562,6 +547,9 @@ class TallyXmlBuilder:
     @staticmethod
     def build_ledgers_request(company_name: Optional[str] = None) -> str:
         sv_company = _clean_sv_company(company_name)
+        sv_block = f"""<STATICVARIABLES>
+        {sv_company}
+      </STATICVARIABLES>""" if sv_company else ""
         return f"""<ENVELOPE>
   <HEADER>
     <VERSION>1</VERSION>
@@ -571,10 +559,7 @@ class TallyXmlBuilder:
   </HEADER>
   <BODY>
     <DESC>
-      <STATICVARIABLES>
-        <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-        {sv_company}
-      </STATICVARIABLES>
+      {sv_block}
       <TDL>
         <TDLMESSAGE>
           <COLLECTION NAME="DebtorsCollection">
@@ -802,9 +787,19 @@ class TallyXmlParser:
                 if not godown_name:
                     godown_name = clean_xml_text(inv.find("GODOWNNAME")) or None
 
+                category_name = (
+                    clean_xml_text(inv.find("PARENT"))
+                    or clean_xml_text(inv.find("STOCKGROUP"))
+                    or clean_xml_text(inv.find("HSNSTOCKGROUPSOURCE"))
+                    or clean_xml_text(inv.find("GSTSTOCKGROUPSOURCE"))
+                    or clean_xml_text(inv.find("CATEGORY"))
+                    or None
+                )
+
                 items.append({
                     "item_name": stock_name,
                     "item_code": item_code,
+                    "category_name": category_name,
                     "quantity": qty,
                     "uom": uom,
                     "raw_qty_text": raw_qty or None,
@@ -1100,22 +1095,6 @@ class TallyHttpClient:
             req_xml = TallyXmlBuilder.build_company_collection_request()
             resp_xml = await cls.post_xml(host, port, req_xml, tally_url, timeout=timeout)
             companies = TallyXmlParser.parse_companies(resp_xml)
-            if not companies:
-                # Fallback to Day Book request which returns SVCURRENTCOMPANY in native reports
-                daybook_xml = TallyXmlBuilder.build_fallback_voucher_register_request()
-                try:
-                    resp_db = await cls.post_xml(host, port, daybook_xml, tally_url, timeout=timeout)
-                    companies = TallyXmlParser.parse_companies(resp_db)
-                except Exception:
-                    pass
-            if not companies:
-                try:
-                    list_xml = TallyXmlBuilder.build_company_list_request()
-                    resp_list = await cls.post_xml(host, port, list_xml, tally_url, timeout=timeout)
-                    companies = TallyXmlParser.parse_companies(resp_list)
-                except Exception:
-                    pass
-
             return True, "Successfully connected to TallyPrime.", companies
         except httpx.ConnectError:
             url = cls.get_url(host, port, tally_url)
@@ -1154,9 +1133,45 @@ class TallySyncService:
     _cached_probe_at: float = 0.0
     _endpoint_cooldown_until: Dict[str, float] = {}
     _last_full_alter_poll_at: Dict[str, float] = {}
+    _discovered_endpoints: List[Tuple[str, int, Optional[str]]] = []
+    _last_discovery_at: float = 0.0
     _PROBE_CACHE_TTL_SEC: float = 60.0
     _ENDPOINT_ERROR_COOLDOWN_SEC: float = 30.0
     _FULL_ALTER_SWEEP_SEC: float = 120.0
+
+    @classmethod
+    async def discover_lan_endpoints(cls, subnet_prefix: str = "192.168.1", force: bool = False) -> List[Tuple[str, int, Optional[str]]]:
+        """
+        Quickly scans the local /24 subnet for any Tally instances with port 9000 open.
+        This ensures that if a Tally PC's IP changes via router DHCP, GA STOCK
+        automatically rediscovers it without manual re-configuration.
+        Cached for 60 seconds.
+        """
+        now = time.time()
+        if not force and (now - cls._last_discovery_at) < 60.0 and cls._discovered_endpoints:
+            return cls._discovered_endpoints
+
+        import socket
+        loop = asyncio.get_running_loop()
+
+        def _check_ip(host: str, port: int = 9000) -> Optional[str]:
+            s = socket.socket()
+            s.settimeout(0.25)
+            try:
+                s.connect((host, port))
+                return host
+            except Exception:
+                return None
+            finally:
+                s.close()
+
+        tasks = [loop.run_in_executor(None, _check_ip, f"{subnet_prefix}.{i}", 9000) for i in range(1, 255)]
+        results = await asyncio.gather(*tasks)
+        found_ips = [r for r in results if r]
+
+        cls._discovered_endpoints = [(ip, 9000, None) for ip in found_ips]
+        cls._last_discovery_at = now
+        return cls._discovered_endpoints
 
     @classmethod
     def _load_alter_cache(cls) -> None:
@@ -1214,6 +1229,165 @@ class TallySyncService:
         if any_changed:
             logger.info(f"[TallySync] Tally Connection Summary: {connected_count}/{total_count} host(s) connected.")
 
+    _TALLY_SETTINGS_FILE = Path(__file__).resolve().parent.parent.parent / "tally_settings.json"
+
+    @classmethod
+    def get_tally_settings(cls) -> Dict[str, Any]:
+        defaults = {
+            "auto_sync": True,
+            "enable_tally_1": True,
+            "enable_tally_2": True,
+        }
+        try:
+            if cls._TALLY_SETTINGS_FILE.exists():
+                with open(cls._TALLY_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    defaults.update(data)
+        except Exception as e:
+            logger.debug(f"[TallySync] Error reading tally_settings.json: {e}")
+        return defaults
+
+    @classmethod
+    def save_tally_settings(cls, updates: Dict[str, Any]) -> Dict[str, Any]:
+        curr = cls.get_tally_settings()
+        curr.update(updates)
+        try:
+            with open(cls._TALLY_SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(curr, f, indent=2)
+        except Exception as e:
+            logger.error(f"[TallySync] Error saving tally_settings.json: {e}")
+        return curr
+
+    @staticmethod
+    def is_dual_serial_category(category_name: str) -> bool:
+        """
+        Determines if a category requires dual-serial tracking (Indoor Unit + Outdoor Unit).
+        Rules per user specifications:
+          1. GENERAL, O-GENERAL, GENERAL (TALLY 2), etc.
+          2. AC FORMENTY, FOREMENTY AC, FORMENTY / FMTY variations
+          3. Starting with AC (e.g. "AC INVERTER", "AC SPLIT", "AC (TALLY 2)", "AC-SPLIT")
+          4. Ending in AC (e.g. "SPLIT AC", "INVERTER AC", "VOLTAS AC", "DAIKIN AC")
+          5. Standalone token AC anywhere in category name
+          6. AIR CONDITION, AIR CONDITIONER, AIR CONDITIONING (or hyphenated)
+          7. Additional findings: "SPLIT", "CASSETTE", "DUCTABLE", "VRF", "VRV", "HVAC", "MULTI SPLIT"
+        Excludes:
+          - Accessories/spares (STAND, STABILIZER, REMOTE, BRACKET, PIPE, DRAIN, COVER, TROLLEY, ACCESSORY, BLENDER)
+        """
+        if not category_name:
+            return False
+        cat = category_name.strip().upper()
+
+        # Non-machine accessories / spares / TV exclusion
+        exclusions = (
+            "STAND", "STABILIZER", "REMOTE", "BRACKET", "PIPE", "DRAIN",
+            "COVER", "ACCESSORY", "TROLLEY", "COPPER TUBE", "BLENDER", "PARTS", "LED", "TV",
+            "APPLIANCE", "APPLIANCES"
+        )
+        if any(ex in cat for ex in exclusions):
+            return False
+
+        # 1. GENERAL / O-GENERAL
+        if "GENERAL" in cat:
+            return True
+
+        # 2. AC FORMENTY / FOREMENTY AC: NOT formenty alone, only if AC is at beginning or at the end
+        if any(f in cat for f in ("FORMENTY", "FOREMENTY", "FMTY", "FORMNTY")):
+            is_ac_at_beginning = bool(re.search(r"^AC[\s\-_/(\[]", cat) or cat.startswith("AC"))
+            is_ac_at_end = bool(re.search(r"[\s\-_/(\]]AC$", cat) or cat.endswith(" AC") or cat.endswith("-AC"))
+            if is_ac_at_beginning or is_ac_at_end:
+                return True
+            # Formenty alone or non-AC formenty (e.g. LED FORMENTY) is NOT dual series
+            return False
+
+        # 3. Starting with AC (e.g. "AC INVERTER", "AC SPLIT", "AC (TALLY 2)", "AC-SPLIT")
+        if re.search(r"^AC[\s\-_/(\[]", cat) or cat == "AC":
+            return True
+
+        # 4. Ending in AC (e.g. "SPLIT AC", "INVERTER AC", "WINDOW AC", "VOLTAS AC")
+        if re.search(r"[\s\-_/(\]]AC$", cat) or cat.endswith(" AC") or cat == "AC":
+            return True
+
+        # 5. Standalone token AC anywhere in category name
+        if re.search(r"\bAC\b", cat):
+            return True
+
+        # 6. AIR CONDITION / AIR CONDITIONER / AIR CONDITIONING
+        if any(t in cat for t in ("AIR CONDITION", "AIR-CONDITION", "AIRCONDITION")):
+            return True
+
+        # 7. Additional dual air conditioning categories
+        additional_ac = (
+            "SPLIT", "CASSETTE", "DUCTABLE", "VRF", "VRV", "HVAC", "MULTI SPLIT", "CARRIER AC"
+        )
+        if any(t in cat for t in additional_ac):
+            return True
+
+        return False
+
+    @staticmethod
+    def is_dual_serial_model(item_name: str, cat_name: str = "") -> bool:
+        """
+        Identifies whether a billed product / inventory item model is dual-series
+        (Indoor Unit + Outdoor Unit split AC pairs) by matching model naming patterns
+        and category context.
+        """
+        name_u = (item_name or "").strip().upper()
+        cat_u = (cat_name or "").strip().upper()
+
+        # 1. Strict non-dual exclusions: appliances, single-unit coolers/freezers, TVs, hardware, accessories.
+        # Even if grouped under an AC category (like AC FORMENTY, GENERAL, etc.), these are SINGLE UNIT products!
+        non_dual_appliances_and_parts = (
+            "COOLER", "AIR COOLER", "WATER COOLER", "DESERT COOLER",
+            "CHILLER", "FREEZER", "DEEP FREEZER", "CHEST FREEZER", "VISI COOLER", "SHOWCASE",
+            "REFRIGERATOR", "REF ", "REF/", "FRIDGE",
+            "WASHING", "WM ", "W/M", "DRYER",
+            "TV", "SMART TV", "LED", "OLED", "QLED", "MONITOR",
+            "FAN", "GEYSER", "HEATER", "DISPENSER", "PURIFIER", "MICROWAVE", "OVEN",
+            "STAND", "TROLLEY", "PIPE", "TUBE", "BLENDER", "CUTTER", "GEAR", "JAR",
+            "STABILIZER", "REMOTE", "BRACKET", "DRAIN", "COVER", "ACCESSORY", "COPPER TUBE",
+            "ZAROOKY", "BOARD", "MOTOR", "PCB"
+        )
+        if any(neg in name_u for neg in non_dual_appliances_and_parts):
+            return False
+        if any(neg in cat_u for neg in non_dual_appliances_and_parts):
+            return False
+
+        # 2. If category is explicitly a dual-serial AC category (e.g. AC FORMENTY, GENERAL, AIR CONDITIONER):
+        # Remaining items under this category are split AC machine units (dual serial).
+        if cat_u and TallySyncService.is_dual_serial_category(cat_u):
+            return True
+
+        # When a new model is added in Tally and not yet pulled to GA Stock (category empty or default),
+        # evaluate item / model name against the dual series rules:
+        if "GENERAL" in name_u or "O-GENERAL" in name_u or "OGENERAL" in name_u:
+            return True
+        if any(f in name_u for f in ("FORMENTY", "FOREMENTY", "FMTY", "FORMNTY")):
+            is_ac_at_beginning = bool(re.search(r"^AC[\s\-_/(\[]", name_u) or name_u.startswith("AC"))
+            is_ac_at_end = bool(re.search(r"[\s\-_/(\]]AC$", name_u) or name_u.endswith(" AC") or name_u.endswith("-AC"))
+            if is_ac_at_beginning or is_ac_at_end:
+                return True
+            return False
+        if re.search(r"^AC[\s\-_/(\[]", name_u) or re.search(r"[\s\-_/(\]]AC$", name_u):
+            return True
+        if any(t in name_u for t in ("AIR CONDITION", "AIR-CONDITION", "AIRCONDITION")):
+            return True
+        if re.search(r"^(ASGA|ASGG|AOGA|AOGG|AUG|AOG|ASG)", name_u):
+            return True
+        if re.search(r"^FM\s*(12|13|15|18)", name_u):
+            return True
+        if re.search(r"\bSAC\b", name_u):
+            return True
+        if re.search(r"^(12K|18K|24K|CAI|CAS|CI|CO|INDUS|GXI|ALPHA|HYBRIDJET)", name_u):
+            return True
+        if "CARRIER" in name_u and any(k in name_u for k in ("AC", "INV", "TON", "INDUS", "GXI", "SPLIT", "ALPHA", "HYBRIDJET", "3*", "5*")):
+            return True
+        if any(k in name_u for k in ("INV AC", "INVERTER AC", "SPLIT AC", "SPLIT", "CASSETTE", "INDOOR", "OUTDOOR", "OUT DOOR", "IN DOOR", "IDU", "ODU")):
+            return True
+        if re.search(r"\bAC\b", name_u) and any(t in name_u for t in ("TON", "TN", "INV", "STAR", "3*", "5*", "1.5", "1.0", "2.0")):
+            return True
+
+        return False
+
     @staticmethod
     def parse_host_entry(entry: str, default_port: int = 9000) -> Optional[Tuple[str, int, Optional[str]]]:
         raw = (entry or "").strip()
@@ -1264,13 +1438,16 @@ class TallySyncService:
             for part in raw_hosts.split(","):
                 _add(cls.parse_host_entry(part, default_port=settings.tally_port or 9000))
 
-        if cfg:
-            # Avoid waiting on unreachable localhost:9000 when TALLY_HOSTS is explicitly configured
-            cfg_host_clean = (cfg.host or "").strip().lower()
-            if not endpoints or cfg.tally_url or cfg_host_clean not in ("localhost", "127.0.0.1", ""):
+        if not endpoints:
+            if cfg and (cfg.tally_url or (cfg.host or "").strip().lower() not in ("localhost", "127.0.0.1", "")):
                 _add((cfg.host, cfg.port, cfg.tally_url))
-        elif not endpoints:
-            _add((settings.tally_host, settings.tally_port, None))
+            elif getattr(settings, "tally_host", None) and settings.tally_host not in ("localhost", "127.0.0.1", ""):
+                _add((settings.tally_host, settings.tally_port, None))
+            elif cls._discovered_endpoints:
+                for dep in cls._discovered_endpoints:
+                    _add(dep)
+            else:
+                _add((settings.tally_host or "localhost", settings.tally_port or 9000, None))
 
         return endpoints
 
@@ -1419,9 +1596,68 @@ class TallySyncService:
         if not default_cat and all_cats:
             default_cat = all_cats[0]
         if not default_cat:
-            default_cat = Category(name="General", has_dual_serial=False, is_active=True, source="TALLY")
+            default_cat = Category(name="General", has_dual_serial=True, is_active=True, source="TALLY")
             db.add(default_cat)
             await db.flush()
+
+        # Non-dual fallback category for appliances, TVs, parts
+        default_non_dual_cat = next(
+            (c for c in all_cats if c.is_active and not c.has_dual_serial and not cls.is_dual_serial_category(c.name) and "stand" not in c.name.lower()),
+            None
+        )
+        if not default_non_dual_cat:
+            default_non_dual_cat = Category(name="General Appliances", has_dual_serial=False, is_active=True, source="TALLY")
+            db.add(default_non_dual_cat)
+            await db.flush()
+            cat_map[default_non_dual_cat.name.lower()] = default_non_dual_cat
+            all_cats.append(default_non_dual_cat)
+
+        async def _resolve_target_cat(itm: Dict[str, Any], clean_brand: str) -> Category:
+            raw_cat_name = (itm.get("category_name") or "").strip()
+            target_cat = None
+
+            if raw_cat_name:
+                raw_cat_lower = raw_cat_name.lower()
+                norm_cat_lower = " ".join(raw_cat_lower.split())
+                target_cat = cat_map.get(raw_cat_lower) or cat_map.get(norm_cat_lower)
+                if not target_cat:
+                    for c_key, c_val in cat_map.items():
+                        if " ".join(c_key.split()) == norm_cat_lower:
+                            target_cat = c_val
+                            break
+                if not target_cat:
+                    # Category exists in Tally but not yet in GA STOCK!
+                    is_cat_dual = cls.is_dual_serial_category(raw_cat_name)
+                    target_cat = Category(
+                        name=raw_cat_name,
+                        has_dual_serial=is_cat_dual,
+                        is_active=True,
+                        source="TALLY",
+                    )
+                    db.add(target_cat)
+                    await db.flush()
+                    cat_map[raw_cat_lower] = target_cat
+                    cat_map[norm_cat_lower] = target_cat
+                    all_cats.append(target_cat)
+
+            if not target_cat:
+                brand_upper = clean_brand.upper()
+                if is_tally_2 and f"{brand_upper.lower()} (tally 2)" in cat_map:
+                    target_cat = cat_map[f"{brand_upper.lower()} (tally 2)"]
+                elif brand_upper.lower() in cat_map:
+                    target_cat = cat_map[brand_upper.lower()]
+
+            if not target_cat:
+                is_item_dual = cls.is_dual_serial_model(itm["item_name"], raw_cat_name)
+                target_cat = default_cat if is_item_dual else default_non_dual_cat
+            else:
+                # If target_cat is dual serial, but item is clearly a non-dual appliance (e.g. TV, LED, Blender, Washing Machine),
+                # force assignment to non-dual category!
+                is_item_dual = cls.is_dual_serial_model(itm["item_name"], target_cat.name)
+                if not is_item_dual and (target_cat.has_dual_serial or cls.is_dual_serial_category(target_cat.name)):
+                    target_cat = default_non_dual_cat
+
+            return target_cat
 
         created = 0
         updated = 0
@@ -1522,6 +1758,9 @@ class TallySyncService:
             existing_vch = res.scalar_one_or_none()
 
             if existing_vch:
+                if existing_vch.is_deleted:
+                    # User / admin deleted this bill in GA STOCK; keep it deleted and never resurrect
+                    continue
                 # Update existing record
                 existing_vch.voucher_number = v_data["voucher_number"]
                 existing_vch.voucher_date = v_date
@@ -1567,15 +1806,7 @@ class TallySyncService:
                     )
 
                     if not matched_prod_id:
-                        target_cat = None
-                        brand_upper = clean_brand.upper()
-                        if is_tally_2 and f"{brand_upper.lower()} (tally 2)" in cat_map:
-                            target_cat = cat_map[f"{brand_upper.lower()} (tally 2)"]
-                        elif brand_upper.lower() in cat_map:
-                            target_cat = cat_map[brand_upper.lower()]
-
-                        if not target_cat:
-                            target_cat = default_cat
+                        target_cat = await _resolve_target_cat(itm, clean_brand)
 
                         auto_p = Product(
                             name=itm["item_name"].strip(),
@@ -1649,15 +1880,7 @@ class TallySyncService:
                     )
 
                     if not matched_prod_id:
-                        target_cat = None
-                        brand_upper = clean_brand.upper()
-                        if is_tally_2 and f"{brand_upper.lower()} (tally 2)" in cat_map:
-                            target_cat = cat_map[f"{brand_upper.lower()} (tally 2)"]
-                        elif brand_upper.lower() in cat_map:
-                            target_cat = cat_map[brand_upper.lower()]
-
-                        if not target_cat:
-                            target_cat = default_cat
+                        target_cat = await _resolve_target_cat(itm, clean_brand)
 
                         auto_p = Product(
                             name=itm["item_name"].strip(),
@@ -1747,6 +1970,34 @@ class TallySyncService:
         return created, updated, cancelled
 
     @classmethod
+    def is_instance_enabled(
+        cls,
+        ep_index: int,
+        comp_name: Optional[str],
+        total_endpoints: int,
+        tally_settings: Dict[str, Any],
+    ) -> bool:
+        """
+        Determines whether reading is enabled for an endpoint / company.
+        If multiple Tally endpoints are configured (e.g. TALLY_HOSTS with 2 machines):
+          - ep_index == 0 maps to Tally 1 (enable_tally_1)
+          - ep_index >= 1 maps to Tally 2 (enable_tally_2)
+        If only 1 endpoint is configured:
+          - Uses company name heuristic (2025-26 -> enable_tally_2, else -> enable_tally_1)
+        """
+        if total_endpoints >= 2:
+            if ep_index == 0:
+                return bool(tally_settings.get("enable_tally_1", True))
+            else:
+                return bool(tally_settings.get("enable_tally_2", True))
+        else:
+            is_comp_tally_2 = bool(comp_name and ("2025-26" in comp_name or "tally 2" in comp_name.lower()))
+            if is_comp_tally_2:
+                return bool(tally_settings.get("enable_tally_2", True))
+            else:
+                return bool(tally_settings.get("enable_tally_1", True))
+
+    @classmethod
     async def sync_stock_quantities_from_tally(
         cls,
         db: AsyncSession,
@@ -1757,6 +2008,27 @@ class TallySyncService:
         and updates Product.tally_stock_qty without pulling categories, items, or ledgers.
         """
         cfg = await cls.get_or_create_config(db)
+        tally_settings = cls.get_tally_settings()
+        if not tally_settings.get("auto_sync", True) or not cfg.is_enabled or not cfg.auto_sync:
+            return 0
+        if not tally_settings.get("enable_tally_1", True) and not tally_settings.get("enable_tally_2", True):
+            return 0
+
+        tally_settings = cls.get_tally_settings()
+        if not tally_settings.get("enable_tally_1", True) and not tally_settings.get("enable_tally_2", True):
+            return {
+                "status": "STOPPED",
+                "message": "Reading is turned off for both Tally 1 and Tally 2 in Settings.",
+                "categories_created": 0,
+                "categories_updated": 0,
+                "products_created": 0,
+                "products_updated": 0,
+                "tally_stock_synced": 0,
+                "shops_created": 0,
+                "shops_updated": 0,
+                "gstins_cross_filled": 0,
+            }
+
         endpoints = cls.get_configured_endpoints(cfg)
 
         now_ts = time.time()
@@ -1775,7 +2047,7 @@ class TallySyncService:
         merged_stock_map: Dict[str, int] = {}
         any_company_succeeded = False
 
-        for ep_host, ep_port, ep_url, _, _, ep_companies in reachable:
+        for ep_idx, (ep_host, ep_port, ep_url, _, _, ep_companies) in enumerate(reachable):
             base_url = TallyHttpClient.get_url(ep_host, ep_port, ep_url)
             if time.time() < cls._endpoint_cooldown_until.get(base_url, 0.0):
                 continue
@@ -1795,6 +2067,8 @@ class TallySyncService:
                 target_companies = [cfg.company_name]
 
             for comp in target_companies:
+                if not cls.is_instance_enabled(ep_idx, comp, len(reachable), tally_settings):
+                    continue
                 try:
                     req_sum = TallyXmlBuilder.build_stock_summary_request(company_name=comp)
                     resp_sum = await TallyHttpClient.post_xml(ep_host, ep_port, req_sum, ep_url, timeout=15.0)
@@ -1858,6 +2132,21 @@ class TallySyncService:
                 active_company=company_name,
             )
 
+        tally_settings = cls.get_tally_settings()
+        if not tally_settings.get("enable_tally_1", True) and not tally_settings.get("enable_tally_2", True):
+            return {
+                "status": "STOPPED",
+                "message": "Reading is turned off for both Tally 1 and Tally 2 in Settings.",
+                "categories_created": 0,
+                "categories_updated": 0,
+                "products_created": 0,
+                "products_updated": 0,
+                "tally_stock_synced": 0,
+                "shops_created": 0,
+                "shops_updated": 0,
+                "gstins_cross_filled": 0,
+            }
+
         endpoints = cls.get_configured_endpoints(cfg)
         probes = await TallyHttpClient.probe_endpoints(endpoints, timeout=3.0)
         reachable = [p for p in probes if p[3]]
@@ -1877,7 +2166,8 @@ class TallySyncService:
             "gstins_cross_filled": 0,
         }
 
-        for ep_host, ep_port, ep_url, _, _, ep_companies in reachable:
+        all_synced_product_ids = set()
+        for ep_idx, (ep_host, ep_port, ep_url, _, _, ep_companies) in enumerate(reachable):
             open_names = [
                 c["name"]
                 for c in ep_companies
@@ -1893,6 +2183,8 @@ class TallySyncService:
                 target_companies = [cfg.company_name]
 
             for comp in target_companies:
+                if not cls.is_instance_enabled(ep_idx, comp, len(reachable), tally_settings):
+                    continue
                 res = await cls._sync_masters_single(
                     db=db,
                     cfg=cfg,
@@ -1902,6 +2194,7 @@ class TallySyncService:
                     active_company=comp,
                     run_cross_fill=False,
                 )
+                all_synced_product_ids.update(res.get("synced_product_ids", []))
                 for k in (
                     "categories_created",
                     "categories_updated",
@@ -1913,7 +2206,45 @@ class TallySyncService:
                 ):
                     agg[k] += int(res.get(k, 0))
 
+        # Prune dead/historical Tally products not active in 2026 and with no GA STOCK activity
+        if all_synced_product_ids:
+            try:
+                used_pids = set()
+                for model_cls in (SerialNumber, InwardBatch, OutwardBatch, OutwardLine, Return, TallyVoucherItem):
+                    r = await db.execute(select(model_cls.product_id).where(model_cls.product_id.is_not(None)))
+                    used_pids.update(r.scalars().all())
+
+                del_res = await db.execute(
+                    delete(Product).where(
+                        Product.source == "TALLY",
+                        Product.id.not_in(all_synced_product_ids),
+                        Product.id.not_in(used_pids),
+                    )
+                )
+                if del_res.rowcount > 0:
+                    logger.info(f"[TallySync] Pruned {del_res.rowcount} obsolete historical products.")
+                    await db.commit()
+
+                # Also prune unreferenced empty Tally categories with 0 products
+                del_cat_res = await db.execute(
+                    delete(Category).where(
+                        Category.source == "TALLY",
+                        Category.id.not_in(select(distinct(Product.category_id))),
+                    )
+                )
+                if del_cat_res.rowcount > 0:
+                    logger.info(f"[TallySync] Pruned {del_cat_res.rowcount} empty categories.")
+                    await db.commit()
+            except Exception as pe:
+                logger.debug(f"[TallySync] Pruning obsolete records failed: {pe}")
+
         agg["gstins_cross_filled"] = await cls.auto_fill_brand_gstins(db)
+        try:
+            await ws_manager.broadcast("stock_updated", {"bulk": True})
+            await ws_manager.broadcast("category_updated", {"bulk": True})
+            await ws_manager.broadcast("shop_updated", {"bulk": True})
+        except Exception as we:
+            logger.debug(f"[TallySync] WebSocket broadcast error: {we}")
         return agg
 
     @classmethod
@@ -1934,14 +2265,21 @@ class TallySyncService:
         categories_updated = 0
         products_created = 0
         products_updated = 0
+        synced_product_ids = set()
 
         # Ensure default category exists
         def_res = await db.execute(select(Category).where(func.lower(Category.name) == "general"))
         default_cat = def_res.scalar_one_or_none()
         if not default_cat:
-            default_cat = Category(name="General", has_dual_serial=False, is_active=True, source="TALLY")
+            default_cat = Category(name="General", has_dual_serial=True, is_active=True, source="TALLY")
             db.add(default_cat)
             await db.flush()
+
+        # Pre-fetch existing categories for fast O(1) matching
+        all_cats_res = await db.execute(select(Category))
+        all_cats = list(all_cats_res.scalars().all())
+        cat_by_guid: Dict[str, Category] = {c.tally_guid: c for c in all_cats if c.tally_guid}
+        cat_by_name: Dict[str, Category] = {c.name.strip().lower(): c for c in all_cats if c.name}
 
         # 1. Fetch & Sync Stock Groups (Categories)
         try:
@@ -1954,33 +2292,25 @@ class TallySyncService:
                     sg_guid = sg.get("guid")
 
                     # 1. Match by guid first
-                    existing_c = None
-                    if sg_guid:
-                        c_by_guid = await db.execute(select(Category).where(Category.tally_guid == sg_guid))
-                        existing_c = c_by_guid.scalar_one_or_none()
+                    existing_c = cat_by_guid.get(sg_guid) if sg_guid else None
 
                     # 2. If not matched by guid, determine target name and match
                     target_name = name_clean
                     if not existing_c:
                         if is_tally_2:
-                            # If company is Tally 2, keep colliding names separate (e.g. AC, General, REFRIGERATOR)
-                            c_plain = (await db.execute(
-                                select(Category).where(func.lower(Category.name) == func.lower(name_clean))
-                            )).scalar_one_or_none()
+                            c_plain = cat_by_name.get(name_clean.lower())
                             if c_plain and (c_plain.tally_guid != sg_guid or name_clean.upper() in ("AC", "GENERAL", "REFRIGERATOR")):
                                 target_name = f"{name_clean} (Tally 2)"
+                        existing_c = cat_by_name.get(target_name.lower())
 
-                        c_by_name = await db.execute(
-                            select(Category).where(func.lower(Category.name) == func.lower(target_name))
-                        )
-                        existing_c = c_by_name.scalar_one_or_none()
-
-                    is_dual = any(kw in target_name.lower() for kw in ("ac", "air conditioner", "split"))
+                    is_dual = cls.is_dual_serial_category(target_name)
                     if existing_c:
-                        if sg_guid:
+                        if sg_guid and not existing_c.tally_guid:
                             existing_c.tally_guid = sg_guid
+                            cat_by_guid[sg_guid] = existing_c
                         if sg.get("parent"):
                             existing_c.tally_parent_group = sg["parent"]
+                        existing_c.has_dual_serial = is_dual
                         existing_c.source = "TALLY"
                         categories_updated += 1
                     else:
@@ -1993,13 +2323,16 @@ class TallySyncService:
                             source="TALLY",
                         )
                         db.add(new_c)
+                        if sg_guid:
+                            cat_by_guid[sg_guid] = new_c
+                        cat_by_name[target_name.lower()] = new_c
+                        all_cats.append(new_c)
                         categories_created += 1
                 await db.flush()
         except Exception as e:
-            logger.debug(f"[TallySync] Stock Groups fetch skipped/failed: {e}")
+            logger.error(f"[TallySync] Stock Groups fetch failed: {e}", exc_info=True)
 
         # Refresh map of categories
-        all_cats = (await db.execute(select(Category))).scalars().all()
         cat_map = {c.name.strip().lower(): c for c in all_cats}
 
         # Select appropriate default category for this company
@@ -2014,6 +2347,17 @@ class TallySyncService:
             resp_si = await TallyHttpClient.post_xml(sync_host, sync_port, req_si, sync_url, timeout=45.0)
             if resp_si:
                 stock_items = TallyXmlParser.parse_stock_items(resp_si)
+                # Bulk pre-fetch existing products and serials to avoid thousands of slow DB roundtrips
+                all_existing_prods_res = await db.execute(select(Product))
+                all_existing_prods = list(all_existing_prods_res.scalars().all())
+                prod_by_guid: Dict[str, Product] = {p.tally_guid: p for p in all_existing_prods if p.tally_guid}
+                prod_by_name: Dict[str, Product] = {p.name.strip().lower(): p for p in all_existing_prods if p.name}
+                prod_by_model: Dict[str, Product] = {p.model.strip().lower(): p for p in all_existing_prods if p.model}
+
+                # Pre-fetch product IDs that currently have serial numbers
+                serials_res = await db.execute(select(distinct(SerialNumber.product_id)))
+                prods_with_serials = set(serials_res.scalars().all())
+
                 for si in stock_items:
                     item_name = si["name"].strip()
                     parent_group = si.get("parent_group")
@@ -2032,33 +2376,43 @@ class TallySyncService:
                     if si.get("part_number"):
                         model_code = si["part_number"].strip()
 
-                    p_res = await db.execute(
-                        select(Product).where(
-                            or_(
-                                (Product.tally_guid == si["guid"]) if si.get("guid") else False,
-                                func.lower(Product.name) == func.lower(item_name),
-                                func.lower(Product.model) == func.lower(model_code),
-                            )
-                        )
-                    )
-                    existing_p = p_res.scalars().first()
+                    # Stand items / categories do not require serial numbers
+                    cat_name_lower = matched_cat.name.lower() if matched_cat else ""
+                    is_stand = "stand" in cat_name_lower or "stand" in item_name.lower()
+                    serial_req = not is_stand
+
+                    item_norm = item_name.lower()
+                    model_norm = model_code.lower() if model_code else ""
+                    guid = si.get("guid")
+
+                    existing_p = None
+                    if guid and guid in prod_by_guid:
+                        existing_p = prod_by_guid[guid]
+                    elif item_norm in prod_by_name:
+                        existing_p = prod_by_name[item_norm]
+                    elif model_norm and model_norm in prod_by_model:
+                        existing_p = prod_by_model[model_norm]
+
                     if existing_p:
                         existing_p.name = item_name
                         existing_p.brand = brand
                         existing_p.model = model_code
                         # Never reassign category if existing product already has serial numbers
-                        has_serials = (await db.execute(
-                            select(func.count(SerialNumber.id)).where(SerialNumber.product_id == existing_p.id)
-                        )).scalar() or 0
-                        if has_serials == 0:
+                        if existing_p.id not in prods_with_serials:
                             existing_p.category_id = matched_cat.id
 
-                        if si.get("guid"):
-                            existing_p.tally_guid = si["guid"]
+                        if guid:
+                            existing_p.tally_guid = guid
+                            prod_by_guid[guid] = existing_p
                         if si.get("part_number"):
                             existing_p.tally_part_number = si["part_number"]
+                        existing_p.serial_number_required = serial_req
                         existing_p.source = "TALLY"
+                        prod_by_name[item_norm] = existing_p
+                        if model_norm:
+                            prod_by_model[model_norm] = existing_p
                         products_updated += 1
+                        synced_product_ids.add(existing_p.id)
                     else:
                         new_p = Product(
                             name=item_name,
@@ -2066,19 +2420,26 @@ class TallySyncService:
                             model=model_code,
                             category_id=matched_cat.id,
                             unit=si.get("unit") or "piece",
-                            serial_number_required=True,
+                            serial_number_required=serial_req,
                             description=si.get("description"),
                             is_active=True,
-                            tally_guid=si.get("guid"),
+                            tally_guid=guid,
                             tally_part_number=si.get("part_number"),
                             source="TALLY",
                         )
                         db.add(new_p)
+                        await db.flush()
+                        synced_product_ids.add(new_p.id)
+                        if guid:
+                            prod_by_guid[guid] = new_p
+                        prod_by_name[item_norm] = new_p
+                        if model_norm:
+                            prod_by_model[model_norm] = new_p
                         products_created += 1
 
                 await db.commit()
         except Exception as e:
-            logger.debug(f"[TallySync] Stock Items fetch skipped/failed: {e}")
+            logger.error(f"[TallySync] Stock Items fetch failed: {e}", exc_info=True)
 
         # 2b. Fetch & Sync Stock Summary (Tally Stock Quantities per Model)
         tally_stock_synced = 0
@@ -2104,7 +2465,7 @@ class TallySyncService:
                             tally_stock_synced += 1
                     await db.commit()
         except Exception as e:
-            logger.debug(f"[TallySync] Stock Summary fetch skipped/failed: {e}")
+            logger.error(f"[TallySync] Stock Summary fetch failed: {e}", exc_info=True)
 
         # 3. Fetch & Sync Ledgers (Shops / Sundry Debtors)
         shops_created = 0
@@ -2114,10 +2475,15 @@ class TallySyncService:
             resp_l = await TallyHttpClient.post_xml(sync_host, sync_port, req_l, sync_url, timeout=20.0)
             if resp_l:
                 ledgers = TallyXmlParser.parse_ledgers(resp_l)
+                # Bulk pre-fetch existing shops
+                all_existing_shops_res = await db.execute(select(Shop))
+                all_existing_shops = list(all_existing_shops_res.scalars().all())
+                shop_by_guid: Dict[str, Shop] = {s.tally_guid: s for s in all_existing_shops if s.tally_guid}
+                shop_by_name: Dict[str, Shop] = {s.name.strip().lower(): s for s in all_existing_shops if s.name}
+
                 for led in ledgers:
                     led_name = led["name"].strip()
                     parent_grp = (led.get("parent") or "").lower()
-                    # Skip explicit non-debtor accounting groups if an un-filtered XML report was parsed
                     non_debtor_groups = {
                         "bank accounts", "bank od a/c", "cash-in-hand", "duties & taxes",
                         "sales accounts", "purchase accounts", "direct expenses", "indirect expenses",
@@ -2128,16 +2494,19 @@ class TallySyncService:
                     if parent_grp in non_debtor_groups:
                         continue
 
-                    s_res = await db.execute(
-                        select(Shop).where(
-                            (func.lower(Shop.name) == func.lower(led_name))
-                            | (Shop.tally_guid == led["guid"] if led.get("guid") else False)
-                        )
-                    )
-                    existing_s = s_res.scalar_one_or_none()
+                    led_norm = led_name.lower()
+                    guid = led.get("guid")
+
+                    existing_s = None
+                    if guid and guid in shop_by_guid:
+                        existing_s = shop_by_guid[guid]
+                    elif led_norm in shop_by_name:
+                        existing_s = shop_by_name[led_norm]
+
                     if existing_s:
-                        if led.get("guid"):
-                            existing_s.tally_guid = led["guid"]
+                        if guid:
+                            existing_s.tally_guid = guid
+                            shop_by_guid[guid] = existing_s
                         if led.get("gstin"):
                             existing_s.gstin = led["gstin"]
                         if led.get("address"):
@@ -2153,6 +2522,7 @@ class TallySyncService:
                         if led.get("email"):
                             existing_s.email = led["email"]
                         existing_s.source = "TALLY"
+                        shop_by_name[led_norm] = existing_s
                         shops_updated += 1
                     else:
                         new_s = Shop(
@@ -2165,15 +2535,18 @@ class TallySyncService:
                             pincode=led.get("pincode"),
                             contact_person=led.get("contact_person"),
                             email=led.get("email"),
-                            tally_guid=led.get("guid"),
+                            tally_guid=guid,
                             source="TALLY",
                             is_active=True,
                         )
                         db.add(new_s)
+                        if guid:
+                            shop_by_guid[guid] = new_s
+                        shop_by_name[led_norm] = new_s
                         shops_created += 1
                 await db.commit()
         except Exception as e:
-            logger.debug(f"[TallySync] Ledgers fetch skipped/failed: {e}")
+            logger.error(f"[TallySync] Ledgers fetch failed: {e}", exc_info=True)
 
         # Cross-fill GSTINs across brand-differentiated shops
         inherited_gstins = await cls.auto_fill_brand_gstins(db) if run_cross_fill else 0
@@ -2188,6 +2561,7 @@ class TallySyncService:
             "shops_created": shops_created,
             "shops_updated": shops_updated,
             "gstins_cross_filled": inherited_gstins,
+            "synced_product_ids": synced_product_ids,
         }
 
     @classmethod
@@ -2266,9 +2640,32 @@ class TallySyncService:
         Extracts sales bills, stores non-financial vouchers, and updates sync state.
         """
         cfg = await cls.get_or_create_config(db)
+        tally_settings = cls.get_tally_settings()
+        if not tally_settings.get("auto_sync", True) or not cfg.is_enabled or not cfg.auto_sync:
+            logger.info("[TallySync] All Tally reading is currently turned off in Settings.")
+            return None
+        if not tally_settings.get("enable_tally_1", True) and not tally_settings.get("enable_tally_2", True):
+            logger.info("[TallySync] Both Tally 1 and Tally 2 reading are turned off in Settings.")
+            return None
+
         active_company = company_name or cfg.company_name
         if active_company and (active_company.strip() == "0" or active_company.strip().isdigit()):
             active_company = None
+
+        tally_settings = cls.get_tally_settings()
+        if not tally_settings.get("enable_tally_1", True) and not tally_settings.get("enable_tally_2", True):
+            return {
+                "status": "STOPPED",
+                "message": "Reading is turned off for both Tally 1 and Tally 2 in Settings.",
+                "categories_created": 0,
+                "categories_updated": 0,
+                "products_created": 0,
+                "products_updated": 0,
+                "tally_stock_synced": 0,
+                "shops_created": 0,
+                "shops_updated": 0,
+                "gstins_cross_filled": 0,
+            }
 
         endpoints = cls.get_configured_endpoints(cfg)
         cls._load_alter_cache()
@@ -2296,10 +2693,27 @@ class TallySyncService:
                     all_open_names.append(cname)
 
         if not company_name and all_open_names and (not active_company or active_company not in all_open_names):
+            old_comp = active_company
             active_company = all_open_names[0]
             cfg.company_name = active_company
-            await db.commit()
-            logger.info(f"[TallySync] Updated active company to open Tally company: '{active_company}'")
+            # Reset last_alter_id to what's in our DB for this new company to prevent cross-company AlterID contamination
+            db_alter_lookup = await db.execute(
+                select(func.max(TallySalesVoucher.alter_id)).where(TallySalesVoucher.company_name == active_company)
+            )
+            cfg.last_alter_id = db_alter_lookup.scalar() or 0
+            try:
+                await db.commit()
+                logger.info(f"[TallySync] Updated active company from '{old_comp}' to open Tally company: '{active_company}' (AlterID: {cfg.last_alter_id})")
+            except Exception as ce:
+                await db.rollback()
+                logger.debug(f"[TallySync] Could not update in-memory config: {ce}")
+                cfg = await cls.get_or_create_config(db)
+                cfg.company_name = active_company
+                cfg.last_alter_id = 0
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
 
         start_time = time.time()
         history: Optional[TallySyncHistory] = None
@@ -2349,15 +2763,12 @@ class TallySyncService:
             fy_start_date = date(fy_start_year, 4, 1)
             eff_to_date = to_date or today
 
-            # Check if DB already has synced vouchers so background cold-start doesn't dump the full FY (~25MB)
-            existing_vch_count = 0
-            if not force_full and from_date is None and not record_empty_history:
-                existing_vch_count = (await db.execute(select(func.count(TallySalesVoucher.id)))).scalar() or 0
-            # Keep background cold-start fallback strictly to today so turning on server stays ~0.1s per host
-            default_from_date = today if (existing_vch_count > 0 and not force_full and not record_empty_history) else fy_start_date
+            # Unless force_full is explicitly requested, default sync range strictly to today
+            # to prevent dumping months of historical vouchers and lagging mobile devices or Tally
+            default_from_date = fy_start_date if force_full else today
 
             alter_cache_dirty = False
-            for ep_host, ep_port, ep_url, _, _, ep_companies in reachable:
+            for ep_idx, (ep_host, ep_port, ep_url, _, _, ep_companies) in enumerate(reachable):
                 base_url = TallyHttpClient.get_url(ep_host, ep_port, ep_url)
                 if not record_empty_history and not force_full:
                     cooldown_until = cls._endpoint_cooldown_until.get(base_url, 0.0)
@@ -2379,82 +2790,56 @@ class TallySyncService:
                     target_companies = [active_company]
 
                 for comp in target_companies:
+                    if not cls.is_instance_enabled(ep_idx, comp, len(reachable), tally_settings):
+                        continue
                     alter_key = f"{base_url}|{comp or ''}"
                     if force_full or from_date is not None:
                         alter_id = None
-                    elif alter_key in cls._endpoint_alter_ids:
-                        alter_id = cls._endpoint_alter_ids[alter_key] or None
-                    elif is_single_target and cfg.last_alter_id > 0:
-                        alter_id = cfg.last_alter_id
+                    elif alter_key in cls._endpoint_alter_ids and cls._endpoint_alter_ids[alter_key] > 0:
+                        alter_id = cls._endpoint_alter_ids[alter_key]
                     else:
-                        alter_id = None
+                        # Resilient per-company fallback: inspect max alter_id in DB for this exact company
+                        db_comp_alter_res = await db.execute(
+                            select(func.max(TallySalesVoucher.alter_id)).where(TallySalesVoucher.company_name == comp)
+                        )
+                        db_comp_max = db_comp_alter_res.scalar()
+                        if db_comp_max and db_comp_max > 0:
+                            alter_id = int(db_comp_max)
+                            cls._endpoint_alter_ids[alter_key] = alter_id
+                            alter_cache_dirty = True
+                        elif is_single_target and cfg.company_name == comp and cfg.last_alter_id > 0:
+                            # Only use cfg.last_alter_id if the company name strictly matches
+                            alter_id = cfg.last_alter_id
+                        else:
+                            alter_id = None
 
-                    # On steady background ticks, Tally's date-indexed Day Book for today (~0.09s) is up to
-                    # 9x faster than full-company Collection scanning (~0.8-0.97s). Sweep full AlterID every 120s
-                    # (skipping immediate boot sweep when alter_id is already cached so server startup never lags Tally).
-                    tick_now = time.time()
-                    if (
-                        not record_empty_history
-                        and not force_full
-                        and from_date is None
-                        and alter_id
-                        and alter_key not in cls._last_full_alter_poll_at
-                    ):
-                        cls._last_full_alter_poll_at[alter_key] = tick_now
+                    comp_start = None
+                    for c_info in ep_companies:
+                        if c_info.get("name") and c_info["name"].strip() == comp:
+                            comp_start = parse_tally_date(c_info.get("starting_from"))
+                            break
 
-                    use_fast_today_daybook = (
-                        not record_empty_history
-                        and not force_full
-                        and from_date is None
-                        and alter_id is not None
-                        and (tick_now - cls._last_full_alter_poll_at.get(alter_key, 0.0)) < cls._FULL_ALTER_SWEEP_SEC
+                    eff_from_date = from_date or (None if alter_id else (comp_start or default_from_date))
+
+                    req_xml = TallyXmlBuilder.build_sales_vouchers_request(
+                        company_name=comp,
+                        from_date=eff_from_date,
+                        to_date=eff_to_date,
+                        alter_id=alter_id,
                     )
-
-                    eff_from_date = from_date or (None if alter_id else default_from_date)
-
-                    if use_fast_today_daybook:
-                        req_xml = TallyXmlBuilder.build_fallback_voucher_register_request(
-                            company_name=comp,
-                            from_date=today,
-                            to_date=eff_to_date,
-                        )
-                    else:
-                        req_xml = TallyXmlBuilder.build_sales_vouchers_request(
-                            company_name=comp,
-                            from_date=eff_from_date,
-                            to_date=eff_to_date,
-                            alter_id=alter_id,
-                        )
                     try:
                         resp_xml = await TallyHttpClient.post_xml(
                             ep_host, ep_port, req_xml, ep_url, timeout=45.0
                         )
-                        if not use_fast_today_daybook and not record_empty_history:
+                        if not record_empty_history:
                             cls._last_full_alter_poll_at[alter_key] = time.time()
                     except Exception as e:
-                        if use_fast_today_daybook:
-                            cls._endpoint_cooldown_until[base_url] = time.time() + cls._ENDPOINT_ERROR_COOLDOWN_SEC
-                            cls._cached_probe_at = 0.0
-                            logger.warning(f"[TallySync] Skipping {base_url} ({comp}) for {int(cls._ENDPOINT_ERROR_COOLDOWN_SEC)}s after Day Book poll error: {e}")
-                            break
-                        logger.warning(f"TDL collection query failed on {base_url} ({comp}), trying Day Book fallback: {e}")
-                        try:
-                            fb_xml = TallyXmlBuilder.build_fallback_voucher_register_request(
-                                company_name=comp,
-                                from_date=eff_from_date or default_from_date,
-                                to_date=eff_to_date,
-                            )
-                            resp_xml = await TallyHttpClient.post_xml(
-                                ep_host, ep_port, fb_xml, ep_url, timeout=30.0
-                            )
-                        except Exception as fb_err:
-                            # Put failing endpoint on short cooldown & force re-probe next time without stalling other hosts
-                            cls._endpoint_cooldown_until[base_url] = time.time() + cls._ENDPOINT_ERROR_COOLDOWN_SEC
-                            cls._cached_probe_at = 0.0
-                            if record_empty_history:
-                                raise
-                            logger.warning(f"[TallySync] Skipping {base_url} ({comp}) for {int(cls._ENDPOINT_ERROR_COOLDOWN_SEC)}s after error: {fb_err}")
-                            break
+                        cls._endpoint_cooldown_until[base_url] = time.time() + cls._ENDPOINT_ERROR_COOLDOWN_SEC
+                        cls._cached_probe_at = 0.0
+                        if record_empty_history:
+                            raise
+                        logger.warning(f"[TallySync] Skipping {base_url} ({comp}) for {int(cls._ENDPOINT_ERROR_COOLDOWN_SEC)}s after error: {e}")
+                        break
 
                     parsed_vouchers = TallyXmlParser.parse_sales_vouchers(resp_xml, default_company=comp)
                     if not active_company:
@@ -2469,7 +2854,7 @@ class TallySyncService:
                         [v["alter_id"] for v in parsed_vouchers if v.get("alter_id") is not None],
                         default=cls._endpoint_alter_ids.get(alter_key, 0),
                     )
-                    if use_fast_today_daybook and alter_id:
+                    if alter_id:
                         parsed_vouchers = [
                             v for v in parsed_vouchers
                             if v.get("alter_id") is None or v["alter_id"] > alter_id
@@ -2572,6 +2957,7 @@ class TallyBackgroundWorker:
 
     def __init__(self):
         self._is_syncing = False
+        self._last_stock_sync_at: float = 0.0
 
     @classmethod
     def get_instance(cls) -> "TallyBackgroundWorker":
@@ -2599,38 +2985,56 @@ class TallyBackgroundWorker:
     async def _worker_loop(self):
         # Wait 5 seconds after server startup so FastAPI/DB initialization settles before first Tally poll
         await asyncio.sleep(5)
-        logger.info("[TallyWorker] Polling Tally hosts (bills & stock quantities only; masters are button-triggered)...")
+        logger.info("[TallyWorker] Polling Tally hosts (bills immediately via lightweight AlterID; stock quantities on relaxed interval)...")
+        bill_poll_sec = max(getattr(settings, "tally_sync_interval_seconds", 8) or 8, 5)
         while self._is_running:
+            sleep_time = bill_poll_sec
             try:
                 async with AsyncSessionLocal() as session:
                     cfg = await TallySyncService.get_or_create_config(session)
-                    interval_sec = max(getattr(settings, "tally_sync_interval_seconds", 10) or 10, 10)
+                    tally_settings = TallySyncService.get_tally_settings()
+                    configured_minutes = int(tally_settings.get("sync_interval_minutes") or cfg.sync_interval_minutes or 60)
+                    stock_interval_sec = max(configured_minutes * 60, 60)
 
-                    if cfg.is_enabled and cfg.auto_sync:
+                    master_enabled = tally_settings.get("auto_sync", True) and cfg.is_enabled and cfg.auto_sync
+                    any_instance_enabled = tally_settings.get("enable_tally_1", True) or tally_settings.get("enable_tally_2", True)
+
+                    if master_enabled and any_instance_enabled:
                         async with self._lock:
                             self._is_syncing = True
                             try:
-                                # 1. Fetch generated bills (~0.07-0.25s via Day Book today + 2m AlterID sweep)
+                                # 1. Fetch newly generated sales bills immediately (~0.05-0.2s via in-memory AlterID index check)
                                 await TallySyncService.perform_sync(
                                     session,
                                     source="DIRECT_HTTP",
                                     record_empty_history=False,
                                 )
 
-                                # 2. Fetch ONLY live stock quantities (~0.1s NonZero StockBalance collection)
-                                await TallySyncService.sync_stock_quantities_from_tally(session)
+                                # 2. Live stock quantities calculation is relaxed to the configured interval (e.g. 1 hour / 5 hours)
+                                # or triggered manually, avoiding any continuous ClosingBalance strain on Tally Prime.
+                                now_ts = time.time()
+                                if (now_ts - self._last_stock_sync_at) >= stock_interval_sec:
+                                    try:
+                                        await TallySyncService.sync_stock_quantities_from_tally(session)
+                                        self._last_stock_sync_at = time.time()
+                                    except Exception as se:
+                                        logger.debug(f"[TallyWorker] Periodic stock qty sync tick: {se}")
                             except Exception as e:
                                 logger.debug(f"[TallyWorker] Background sync tick: {e}")
                             finally:
                                 self._is_syncing = False
+                        sleep_time = bill_poll_sec
+                    else:
+                        # Auto-sync stopped or all instances disabled: idle sleep without polling Tally
+                        sleep_time = 15
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[TallyWorker] Error in background sync loop: {e}")
-                interval_sec = 4
+                sleep_time = 8
 
             try:
-                await asyncio.sleep(max(1, interval_sec))
+                await asyncio.sleep(max(1, sleep_time))
             except asyncio.CancelledError:
                 break
 
@@ -2646,10 +3050,12 @@ class TallyBackgroundWorker:
             self._is_syncing = True
             try:
                 async with AsyncSessionLocal() as session:
-                    return await TallySyncService.sync_masters_from_tally(
+                    res = await TallySyncService.sync_masters_from_tally(
                         session,
                         company_name=company_name,
                     )
+                    self._last_stock_sync_at = time.time()
+                    return res
             finally:
                 self._is_syncing = False
 

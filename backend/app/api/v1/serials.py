@@ -437,7 +437,14 @@ async def lookup_serial(
         .join(Product, SerialNumber.product_id == Product.id)
         .outerjoin(Category, Product.category_id == Category.id)
         .outerjoin(Shop, SerialNumber.last_shop_id == Shop.id)
-        .where(func.lower(SerialNumber.serial_number) == clean_serial.lower())
+        .where(
+            or_(
+                SerialNumber.serial_number == clean_serial,
+                SerialNumber.serial_number == clean_serial.upper(),
+                func.lower(SerialNumber.serial_number) == clean_serial.lower(),
+            )
+        )
+        .limit(1)
     )
     result = await db.execute(query)
     row = result.first()

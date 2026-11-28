@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiRequest } from "../api/client";
+import { apiCache } from "../api/cache";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { SerialDetail, SerialListItem, SerialListResponse } from "../types";
@@ -28,8 +29,8 @@ import { generateSerialListPdf, generateSerialTracePdf } from "../utils/generate
 
 export const SerialsPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [serials, setSerials] = useState<SerialListItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [serials, setSerials] = useState<SerialListItem[]>(() => apiCache.get<SerialListResponse>("/serials?limit=100&offset=0")?.items || []);
+  const [loading, setLoading] = useState(() => !apiCache.hasValid("/serials?limit=100&offset=0"));
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [flowFilter, setFlowFilter] = useState<"all" | "inward" | "outward" | "damaged">("all");
@@ -61,16 +62,18 @@ export const SerialsPage: React.FC = () => {
     damaged: 0,
   });
 
-  const fetchSerials = async (flow = flowFilter, query = searchQuery, page = currentPage) => {
+  const fetchSerials = async (flow = flowFilter, query = searchQuery, page = currentPage, force = false) => {
     try {
-      setLoading(true);
+      if (serials.length === 0) {
+        setLoading(true);
+      }
       const params = new URLSearchParams();
       params.append("limit", String(pageSize));
       params.append("offset", String((page - 1) * pageSize));
       if (flow && flow !== "all") params.append("flow", flow);
       if (query.trim()) params.append("q", query.trim());
 
-      const res = await apiRequest<SerialListResponse>(`/serials?${params.toString()}`);
+      const res = await apiRequest<SerialListResponse>(`/serials?${params.toString()}`, { forceRefresh: force });
       setSerials(res.items);
       setTotalCounts({
         total: res.total || 0,

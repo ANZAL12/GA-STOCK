@@ -350,18 +350,22 @@ export const ReportsPage: React.FC = () => {
   };
 
   // Filtered Products for Model Search Dropdown
-  const matchingProducts = modelSearchQuery.trim()
-    ? products
-        .filter((p) => {
-          const q = modelSearchQuery.toLowerCase().trim();
-          return (
-            p.brand.toLowerCase().includes(q) ||
-            p.model.toLowerCase().includes(q) ||
-            p.name.toLowerCase().includes(q)
-          );
-        })
-        .slice(0, 10)
-    : [];
+  const matchingProducts = (() => {
+    const raw = modelSearchQuery.trim();
+    if (!raw) return [];
+    const tokens = raw.toLowerCase().split(/\s+/).filter(Boolean);
+    const normRaw = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    return products
+      .filter((p) => {
+        const fullText = `${p.brand || ""} ${p.model || ""} ${p.name || ""}`.toLowerCase();
+        const normText = fullText.replace(/[^a-z0-9]/g, "");
+        const allTokensMatch = tokens.every((t) => fullText.includes(t));
+        const normMatch = normRaw ? normText.includes(normRaw) : false;
+        return allTokensMatch || normMatch;
+      })
+      .slice(0, 10);
+  })();
 
   // -------------------------------------------------------------
   // Raw Data Tables Handlers (Preserving original functionality)
@@ -1047,9 +1051,11 @@ export const ReportsPage: React.FC = () => {
                   className="px-3 py-1.5 rounded-lg border border-slate-200 bg-white font-medium"
                 >
                   <option value="">All Categories</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
+                  {categories
+                    .filter((c) => (c.product_count ?? 0) > 0)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
                 </select>
               </div>
             )}

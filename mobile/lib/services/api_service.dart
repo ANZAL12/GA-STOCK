@@ -37,20 +37,73 @@ class ApiService {
   List<Category>? _cachedCategories;
   List<Shop>? _cachedShops;
   List<BillListItem>? _cachedBills;
+  List<TallySalesVoucher>? _cachedTallyVouchers;
+  TallyStatus? _cachedTallyStatus;
   DateTime? _productsCacheTime;
   DateTime? _categoriesCacheTime;
   DateTime? _shopsCacheTime;
   DateTime? _billsCacheTime;
+  DateTime? _tallyVouchersCacheTime;
+  DateTime? _tallyStatusCacheTime;
 
   // Recent serial check cache: key is "$productId:$serial" -> response Map
   final Map<String, Map<String, dynamic>> _outwardSerialCheckCache = {};
   final Map<String, Map<String, dynamic>> _inwardSerialValidateCache = {};
+  final Map<String, Future<Map<String, dynamic>>> _inFlightOutwardChecks = {};
+  final Map<String, Future<Map<String, dynamic>>> _inFlightInwardChecks = {};
 
   /// Live notifier when an automatic Tally sales voucher is detected
   final ValueNotifier<TallySalesVoucher?> latestTallyBillNotifier = ValueNotifier<TallySalesVoucher?>(null);
 
   /// Live notifier when a Tally sales voucher has been marked processed
   final ValueNotifier<String?> tallyBillProcessedNotifier = ValueNotifier<String?>(null);
+
+  /// Live notifier when the current logged in user account is deactivated / disabled by admin
+  final ValueNotifier<String?> userDisabledNotifier = ValueNotifier<String?>(null);
+
+  Timer? _accountCheckTimer;
+
+  void triggerUserDisabled([String? reason]) {
+    final message = reason ?? 'Your user account has been deactivated by the administrator.';
+    if (userDisabledNotifier.value != message) {
+      userDisabledNotifier.value = message;
+    }
+  }
+
+  void clearUserDisabled() {
+    userDisabledNotifier.value = null;
+  }
+
+  void _checkResponseForDisabledUser(http.Response res) {
+    if (res.statusCode == 403) {
+      final bodyStr = res.body.toLowerCase();
+      if (bodyStr.contains('deactivated') ||
+          bodyStr.contains('disabled') ||
+          bodyStr.contains('inactive user') ||
+          bodyStr.contains('contact admin')) {
+        triggerUserDisabled('Your user account has been deactivated by the administrator.');
+      }
+    }
+  }
+
+  void startAccountStatusWatcher() {
+    _accountCheckTimer?.cancel();
+    _accountCheckTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (_currentUser == null || _accessToken == null) return;
+      try {
+        final res = await _client.get(
+          Uri.parse('$_baseUrl/auth/me'),
+          headers: _headers(),
+        ).timeout(const Duration(seconds: 5));
+        _checkResponseForDisabledUser(res);
+      } catch (_) {}
+    });
+  }
+
+  void stopAccountStatusWatcher() {
+    _accountCheckTimer?.cancel();
+    _accountCheckTimer = null;
+  }
 
   void clearLatestTallyBill() {
     latestTallyBillNotifier.value = null;
@@ -59,6 +112,12 @@ class ApiService {
   void clearSerialCaches() {
     _outwardSerialCheckCache.clear();
     _inwardSerialValidateCache.clear();
+    _inFlightOutwardChecks.clear();
+    _inFlightInwardChecks.clear();
+  }
+
+  void clearSerialCheckCache() {
+    clearSerialCaches();
   }
 
   String get baseUrl => _baseUrl;
@@ -71,10 +130,19 @@ class ApiService {
   List<Category>? get cachedCategories => _cachedCategories;
   List<Shop>? get cachedShops => _cachedShops;
   List<BillListItem>? get cachedBills => _cachedBills;
+  List<TallySalesVoucher>? get cachedTallyVouchers => _cachedTallyVouchers;
+  TallyStatus? get cachedTallyStatus => _cachedTallyStatus;
 
   void invalidateBillsCache() {
     _cachedBills = null;
     _billsCacheTime = null;
+  }
+
+  void invalidateTallyVouchersCache() {
+    _cachedTallyVouchers = null;
+    _tallyVouchersCacheTime = null;
+    _cachedTallyStatus = null;
+    _tallyStatusCacheTime = null;
   }
 
   void updateCachedCategory(Category cat) {
@@ -154,6 +222,11 @@ class ApiService {
 
     // 5. Saved device approval status
     _isDeviceApproved = prefs.getBool('device_approved') ?? false;
+
+    // 6. Start background account watcher if logged in
+    if (_currentUser != null && _accessToken != null) {
+      startAccountStatusWatcher();
+    }
   }
 
   Future<void> setBaseUrl(String url) async {
@@ -234,6 +307,8 @@ class ApiService {
       await prefs.setString('refresh_token', _refreshToken!);
       await prefs.setString('user_profile', jsonEncode(data['user']));
 
+      startAccountStatusWatcher();
+
       return _currentUser!;
     } else {
       String msg = 'Login failed';
@@ -246,6 +321,7 @@ class ApiService {
   }
 
   Future<void> logout() async {
+    stopAccountStatusWatcher();
     _accessToken = null;
     _refreshToken = null;
     _currentUser = null;
@@ -285,6 +361,7 @@ class ApiService {
         await prefs.setString('access_token', _accessToken!);
         return true;
       } else if (res.statusCode == 401 || res.statusCode == 403) {
+        _checkResponseForDisabledUser(res);
         await logout();
       }
     } catch (_) {}
@@ -330,6 +407,7 @@ class ApiService {
             res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 10));
           }
         }
+        _checkResponseForDisabledUser(res);
         if (res.statusCode >= 200 && res.statusCode < 500) {
           OfflineManager().markOnline();
         }
@@ -357,6 +435,7 @@ class ApiService {
             res = await _client.post(uri, headers: _headers(), body: body).timeout(const Duration(seconds: 14));
           }
         }
+        _checkResponseForDisabledUser(res);
         if (res.statusCode >= 200 && res.statusCode < 500) {
           OfflineManager().markOnline();
         }
@@ -498,6 +577,12 @@ class ApiService {
       try {
         final voucher = TallySalesVoucher.fromJson(data);
         latestTallyBillNotifier.value = voucher;
+        if (_cachedTallyVouchers != null && !voucher.isProcessed && !voucher.isCancelled && !voucher.isDeleted) {
+          _cachedTallyVouchers!.removeWhere((v) =>
+              v.id == voucher.id ||
+              v.voucherNumber.trim().toLowerCase() == voucher.voucherNumber.trim().toLowerCase());
+          _cachedTallyVouchers!.insert(0, voucher);
+        }
       } catch (e) {
         debugPrint('[WS] Failed to parse tally_bill_created: $e');
       }
@@ -508,13 +593,30 @@ class ApiService {
           latestTallyBillNotifier.value?.voucherNumber == voucherNum) {
         latestTallyBillNotifier.value = null;
       }
+      _cachedTallyVouchers?.removeWhere((v) =>
+          (processedId != null && v.id == processedId) ||
+          (voucherNum != null && v.voucherNumber.trim().toLowerCase() == voucherNum.trim().toLowerCase()));
       tallyBillProcessedNotifier.value = processedId ?? voucherNum;
     } else if ((type == 'tally_bill_cancelled' || type == 'bill_cancelled') && data is Map<String, dynamic>) {
       final bNum = (data['bill_number'] ?? data['voucher_number'])?.toString().trim().toLowerCase();
       if (latestTallyBillNotifier.value?.voucherNumber.trim().toLowerCase() == bNum) {
         latestTallyBillNotifier.value = null;
       }
+      if (bNum != null) {
+        _cachedTallyVouchers?.removeWhere((v) => v.voucherNumber.trim().toLowerCase() == bNum);
+      }
       tallyBillProcessedNotifier.value = bNum;
+    } else if ((type == 'user_disabled' || type == 'USER_DISABLED') && data is Map<String, dynamic>) {
+      final targetUserId = data['user_id']?.toString();
+      final targetUsername = data['username']?.toString().toLowerCase();
+      final currentUserId = _currentUser?.id.toString();
+      final currentUsername = _currentUser?.username.toLowerCase();
+
+      if ((targetUserId != null && targetUserId == currentUserId) ||
+          (targetUsername != null && targetUsername == currentUsername) ||
+          (targetUserId == null && targetUsername == null)) {
+        triggerUserDisabled(data['message']?.toString() ?? 'Your user account has been deactivated by the administrator.');
+      }
     }
   }
 
@@ -1014,11 +1116,6 @@ class ApiService {
     return newProd;
   }
 
-  void clearSerialCheckCache() {
-    _outwardSerialCheckCache.clear();
-    _inwardSerialValidateCache.clear();
-  }
-
   // --- INWARD API ---
   Future<Map<String, dynamic>> validateInwardSerial(
     String? productId,
@@ -1026,12 +1123,55 @@ class ApiService {
     String inwardType = 'stock_in',
   }) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
-
-    // If offline or product is offline-created, validate offline directly!
-    if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
-      return OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+    if (cleanSerial.isEmpty) {
+      return {'is_valid': false, 'already_exists': false, 'message': 'Empty serial'};
     }
 
+    final cacheKey = '${productId ?? ""}:$cleanSerial:$inwardType';
+
+    // 1. Instant RAM Cache check (0ms)
+    final cached = _inwardSerialValidateCache[cacheKey];
+    if (cached != null) {
+      return cached;
+    }
+
+    // 2. In-flight request deduplication
+    if (_inFlightInwardChecks.containsKey(cacheKey)) {
+      return await _inFlightInwardChecks[cacheKey]!;
+    }
+
+    // 3. If offline or product is offline-created, validate offline directly!
+    if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
+      final off = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = off;
+      return off;
+    }
+
+    // 4. Quick OfflineManager check: if stock_in and already known in local inventory as available
+    final offlineEntry = OfflineManager().serials[cleanSerial];
+    if (inwardType == 'stock_in' && offlineEntry != null && offlineEntry['st'] == 'available') {
+      final off = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = off;
+      return off;
+    }
+
+    // 5. Query server with fast 2.5s timeout
+    final future = _fetchInwardSerialFromServer(productId, cleanSerial, inwardType, cacheKey);
+    _inFlightInwardChecks[cacheKey] = future;
+    try {
+      final res = await future;
+      return res;
+    } finally {
+      _inFlightInwardChecks.remove(cacheKey);
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchInwardSerialFromServer(
+    String? productId,
+    String cleanSerial,
+    String inwardType,
+    String cacheKey,
+  ) async {
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
       'inward_type': inwardType,
@@ -1040,24 +1180,13 @@ class ApiService {
       queryParams['product_id'] = productId;
     }
 
-    // Network is #1 priority! Live validation with 8-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/inward/validate-serial').replace(queryParameters: queryParams);
-      http.Response res;
-      try {
-        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
-      } catch (e) {
-        if (_isTransientNetworkError(e)) {
-          _resetClient();
-          await Future.delayed(const Duration(milliseconds: 300));
-          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
-        } else {
-          rethrow;
-        }
-      }
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 2500));
 
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        _inwardSerialValidateCache[cacheKey] = data;
         OfflineManager().markOnline();
         OfflineManager().updateSerialFromValidateInward(cleanSerial, data, inwardType: inwardType);
         return data;
@@ -1071,7 +1200,6 @@ class ApiService {
       }
     } catch (e) {
       final errStr = e.toString();
-      // If it's a validation business logic rejection from the server, rethrow so the UI displays it
       if (!errStr.contains('TimeoutException') &&
           !errStr.contains('SocketException') &&
           !errStr.contains('ClientException') &&
@@ -1083,9 +1211,9 @@ class ApiService {
       }
 
       _resetClient();
-      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().validateInwardSerialOffline(productId, cleanSerial, inwardType: inwardType);
+      _inwardSerialValidateCache[cacheKey] = offlineResult;
       return offlineResult;
     }
   }
@@ -1165,12 +1293,57 @@ class ApiService {
     String serialNumber,
   ) async {
     final cleanSerial = serialNumber.trim().toUpperCase();
-
-    // If offline or product is offline-created, check offline directly!
-    if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
-      return OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+    if (cleanSerial.isEmpty) {
+      return {'is_blocked': true, 'message': 'Empty serial'};
     }
 
+    final cacheKey = '${productId ?? ""}:$cleanSerial';
+
+    // 1. Instant RAM Cache check (0ms)
+    final cached = _outwardSerialCheckCache[cacheKey];
+    if (cached != null) {
+      return cached;
+    }
+
+    // 2. In-flight request deduplication
+    if (_inFlightOutwardChecks.containsKey(cacheKey)) {
+      return await _inFlightOutwardChecks[cacheKey]!;
+    }
+
+    // 3. If offline or product is offline-created, check offline directly!
+    if (!OfflineManager().isOnline || (productId != null && productId.startsWith('offline_'))) {
+      final off = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = off;
+      return off;
+    }
+
+    // 4. Fast-path check from local OfflineManager: if known already dispatched, reject instantly
+    final offlineEntry = OfflineManager().serials[cleanSerial];
+    if (offlineEntry != null) {
+      final bool isDispatched = offlineEntry['d'] == true || offlineEntry['st'] == 'dispatched';
+      if (isDispatched) {
+        final off = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+        _outwardSerialCheckCache[cacheKey] = off;
+        return off;
+      }
+    }
+
+    // 5. Query server with fast 2.5s timeout
+    final future = _fetchOutwardSerialFromServer(productId, cleanSerial, cacheKey);
+    _inFlightOutwardChecks[cacheKey] = future;
+    try {
+      final res = await future;
+      return res;
+    } finally {
+      _inFlightOutwardChecks.remove(cacheKey);
+    }
+  }
+
+  Future<Map<String, dynamic>> _fetchOutwardSerialFromServer(
+    String? productId,
+    String cleanSerial,
+    String cacheKey,
+  ) async {
     final queryParams = <String, String>{
       'serial_number': cleanSerial,
     };
@@ -1181,24 +1354,13 @@ class ApiService {
       }
     }
 
-    // Network is #1 priority! Live server query with 8-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse('$_baseUrl/outward/check-serial').replace(queryParameters: queryParams);
-      http.Response res;
-      try {
-        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
-      } catch (e) {
-        if (_isTransientNetworkError(e)) {
-          _resetClient();
-          await Future.delayed(const Duration(milliseconds: 300));
-          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
-        } else {
-          rethrow;
-        }
-      }
+      final res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 2500));
 
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        _outwardSerialCheckCache[cacheKey] = data;
         OfflineManager().markOnline();
         OfflineManager().updateSerialFromCheckOutward(cleanSerial, data);
         return data;
@@ -1228,9 +1390,9 @@ class ApiService {
       }
 
       _resetClient();
-      // Network is not available or server offline after checking for several seconds -> fallback to offline cache
       OfflineManager().markOffline();
       final offlineResult = OfflineManager().checkOutwardSerialOffline(productId, cleanSerial);
+      _outwardSerialCheckCache[cacheKey] = offlineResult;
       return offlineResult;
     }
   }
@@ -1360,19 +1522,19 @@ class ApiService {
       throw Exception('Serial number cannot be empty');
     }
 
-    // Network is #1 priority! Try live server query with 8-second timeout before falling back to offline cache
+    // Network is #1 priority! Try live server query with 3-second timeout before falling back to offline cache
     try {
       final uri = Uri.parse(
         '$_baseUrl/serials/lookup?serial_number=${Uri.encodeComponent(cleanSerial)}',
       );
       http.Response res;
       try {
-        res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+        res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 3000));
       } catch (e) {
         if (_isTransientNetworkError(e)) {
           _resetClient();
-          await Future.delayed(const Duration(milliseconds: 300));
-          res = await _client.get(uri, headers: _headers()).timeout(const Duration(seconds: 8));
+          await Future.delayed(const Duration(milliseconds: 200));
+          res = await _client.get(uri, headers: _headers()).timeout(const Duration(milliseconds: 2500));
         } else {
           rethrow;
         }
@@ -1628,12 +1790,21 @@ class ApiService {
 
   // --- TALLYPRIME INTEGRATION ---
 
-  Future<TallyStatus> getTallyStatus() async {
+  Future<TallyStatus> getTallyStatus({bool forceRefresh = false}) async {
+    if (!forceRefresh && _cachedTallyStatus != null && _tallyStatusCacheTime != null) {
+      final age = DateTime.now().difference(_tallyStatusCacheTime!);
+      if (age < const Duration(seconds: 15)) {
+        return _cachedTallyStatus!;
+      }
+    }
     final uri = Uri.parse('$_baseUrl/tally/status');
     final res = await _authenticatedGet(uri);
     if (res.statusCode == 200) {
       final data = jsonDecode(res.body) as Map<String, dynamic>;
-      return TallyStatus.fromJson(data);
+      final status = TallyStatus.fromJson(data);
+      _cachedTallyStatus = status;
+      _tallyStatusCacheTime = DateTime.now();
+      return status;
     } else {
       String msg = 'Failed to fetch Tally status';
       try {
@@ -1645,17 +1816,40 @@ class ApiService {
 
   Future<List<TallySalesVoucher>> getTallyVouchers({
     String? query,
+    DateTime? fromDate,
+    DateTime? toDate,
     bool? isProcessed,
     bool? isCancelled,
     int limit = 50,
     int offset = 0,
+    bool forceRefresh = false,
   }) async {
+    final bool isDefaultFetch = (query == null || query.trim().isEmpty) && offset == 0 && isProcessed == false;
+    if (isDefaultFetch && !forceRefresh && _cachedTallyVouchers != null && _tallyVouchersCacheTime != null) {
+      final age = DateTime.now().difference(_tallyVouchersCacheTime!);
+      if (age < const Duration(seconds: 15)) {
+        return _cachedTallyVouchers!;
+      }
+    }
+
     final queryParams = <String, String>{
       'limit': limit.toString(),
       'offset': offset.toString(),
     };
     if (query != null && query.trim().isNotEmpty) {
       queryParams['q'] = query.trim();
+    }
+    if (fromDate != null) {
+      final y = fromDate.year.toString().padLeft(4, '0');
+      final m = fromDate.month.toString().padLeft(2, '0');
+      final d = fromDate.day.toString().padLeft(2, '0');
+      queryParams['from_date'] = '$y-$m-$d';
+    }
+    if (toDate != null) {
+      final y = toDate.year.toString().padLeft(4, '0');
+      final m = toDate.month.toString().padLeft(2, '0');
+      final d = toDate.day.toString().padLeft(2, '0');
+      queryParams['to_date'] = '$y-$m-$d';
     }
     if (isProcessed != null) {
       queryParams['is_processed'] = isProcessed.toString();
@@ -1668,7 +1862,12 @@ class ApiService {
     final res = await _authenticatedGet(uri);
     if (res.statusCode == 200) {
       final list = jsonDecode(res.body) as List<dynamic>;
-      return list.map((e) => TallySalesVoucher.fromJson(e as Map<String, dynamic>)).toList();
+      final vouchers = list.map((e) => TallySalesVoucher.fromJson(e as Map<String, dynamic>)).toList();
+      if ((query == null || query.trim().isEmpty) && offset == 0 && isProcessed == false) {
+        _cachedTallyVouchers = vouchers;
+        _tallyVouchersCacheTime = DateTime.now();
+      }
+      return vouchers;
     } else {
       String msg = 'Failed to fetch Tally sales vouchers';
       try {
@@ -1693,13 +1892,23 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>> triggerTallySync({bool forceFull = false}) async {
+  Future<Map<String, dynamic>> triggerTallySync({
+    bool forceFull = false,
+    DateTime? fromDate,
+  }) async {
     final queryParams = <String, String>{
       'force_full': forceFull.toString(),
     };
+    if (fromDate != null) {
+      final y = fromDate.year.toString().padLeft(4, '0');
+      final m = fromDate.month.toString().padLeft(2, '0');
+      final d = fromDate.day.toString().padLeft(2, '0');
+      queryParams['from_date'] = '$y-$m-$d';
+    }
     final uri = Uri.parse('$_baseUrl/tally/sync').replace(queryParameters: queryParams);
     final res = await _authenticatedPost(uri);
     if (res.statusCode == 200) {
+      invalidateTallyVouchersCache();
       return jsonDecode(res.body) as Map<String, dynamic>;
     } else {
       String msg = 'Failed to trigger Tally sync';
@@ -1742,6 +1951,41 @@ class ApiService {
       return true;
     } else {
       String msg = 'Failed to delete voucher';
+      try {
+        msg = jsonDecode(res.body)['detail'] ?? msg;
+      } catch (_) {}
+      throw Exception(msg);
+    }
+  }
+
+  Future<Product?> assignProductBrand({
+    required String brand,
+    bool? hasDualSerial,
+    String? productId,
+    String? voucherItemId,
+    String? itemName,
+    String? categoryId,
+  }) async {
+    final body = jsonEncode({
+      'brand': brand,
+      if (hasDualSerial != null) 'has_dual_serial': hasDualSerial,
+      if (productId != null) 'product_id': productId,
+      if (voucherItemId != null) 'voucher_item_id': voucherItemId,
+      if (itemName != null) 'item_name': itemName,
+      if (categoryId != null) 'category_id': categoryId,
+    });
+
+    final uri = Uri.parse('$_baseUrl/tally/assign-brand');
+    final res = await _authenticatedPost(uri, body: body);
+    if (res.statusCode == 200) {
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final updatedProduct = Product.fromJson(data);
+      try {
+        OfflineManager().updateProduct(updatedProduct);
+      } catch (_) {}
+      return updatedProduct;
+    } else {
+      String msg = 'Failed to assign brand';
       try {
         msg = jsonDecode(res.body)['detail'] ?? msg;
       } catch (_) {}

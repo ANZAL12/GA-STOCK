@@ -13,6 +13,10 @@ The Godown Management System tracks all inward and outward appliance serial numb
 | **Web Dashboard** | React 19, TypeScript, Tailwind CSS v4 | `http://127.0.0.1:8000/` |
 | **Mobile Scanner App** | Flutter 3.47, Dart 3.13, Camera MLKit | `A:\GA STOCK\ga_scanner.apk` |
 | **Database** | PostgreSQL 17 (`godown_db`) | `localhost:5432` |
+| **Tally Integration** | Read-Only TDL Export Queries (Port 9000) | One-way: Tally -> Godown (NO WRITES) |
+
+> **CRITICAL SECURITY & INTEGRITY INVARIANT — TALLY IS STRICTLY READ-ONLY:**  
+> The Godown Management System and the Tally Connector Agent have **ZERO write permissions** to TallyPrime. Under no circumstances does this application create, alter, update, cancel, or import any records into Tally. All communication consists exclusively of read-only XML Export queries (`<TALLYREQUEST>Export</TALLYREQUEST>`). All Tally data in the Godown Database is a local read-only cache.
 
 ---
 

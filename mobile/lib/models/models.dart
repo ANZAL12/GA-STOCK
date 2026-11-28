@@ -630,6 +630,92 @@ class SerialLookupDetail {
 
 // ─── TALLY INTEGRATION ───────────────────────────────────────────────────────
 
+bool isDualSerialCategoryName(String categoryName) {
+  final catU = categoryName.trim().toUpperCase();
+  if (catU.isEmpty) return false;
+
+  const exclusions = [
+    'STAND', 'STABILIZER', 'REMOTE', 'BRACKET', 'PIPE', 'DRAIN',
+    'COVER', 'ACCESSORY', 'TROLLEY', 'COPPER TUBE', 'BLENDER', 'PARTS', 'LED', 'TV',
+    'APPLIANCE', 'APPLIANCES'
+  ];
+  if (exclusions.any((ex) => catU.contains(ex))) return false;
+
+  if (catU.contains('GENERAL')) return true;
+
+  if (['FORMENTY', 'FOREMENTY', 'FMTY', 'FORMNTY'].any((f) => catU.contains(f))) {
+    final bool isAcAtBeginning = RegExp(r'^AC[\s\-_/(\[]').hasMatch(catU) || catU.startsWith('AC');
+    final bool isAcAtEnd = RegExp(r'[\s\-_/(\]]AC$').hasMatch(catU) || catU.endsWith(' AC') || catU.endsWith('-AC');
+    if (isAcAtBeginning || isAcAtEnd) return true;
+    return false;
+  }
+
+  if (RegExp(r'^AC[\s\-_/(\[]').hasMatch(catU) || catU == 'AC') return true;
+  if (RegExp(r'[\s\-_/(\]]AC$').hasMatch(catU) || catU.endsWith(' AC') || catU == 'AC') return true;
+  if (RegExp(r'\bAC\b').hasMatch(catU)) return true;
+  if (['AIR CONDITION', 'AIR-CONDITION', 'AIRCONDITION'].any((t) => catU.contains(t))) return true;
+  if (['SPLIT', 'CASSETTE', 'DUCTABLE', 'VRF', 'VRV', 'HVAC', 'MULTI SPLIT', 'CARRIER'].any((t) => catU.contains(t))) return true;
+
+  return false;
+}
+
+bool isDualSerialModelName(String itemName, [String? categoryName]) {
+  final nameU = itemName.trim().toUpperCase();
+  final catU = (categoryName ?? '').trim().toUpperCase();
+
+  // 1. Strict non-dual exclusions: appliances, single-unit coolers/freezers, TVs, hardware, accessories.
+  // Even if categorized under AC FORMENTY or GENERAL, these are SINGLE UNIT products!
+  const nonDualAppliancesAndParts = [
+    'COOLER', 'AIR COOLER', 'WATER COOLER', 'DESERT COOLER',
+    'CHILLER', 'FREEZER', 'DEEP FREEZER', 'CHEST FREEZER', 'VISI COOLER', 'SHOWCASE',
+    'REFRIGERATOR', 'REF ', 'REF/', 'FRIDGE',
+    'WASHING', 'WM ', 'W/M', 'DRYER',
+    'TV', 'SMART TV', 'LED', 'OLED', 'QLED', 'MONITOR',
+    'FAN', 'GEYSER', 'HEATER', 'DISPENSER', 'PURIFIER', 'MICROWAVE', 'OVEN',
+    'STAND', 'TROLLEY', 'PIPE', 'TUBE', 'BLENDER', 'CUTTER', 'GEAR', 'JAR',
+    'STABILIZER', 'REMOTE', 'BRACKET', 'DRAIN', 'COVER', 'ACCESSORY', 'COPPER TUBE',
+    'ZAROOKY', 'BOARD', 'MOTOR', 'PCB'
+  ];
+  if (nonDualAppliancesAndParts.any((neg) => nameU.contains(neg) || catU.contains(neg))) {
+    return false;
+  }
+
+  // 2. If Category Name is explicitly a dual AC category:
+  // Remaining machine models under this category are split AC units (dual serial).
+  if (catU.isNotEmpty && isDualSerialCategoryName(catU)) {
+    return true;
+  }
+
+  // 2. Check Item / Model Name (for new models added in Tally not yet pulled to GA Stock):
+  if (nameU.contains('GENERAL') || nameU.contains('O-GENERAL') || nameU.contains('OGENERAL')) return true;
+  if (['FORMENTY', 'FOREMENTY', 'FMTY', 'FORMNTY'].any((f) => nameU.contains(f))) {
+    final bool isAcAtBeginning = RegExp(r'^AC[\s\-_/(\[]').hasMatch(nameU) || nameU.startsWith('AC');
+    final bool isAcAtEnd = RegExp(r'[\s\-_/(\]]AC$').hasMatch(nameU) || nameU.endsWith(' AC') || nameU.endsWith('-AC');
+    if (isAcAtBeginning || isAcAtEnd) return true;
+    return false; // FORMENTY alone without AC is NOT dual series
+  }
+  if (RegExp(r'^AC[\s\-_/(\[]').hasMatch(nameU) || RegExp(r'[\s\-_/(\]]AC$').hasMatch(nameU)) return true;
+  if (['AIR CONDITION', 'AIR-CONDITION', 'AIRCONDITION'].any((t) => nameU.contains(t))) return true;
+  if (RegExp(r'^(ASGA|ASGG|AOGA|AOGG|AUG|AOG|ASG)').hasMatch(nameU)) return true;
+  if (RegExp(r'^FM\s*(12|13|15|18)').hasMatch(nameU)) return true;
+  if (RegExp(r'\bSAC\b').hasMatch(nameU)) return true;
+  if (RegExp(r'^(12K|18K|24K|CAI|CAS|CI|CO|INDUS|GXI|ALPHA|HYBRIDJET)').hasMatch(nameU)) return true;
+  if (nameU.contains('CARRIER') && ['AC', 'INV', 'TON', 'INDUS', 'GXI', 'SPLIT', 'ALPHA', 'HYBRIDJET', '3*', '5*'].any((k) => nameU.contains(k))) {
+    return true;
+  }
+  if (RegExp(r'\b(12K|18K|24K)\b').hasMatch(nameU) && ['INV', 'AC', 'ALPHA', 'INDUS', 'HYBRIDJET'].any((k) => nameU.contains(k))) {
+    return true;
+  }
+  if (['INV AC', 'INVERTER AC', 'SPLIT AC', 'SPLIT', 'CASSETTE', 'INDOOR', 'OUTDOOR', 'OUT DOOR', 'IN DOOR', 'IDU', 'ODU'].any((k) => nameU.contains(k))) {
+    return true;
+  }
+  if (RegExp(r'\bAC\b').hasMatch(nameU) && ['TON', 'TN', 'INV', 'STAR', '3*', '5*', '1.5', '1.0', '2.0'].any((t) => nameU.contains(t))) {
+    return true;
+  }
+
+  return false;
+}
+
 class TallyVoucherItem {
   final String id;
   final String voucherId;
@@ -644,6 +730,9 @@ class TallyVoucherItem {
   final Map<String, dynamic>? batchDetails;
   final String? matchedProductName;
   final String? matchedProductModel;
+  final String? matchedProductBrand;
+  final bool isNewModel;
+  final bool hasDualSerial;
 
   TallyVoucherItem({
     required this.id,
@@ -659,13 +748,66 @@ class TallyVoucherItem {
     this.batchDetails,
     this.matchedProductName,
     this.matchedProductModel,
+    this.matchedProductBrand,
+    this.isNewModel = false,
+    this.hasDualSerial = false,
   });
 
+  TallyVoucherItem copyWith({
+    String? id,
+    String? voucherId,
+    String? itemName,
+    String? itemCode,
+    String? productId,
+    double? quantity,
+    String? uom,
+    String? rawQtyText,
+    String? godownName,
+    String? batchName,
+    Map<String, dynamic>? batchDetails,
+    String? matchedProductName,
+    String? matchedProductModel,
+    String? matchedProductBrand,
+    bool? isNewModel,
+    bool? hasDualSerial,
+  }) {
+    return TallyVoucherItem(
+      id: id ?? this.id,
+      voucherId: voucherId ?? this.voucherId,
+      itemName: itemName ?? this.itemName,
+      itemCode: itemCode ?? this.itemCode,
+      productId: productId ?? this.productId,
+      quantity: quantity ?? this.quantity,
+      uom: uom ?? this.uom,
+      rawQtyText: rawQtyText ?? this.rawQtyText,
+      godownName: godownName ?? this.godownName,
+      batchName: batchName ?? this.batchName,
+      batchDetails: batchDetails ?? this.batchDetails,
+      matchedProductName: matchedProductName ?? this.matchedProductName,
+      matchedProductModel: matchedProductModel ?? this.matchedProductModel,
+      matchedProductBrand: matchedProductBrand ?? this.matchedProductBrand,
+      isNewModel: isNewModel ?? this.isNewModel,
+      hasDualSerial: hasDualSerial ?? this.hasDualSerial,
+    );
+  }
+
   factory TallyVoucherItem.fromJson(Map<String, dynamic> json) {
+    final rawName = json['item_name'] ?? '';
+    final bool rawDual = json['has_dual_serial'] == true;
+    bool dual = rawDual || isDualSerialModelName(rawName);
+    // Only force single serial if name clearly belongs to a non-AC appliance AND it wasn't flagged dual by an AC category
+    const nonDualKeywords = [
+      'TV', 'SMART TV', 'BLENDER', 'WASHING', 'WM ', 'W/M', 'REFRIGERATOR', 'REF ',
+      'STAND', 'TROLLEY', 'MICROWAVE', 'OVEN'
+    ];
+    final nameU = rawName.toString().trim().toUpperCase();
+    if (!rawDual && nonDualKeywords.any((kw) => nameU.contains(kw))) {
+      dual = false;
+    }
     return TallyVoucherItem(
       id: json['id'] ?? '',
       voucherId: json['voucher_id'] ?? '',
-      itemName: json['item_name'] ?? '',
+      itemName: rawName,
       itemCode: json['item_code'],
       productId: json['product_id'],
       quantity: (json['quantity'] as num?)?.toDouble() ?? 0.0,
@@ -676,6 +818,9 @@ class TallyVoucherItem {
       batchDetails: json['batch_details'] as Map<String, dynamic>?,
       matchedProductName: json['matched_product_name'],
       matchedProductModel: json['matched_product_model'],
+      matchedProductBrand: json['matched_product_brand'],
+      isNewModel: json['is_new_model'] == true,
+      hasDualSerial: dual,
     );
   }
 }
@@ -704,6 +849,7 @@ class TallySalesVoucher {
   final String? processedAt;
   final int itemCount;
   final double totalQuantity;
+  final bool hasDualSerialItems;
   final List<String> godowns;
   final List<TallyVoucherItem> items;
   final String? notes;
@@ -732,6 +878,7 @@ class TallySalesVoucher {
     this.processedAt,
     required this.itemCount,
     required this.totalQuantity,
+    this.hasDualSerialItems = false,
     required this.godowns,
     this.items = const [],
     this.notes,
@@ -744,6 +891,9 @@ class TallySalesVoucher {
     final gds = (json['godowns'] as List<dynamic>? ?? [])
         .map((e) => e.toString())
         .toList();
+
+    final bool dualItems = json['has_dual_serial_items'] == true ||
+        itms.any((i) => i.hasDualSerial);
 
     return TallySalesVoucher(
       id: json['id'] ?? '',
@@ -769,9 +919,70 @@ class TallySalesVoucher {
       processedAt: json['processed_at'],
       itemCount: json['item_count'] ?? itms.length,
       totalQuantity: (json['total_quantity'] as num?)?.toDouble() ?? 0.0,
+      hasDualSerialItems: dualItems,
       godowns: gds,
       items: itms,
       notes: json['notes'],
+    );
+  }
+
+  TallySalesVoucher copyWith({
+    String? id,
+    String? guid,
+    int? alterId,
+    String? voucherNumber,
+    String? voucherDate,
+    String? voucherType,
+    String? partyName,
+    String? partyLedgerName,
+    String? buyerName,
+    String? address,
+    String? stateName,
+    String? companyName,
+    String? shopId,
+    String? vehicleNumber,
+    String? transporterName,
+    String? deliveryNote,
+    String? destination,
+    bool? isCancelled,
+    bool? isDeleted,
+    bool? isProcessed,
+    String? processedAt,
+    int? itemCount,
+    double? totalQuantity,
+    bool? hasDualSerialItems,
+    List<String>? godowns,
+    List<TallyVoucherItem>? items,
+    String? notes,
+  }) {
+    return TallySalesVoucher(
+      id: id ?? this.id,
+      guid: guid ?? this.guid,
+      alterId: alterId ?? this.alterId,
+      voucherNumber: voucherNumber ?? this.voucherNumber,
+      voucherDate: voucherDate ?? this.voucherDate,
+      voucherType: voucherType ?? this.voucherType,
+      partyName: partyName ?? this.partyName,
+      partyLedgerName: partyLedgerName ?? this.partyLedgerName,
+      buyerName: buyerName ?? this.buyerName,
+      address: address ?? this.address,
+      stateName: stateName ?? this.stateName,
+      companyName: companyName ?? this.companyName,
+      shopId: shopId ?? this.shopId,
+      vehicleNumber: vehicleNumber ?? this.vehicleNumber,
+      transporterName: transporterName ?? this.transporterName,
+      deliveryNote: deliveryNote ?? this.deliveryNote,
+      destination: destination ?? this.destination,
+      isCancelled: isCancelled ?? this.isCancelled,
+      isDeleted: isDeleted ?? this.isDeleted,
+      isProcessed: isProcessed ?? this.isProcessed,
+      processedAt: processedAt ?? this.processedAt,
+      itemCount: itemCount ?? this.itemCount,
+      totalQuantity: totalQuantity ?? this.totalQuantity,
+      hasDualSerialItems: hasDualSerialItems ?? this.hasDualSerialItems,
+      godowns: godowns ?? this.godowns,
+      items: items ?? this.items,
+      notes: notes ?? this.notes,
     );
   }
 }

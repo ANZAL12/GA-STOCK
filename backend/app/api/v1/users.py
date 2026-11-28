@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
 from app.core.security import get_password_hash
+from app.core.websocket_manager import ws_manager
 from app.database import get_db
 from app.models.audit import AuditLog
 from app.models.user import User
@@ -97,6 +98,12 @@ async def update_user(
         if user_id == admin.id and not req.is_active:
             raise HTTPException(status_code=400, detail="You cannot deactivate your own current administrator account.")
         user.is_active = req.is_active
+        if not user.is_active:
+            await ws_manager.broadcast("user_disabled", {
+                "user_id": str(user.id),
+                "username": user.username,
+                "message": "User account has been disabled by the administrator.",
+            })
     if req.password is not None and req.password.strip():
         user.password_hash = get_password_hash(req.password.strip())
 
@@ -132,6 +139,11 @@ async def deactivate_user(
         raise HTTPException(status_code=404, detail="User not found.")
 
     user.is_active = False
+    await ws_manager.broadcast("user_disabled", {
+        "user_id": str(user.id),
+        "username": user.username,
+        "message": "User account has been disabled by the administrator.",
+    })
 
     audit = AuditLog(
         user_id=admin.id,

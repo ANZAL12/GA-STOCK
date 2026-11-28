@@ -308,6 +308,20 @@ async def test_tally_database_sync_and_endpoints():
         assert proc_res.status_code == 200
         assert proc_res.json()["is_processed"] is True
 
+        # Test DELETE /api/v1/tally/sales-vouchers/{id} by Staff (swipe to delete)
+        staff_login = await client.post("/api/v1/auth/login", json={"username": "staff_test", "password": "Staff@12345"})
+        assert staff_login.status_code == 200
+        staff_headers = {"Authorization": f"Bearer {staff_login.json()['access_token']}"}
+
+        del_res = await client.delete(f"/api/v1/tally/sales-vouchers/{v1['id']}", headers=staff_headers)
+        assert del_res.status_code == 200
+        assert del_res.json()["status"] == "success"
+
+        # Verify voucher is marked deleted and excluded from default voucher list
+        recheck = await client.get(f"/api/v1/tally/sales-vouchers?q={run_id}&include_mock=true", headers=headers)
+        assert recheck.status_code == 200
+        assert not any(v["id"] == v1["id"] for v in recheck.json())
+
         # Test GET /api/tally/sync-status
         sync_status_res = await client.get("/api/tally/sync-status", headers=headers)
         assert sync_status_res.status_code == 200

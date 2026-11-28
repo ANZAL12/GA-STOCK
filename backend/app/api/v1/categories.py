@@ -23,6 +23,7 @@ async def list_categories(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     active_only: bool = Query(True, description="Filter only active categories"),
+    has_products_only: bool = Query(False, description="Filter categories with at least one active product"),
 ) -> list[CategoryResponse]:
     """
     List categories. Accessible by both admin and staff.
@@ -44,6 +45,9 @@ async def list_categories(
 
     if active_only:
         query = query.where(Category.is_active == True)
+
+    if has_products_only:
+        query = query.where(func.coalesce(count_subq.c.prod_count, 0) > 0)
 
     result = await db.execute(query)
     rows = result.all()
@@ -74,9 +78,14 @@ async def create_category(
             detail=f"Category '{clean_name}' already exists",
         )
 
+    from app.services.tally_service import TallySyncService
+    has_dual = req.has_dual_serial if req.has_dual_serial is not None else False
+    if not has_dual:
+        has_dual = TallySyncService.is_dual_serial_category(clean_name)
+
     category = Category(
         name=clean_name,
-        has_dual_serial=req.has_dual_serial,
+        has_dual_serial=has_dual,
         is_active=True,
     )
     db.add(category)

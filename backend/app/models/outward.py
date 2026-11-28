@@ -85,6 +85,7 @@ class OutwardLine(Base, PrimaryKeyMixin, CreatedAtMixin):
         UniqueConstraint("batch_id", "serial_text", name="uq_outward_lines_batch_serial"),
         Index("ix_outward_lines_is_flagged", "is_flagged_for_review"),
         Index("ix_outward_lines_created_at", text("created_at DESC")),
+        Index("ix_outward_lines_serial_cancelled", "serial_text", "is_cancelled"),
     )
 
     batch_id:     Mapped[uuid.UUID]           = mapped_column(

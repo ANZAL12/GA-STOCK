@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
+import { apiCache } from "../api/cache";
 import { useWebSocket } from "../api/useWebSocket";
 import type { 
   OverviewSummary, 
@@ -21,10 +22,10 @@ import {
 } from "lucide-react";
 
 export const OverviewPage: React.FC = () => {
-  const [summary, setSummary] = useState<OverviewSummary | null>(null);
-  const [stockByModel, setStockByModel] = useState<StockByModelItem[]>([]);
-  const [timeline, setTimeline] = useState<TodayTimelineItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<OverviewSummary | null>(() => apiCache.get<OverviewSummary>("/reports/overview") || null);
+  const [stockByModel, setStockByModel] = useState<StockByModelItem[]>(() => apiCache.get<StockByModelItem[]>("/reports/stock-by-model") || []);
+  const [timeline, setTimeline] = useState<TodayTimelineItem[]>(() => apiCache.get<TodayTimelineItem[]>("/reports/today-timeline") || []);
+  const [loading, setLoading] = useState(() => !apiCache.hasValid("/reports/overview"));
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");

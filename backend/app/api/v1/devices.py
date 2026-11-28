@@ -146,3 +146,63 @@ async def deactivate_device(
     await db.commit()
     await db.refresh(device)
     return DeviceResponse.model_validate(device)
+
+
+@router.delete("/{device_id}")
+async def delete_device(
+    device_id: uuid.UUID,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Admin only: delete a device from the registry.
+    """
+    result = await db.execute(select(Device).where(Device.id == device_id))
+    device = result.scalar_one_or_none()
+
+    if not device:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found",
+        )
+
+    audit = AuditLog(
+        user_id=admin.id,
+        action="DEVICE_DELETED",
+        entity_type="device",
+        entity_id=str(device.id),
+        details={"device_uid": device.device_uid, "label": device.label},
+    )
+    db.add(audit)
+
+    await db.delete(device)
+    await db.commit()
+    return {"status": "success", "message": f"Device deleted"}
+
+
+@router.delete("")
+async def clear_all_devices(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """
+    Admin only: delete all registered devices.
+    """
+    result = await db.execute(select(Device))
+    devices = result.scalars().all()
+    count = len(devices)
+
+    for d in devices:
+        await db.delete(d)
+
+    audit = AuditLog(
+        user_id=admin.id,
+        action="ALL_DEVICES_DELETED",
+        entity_type="device",
+        entity_id="all",
+        details={"count": count},
+    )
+    db.add(audit)
+
+    await db.commit()
+    return {"status": "success", "message": f"All {count} devices deleted"}

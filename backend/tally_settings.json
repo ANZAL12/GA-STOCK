@@ -1,0 +1,6 @@
+{
+  "auto_sync": true,
+  "enable_tally_1": true,
+  "enable_tally_2": true,
+  "sync_interval_minutes": 60
+}

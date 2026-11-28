@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { apiRequest } from "../api/client";
+import { apiCache } from "../api/cache";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { Shop, ShopDispatchedSerial } from "../types";
@@ -24,7 +25,7 @@ import {
 
 export const ShopsPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [shops, setShops] = useState<Shop[]>([]);
+  const [shops, setShops] = useState<Shop[]>(() => apiCache.get<Shop[]>("/shops?active_only=false") || []);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
   const [cleaningUp, setCleaningUp] = useState(false);
@@ -57,9 +58,9 @@ export const ShopsPage: React.FC = () => {
   const [copiedGstin, setCopiedGstin] = useState(false);
   const [copiedPhone, setCopiedPhone] = useState(false);
 
-  const fetchShops = async () => {
+  const fetchShops = async (force = false) => {
     try {
-      const data = await apiRequest<Shop[]>("/shops?active_only=false");
+      const data = await apiRequest<Shop[]>("/shops?active_only=false", { forceRefresh: force });
       setShops(data);
     } catch (e) {
       console.error(e);
@@ -73,7 +74,7 @@ export const ShopsPage: React.FC = () => {
       const res = await apiRequest<{ status: string; message: string }>("/tally/sync-masters", {
         method: "POST",
       });
-      await fetchShops();
+      await fetchShops(true);
       setTallyNotice(res.message || "Pulled shops from Tally.");
       setTimeout(() => setTallyNotice(null), 5000);
     } catch (err) {

@@ -26,6 +26,7 @@ from app.schemas.product import (
     ProductResponse,
     ProductUpdate,
     ProductSerialItem,
+    ProductBrandAssignRequest,
 )
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -69,15 +70,18 @@ async def list_products(
         query = query.where(Product.category_id == category_id)
 
     if q and q.strip():
-        search_term = f"%{q.strip().lower()}%"
-        query = query.where(
-            or_(
-                func.lower(Product.name).like(search_term),
-                func.lower(Product.brand).like(search_term),
-                func.lower(Product.model).like(search_term),
-                func.lower(Product.sku).like(search_term),
+        tokens = [t.strip().lower() for t in q.strip().split() if t.strip()]
+        for token in tokens:
+            t_term = f"%{token}%"
+            query = query.where(
+                or_(
+                    func.lower(Product.name).like(t_term),
+                    func.lower(Product.brand).like(t_term),
+                    func.lower(Product.model).like(t_term),
+                    func.lower(Product.sku).like(t_term),
+                    func.lower(Category.name).like(t_term),
+                )
             )
-        )
 
     result = await db.execute(query)
     rows = result.all()
@@ -506,6 +510,136 @@ async def reactivate_product(
     resp = ProductResponse.model_validate(product)
     resp.category_name = cat.name if cat else None
     resp.has_dual_serial = cat.has_dual_serial if cat else False
+
+    await ws_manager.broadcast("product_updated", json.loads(resp.model_dump_json()))
+    return resp
+
+
+ALLOWED_BRANDS = ["GENERAL", "HAIER", "FORMENTY", "CARRIER", "ROCKWELL", "MIDEA"]
+
+
+@router.post("/{product_id}/assign-brand", response_model=ProductResponse)
+async def assign_product_brand(
+    product_id: uuid.UUID,
+    req: ProductBrandAssignRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ProductResponse:
+    """
+    Staff / Admin: assign a confirmed brand to a product model.
+    Supported brands: GENERAL, HAIER, FORMENTY, CARRIER, ROCKWELL, MIDEA.
+    Automatically links or switches to the correct category and dual-serial status.
+    """
+    norm_brand = req.brand.strip().upper()
+    if norm_brand not in ALLOWED_BRANDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid brand '{req.brand}'. Must be one of: {', '.join(ALLOWED_BRANDS)}",
+        )
+
+    result = await db.execute(select(Product).where(Product.id == product_id))
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    target_cat: Optional[Category] = None
+    if req.category_id:
+        c_res = await db.execute(select(Category).where(Category.id == req.category_id))
+        target_cat = c_res.scalar_one_or_none()
+
+    desired_dual = req.has_dual_serial
+
+    if not target_cat:
+        all_cats_res = await db.execute(select(Category).where(Category.is_active == True))
+        all_cats = all_cats_res.scalars().all()
+
+        # Filter categories matching desired dual-serial status if specified
+        if desired_dual is not None:
+            matching_cats = [c for c in all_cats if c.has_dual_serial == desired_dual]
+        else:
+            matching_cats = all_cats
+
+        if norm_brand == "GENERAL":
+            target_cat = next(
+                (c for c in matching_cats if "general" in c.name.lower()),
+                None,
+            )
+        elif norm_brand == "CARRIER":
+            target_cat = next((c for c in matching_cats if "carrier" in c.name.lower()), None)
+            if not target_cat and desired_dual is True:
+                target_cat = next((c for c in matching_cats if c.name.strip().upper() == "AC"), None)
+        elif norm_brand == "HAIER":
+            target_cat = next((c for c in matching_cats if "haier" in c.name.lower()), None)
+            if not target_cat and desired_dual is True:
+                target_cat = next((c for c in matching_cats if c.name.strip().upper() == "AC"), None)
+        elif norm_brand == "MIDEA":
+            target_cat = next((c for c in matching_cats if "midea" in c.name.lower()), None)
+            if not target_cat and desired_dual is True:
+                target_cat = next((c for c in matching_cats if c.name.strip().upper() == "AC"), None)
+        elif norm_brand == "ROCKWELL":
+            target_cat = next(
+                (c for c in matching_cats if "rockwell" in c.name.lower()),
+                next((c for c in matching_cats if "celfrost" in c.name.lower()), None),
+            )
+        elif norm_brand == "FORMENTY":
+            if desired_dual is True:
+                target_cat = next((c for c in matching_cats if "ac" in c.name.lower() and "formenty" in c.name.lower()), None)
+            elif desired_dual is False:
+                target_cat = next((c for c in matching_cats if "led" in c.name.lower() and "formenty" in c.name.lower()), None)
+            if not target_cat:
+                target_cat = next((c for c in matching_cats if "formenty" in c.name.lower()), None)
+
+    # If category not found matching brand and dual/single status, create one
+    if not target_cat:
+        is_dual = desired_dual if desired_dual is not None else (norm_brand in ("GENERAL", "CARRIER", "HAIER", "MIDEA"))
+        cat_suffix = "AC" if is_dual else "Appliances"
+        cat_title = f"{norm_brand.title()} {cat_suffix}" if norm_brand != "GENERAL" else ("General" if is_dual else "General Appliances")
+        target_cat = Category(
+            name=cat_title,
+            has_dual_serial=is_dual,
+            is_active=True,
+            source="SYSTEM",
+        )
+        db.add(target_cat)
+        await db.flush()
+
+    old_brand = product.brand
+    product.brand = norm_brand
+    product.category_id = target_cat.id
+
+    # Also update any other auto-created product with identical model name
+    if product.model:
+        matching_prods_res = await db.execute(
+            select(Product).where(
+                Product.id != product.id,
+                func.lower(Product.model) == product.model.strip().lower(),
+            )
+        )
+        for other_p in matching_prods_res.scalars().all():
+            other_p.brand = norm_brand
+            other_p.category_id = target_cat.id
+
+    audit = AuditLog(
+        user_id=current_user.id,
+        action="PRODUCT_BRAND_ASSIGNED",
+        entity_type="product",
+        entity_id=str(product.id),
+        details={
+            "old_brand": old_brand,
+            "new_brand": norm_brand,
+            "category_id": str(target_cat.id),
+            "category_name": target_cat.name,
+            "has_dual_serial": target_cat.has_dual_serial,
+        },
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(product)
+
+    resp = ProductResponse.model_validate(product)
+    resp.category_name = target_cat.name
+    resp.has_dual_serial = target_cat.has_dual_serial
 
     await ws_manager.broadcast("product_updated", json.loads(resp.model_dump_json()))
     return resp

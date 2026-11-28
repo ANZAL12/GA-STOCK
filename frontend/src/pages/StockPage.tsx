@@ -1,6 +1,7 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import * as XLSX from "xlsx";
 import { apiRequest } from "../api/client";
+import { apiCache } from "../api/cache";
 import { useWebSocket } from "../api/useWebSocket";
 import { useAuth } from "../context/AuthContext";
 import type { Product, Category, ProductSerialItem, ExcelSerialImportRequest, ExcelSerialImportResponse } from "../types";
@@ -30,12 +31,15 @@ import {
 
 export const StockPage: React.FC = () => {
   const { isAdmin } = useAuth();
-  const [products, setProducts] = useState<Product[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [products, setProducts] = useState<Product[]>(() => apiCache.get<Product[]>("/products") || []);
+  const [categories, setCategories] = useState<Category[]>(() => apiCache.get<Category[]>("/categories") || []);
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [showEmptyCategories] = useState<boolean>(() => {
+    return localStorage.getItem("feature_show_empty_categories") === "true";
+  });
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "deactivated">("all");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !apiCache.hasValid("/products") || !apiCache.hasValid("/categories"));
   const [pullingTally, setPullingTally] = useState(false);
   const [tallyNotice, setTallyNotice] = useState<string | null>(null);
   const [tallyError, setTallyError] = useState<string | null>(null);
@@ -423,11 +427,11 @@ export const StockPage: React.FC = () => {
     }
   };
 
-  const fetchStock = async () => {
+  const fetchStock = async (force = false) => {
     try {
       const [prods, cats] = await Promise.all([
-        apiRequest<Product[]>("/products"),
-        apiRequest<Category[]>("/categories"),
+        apiRequest<Product[]>("/products", { forceRefresh: force }),
+        apiRequest<Category[]>("/categories", { forceRefresh: force }),
       ]);
       setProducts(prods);
       setCategories(cats);
@@ -445,7 +449,7 @@ export const StockPage: React.FC = () => {
       const res = await apiRequest<{ status: string; message: string }>("/tally/sync-masters", {
         method: "POST",
       });
-      await fetchStock();
+      await fetchStock(true);
       setTallyNotice(res.message || "Pulled items and categories from Tally.");
       setTimeout(() => setTallyNotice(null), 5000);
     } catch (err) {
@@ -676,37 +680,105 @@ export const StockPage: React.FC = () => {
   const activeCount = products.filter((p) => p.is_active).length;
   const deactivatedCount = products.filter((p) => !p.is_active).length;
 
-  const filtered = products.filter((p) => {
-    if (isAdmin) {
-      if (filterStatus === "active" && !p.is_active) return false;
-      if (filterStatus === "deactivated" && p.is_active) return false;
-    } else {
-      if (!p.is_active) return false;
+  const categoryMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const c of categories) {
+      map[c.id] = c.name;
     }
-    const matchesCategory = selectedCategory === "all" || p.category_id === selectedCategory;
-    const q = search.toLowerCase();
-    const matchesSearch =
-      p.name.toLowerCase().includes(q) ||
-      p.brand.toLowerCase().includes(q) ||
-      p.model.toLowerCase().includes(q);
-    return matchesCategory && matchesSearch;
-  });
+    return map;
+  }, [categories]);
 
-  const filteredProductSerials = productSerials.filter((s) => {
-    const q = serialSearch.trim().toLowerCase();
-    const matchesSearch =
-      !q ||
-      s.serial_number.toLowerCase().includes(q) ||
-      (s.shop_name && s.shop_name.toLowerCase().includes(q)) ||
-      (s.inward_ref && s.inward_ref.toLowerCase().includes(q)) ||
-      (s.delivery_ref && s.delivery_ref.toLowerCase().includes(q));
+  const normalizeAlphaNum = (val: string | null | undefined): string => {
+    if (!val) return "";
+    return val.toLowerCase().replace(/[^a-z0-9]/g, "");
+  };
 
-    if (serialStatusFilter === "all") return matchesSearch;
-    if (serialStatusFilter === "available") return matchesSearch && s.status === "available";
-    if (serialStatusFilter === "dispatched") return matchesSearch && s.status === "dispatched";
-    if (serialStatusFilter === "other") return matchesSearch && s.status !== "available" && s.status !== "dispatched";
-    return matchesSearch;
-  });
+  const filtered = useMemo(() => {
+    const rawQuery = search.trim();
+    const tokens = rawQuery ? rawQuery.toLowerCase().split(/\s+/).filter(Boolean) : [];
+    const normalizedQuery = normalizeAlphaNum(rawQuery);
+
+    return products.filter((p) => {
+      if (isAdmin) {
+        if (filterStatus === "active" && !p.is_active) return false;
+        if (filterStatus === "deactivated" && p.is_active) return false;
+      } else {
+        if (!p.is_active) return false;
+      }
+
+      if (selectedCategory !== "all" && p.category_id !== selectedCategory) {
+        return false;
+      }
+
+      if (tokens.length === 0) {
+        return true;
+      }
+
+      const catName = p.category_name || categoryMap[p.category_id] || "";
+      const searchableFields = [
+        p.name || "",
+        p.brand || "",
+        p.model || "",
+        p.sku || "",
+        catName,
+        p.size_capacity || "",
+        p.description || "",
+        p.tally_part_number || "",
+      ];
+
+      const fullText = searchableFields.join(" ").toLowerCase();
+      const normFullText = normalizeAlphaNum(fullText);
+
+      // Relaxed multi-token match: every token must be found in the combined text
+      const allTokensMatch = tokens.every((token) => fullText.includes(token));
+      if (allTokensMatch) return true;
+
+      // Relaxed punctuation/alphanumeric match: ignores hyphens, slashes, spacing (e.g. "GXI-360" vs "GXI 360")
+      if (normalizedQuery && normFullText.includes(normalizedQuery)) {
+        return true;
+      }
+
+      return false;
+    });
+  }, [products, search, selectedCategory, filterStatus, isAdmin, categoryMap]);
+
+  const filteredProductSerials = useMemo(() => {
+    const rawQuery = serialSearch.trim();
+    const tokens = rawQuery ? rawQuery.toLowerCase().split(/\s+/).filter(Boolean) : [];
+    const normalizedQuery = normalizeAlphaNum(rawQuery);
+
+    return productSerials.filter((s) => {
+      let matchesSearch = true;
+      if (tokens.length > 0) {
+        const fullSerialText = [
+          s.serial_number || "",
+          s.shop_name || "",
+          s.shop_city || "",
+          s.inward_ref || "",
+          s.inward_type || "",
+          s.delivery_ref || "",
+          s.unit_type || "",
+          s.status || "",
+          s.status_label || "",
+        ].join(" ").toLowerCase();
+
+        const normSerialText = normalizeAlphaNum(fullSerialText);
+
+        const allTokensMatch = tokens.every((token) => fullSerialText.includes(token));
+        const normMatch = normalizedQuery ? normSerialText.includes(normalizedQuery) : false;
+
+        matchesSearch = allTokensMatch || normMatch;
+      }
+
+      if (!matchesSearch) return false;
+
+      if (serialStatusFilter === "all") return true;
+      if (serialStatusFilter === "available") return s.status === "available";
+      if (serialStatusFilter === "dispatched") return s.status === "dispatched";
+      if (serialStatusFilter === "other") return s.status !== "available" && s.status !== "dispatched";
+      return true;
+    });
+  }, [productSerials, serialSearch, serialStatusFilter]);
 
   const totalSerialPages = Math.ceil(filteredProductSerials.length / SERIALS_PER_PAGE) || 1;
   const safeSerialPage = Math.min(Math.max(serialCurrentPage, 1), totalSerialPages);
@@ -835,9 +907,19 @@ export const StockPage: React.FC = () => {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter models, brand..."
-              className="w-full pl-9 pr-4 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] transition-all text-slate-800 placeholder-slate-400"
+              placeholder="Filter models, brand, category, SKU..."
+              className="w-full pl-9 pr-8 py-2 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489] transition-all text-slate-800 placeholder-slate-400"
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                title="Clear search"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -859,37 +941,50 @@ export const StockPage: React.FC = () => {
               return true;
             }).length})
           </button>
-          {categories.map((c) => {
-            const count = products.filter((p) => {
-              if (p.category_id !== c.id) return false;
-              if (isAdmin) {
-                if (filterStatus === "active" && !p.is_active) return false;
-                if (filterStatus === "deactivated" && p.is_active) return false;
-              }
-              return true;
-            }).length;
-            return (
-              <button
-                key={c.id}
-                onClick={() => setSelectedCategory(c.id)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
-                  selectedCategory === c.id
-                    ? "bg-[#3C3489] text-white shadow-sm"
-                    : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
-                }`}
-              >
-                <span>{c.name}</span>
-                {c.has_dual_serial && (
-                  <span className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-full ${
-                    selectedCategory === c.id ? "bg-white/20 text-white" : "bg-purple-100 text-purple-700"
-                  }`}>
-                    Dual
-                  </span>
-                )}
-                <span className="opacity-70">({count})</span>
-              </button>
-            );
-          })}
+          {categories
+            .filter((c) => {
+              const count = products.filter((p) => {
+                if (p.category_id !== c.id) return false;
+                if (isAdmin) {
+                  if (filterStatus === "active" && !p.is_active) return false;
+                  if (filterStatus === "deactivated" && p.is_active) return false;
+                }
+                return true;
+              }).length;
+              if (showEmptyCategories) return true;
+              return count > 0 || selectedCategory === c.id;
+            })
+            .map((c) => {
+              const count = products.filter((p) => {
+                if (p.category_id !== c.id) return false;
+                if (isAdmin) {
+                  if (filterStatus === "active" && !p.is_active) return false;
+                  if (filterStatus === "deactivated" && p.is_active) return false;
+                }
+                return true;
+              }).length;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => setSelectedCategory(c.id)}
+                  className={`px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    selectedCategory === c.id
+                      ? "bg-[#3C3489] text-white shadow-sm"
+                      : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <span>{c.name}</span>
+                  {c.has_dual_serial && (
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-full ${
+                      selectedCategory === c.id ? "bg-white/20 text-white" : "bg-purple-100 text-purple-700"
+                    }`}>
+                      Dual
+                    </span>
+                  )}
+                  <span className="opacity-70">({count})</span>
+                </button>
+              );
+            })}
         </div>
       </div>
 
@@ -1049,10 +1144,27 @@ export const StockPage: React.FC = () => {
       </div>
 
       {filtered.length === 0 && !loading && (
-        <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center text-slate-400 space-y-2">
+        <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center text-slate-400 space-y-3">
           <Layers size={32} className="mx-auto text-slate-300" />
           <p className="text-sm font-medium text-slate-600">No products match your filter.</p>
-          <p className="text-xs text-slate-400">Try adjusting your search or category selection.</p>
+          <p className="text-xs text-slate-400">
+            {search
+              ? `No results for "${search}". Try searching by brand, partial model name, category, or SKU.`
+              : "Try adjusting your category selection or filter status."}
+          </p>
+          {(search || selectedCategory !== "all") && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearch("");
+                setSelectedCategory("all");
+              }}
+              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 transition-colors cursor-pointer"
+            >
+              <RotateCcw size={13} />
+              Reset filters
+            </button>
+          )}
         </div>
       )}
 
@@ -1134,11 +1246,19 @@ export const StockPage: React.FC = () => {
                   className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
                 >
                   <option value="">Select Category...</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} {c.has_dual_serial ? "(Dual Serial)" : ""}
-                    </option>
-                  ))}
+                  {categories
+                    .slice()
+                    .sort((a, b) => {
+                      const aHas = (a.product_count ?? 0) > 0 ? 1 : 0;
+                      const bHas = (b.product_count ?? 0) > 0 ? 1 : 0;
+                      if (aHas !== bHas) return bHas - aHas;
+                      return a.name.localeCompare(b.name);
+                    })
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {c.has_dual_serial ? "(Dual Serial)" : ""} {(c.product_count ?? 0) === 0 ? "• (0 models)" : `(${c.product_count})`}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -1411,9 +1531,19 @@ export const StockPage: React.FC = () => {
                   onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
                   className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-[#3C3489]/20 focus:border-[#3C3489]"
                 >
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
+                  {categories
+                    .slice()
+                    .sort((a, b) => {
+                      const aHas = (a.product_count ?? 0) > 0 ? 1 : 0;
+                      const bHas = (b.product_count ?? 0) > 0 ? 1 : 0;
+                      if (aHas !== bHas) return bHas - aHas;
+                      return a.name.localeCompare(b.name);
+                    })
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} {(c.product_count ?? 0) === 0 ? "• (0 models)" : `(${c.product_count})`}
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -1591,14 +1721,27 @@ export const StockPage: React.FC = () => {
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Filter serials, shop..."
+                  placeholder="Filter serials, shop, ref..."
                   value={serialSearch}
                   onChange={(e) => {
                     setSerialSearch(e.target.value);
                     setSerialCurrentPage(1);
                   }}
-                  className="w-full pl-8.5 pr-3 py-1.5 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-800 focus:border-indigo-800 transition-all text-slate-800 placeholder-slate-400"
+                  className="w-full pl-8.5 pr-8 py-1.5 text-xs bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-800 focus:border-indigo-800 transition-all text-slate-800 placeholder-slate-400"
                 />
+                {serialSearch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSerialSearch("");
+                      setSerialCurrentPage(1);
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                    title="Clear search"
+                  >
+                    <X size={13} />
+                  </button>
+                )}
               </div>
 
               {/* Status Filter Tabs */}

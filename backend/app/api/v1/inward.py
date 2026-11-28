@@ -3,7 +3,7 @@ from typing import Annotated, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -60,7 +60,7 @@ async def validate_serial(
 
     target_product_id = req.product_id or product_id
 
-    # Check database for existing serial
+    # Check database for existing serial (indexed seek with limit 1)
     query = (
         select(
             SerialNumber,
@@ -71,27 +71,43 @@ async def validate_serial(
         )
         .join(Product, SerialNumber.product_id == Product.id)
         .join(Category, Product.category_id == Category.id)
-        .where(SerialNumber.serial_number == clean_serial)
+        .where(
+            or_(
+                SerialNumber.serial_number == clean_serial,
+                SerialNumber.serial_number == clean_serial.upper(),
+            )
+        )
+        .limit(1)
     )
     result = await db.execute(query)
     row = result.first()
 
-    # Also check if previously recorded in OutwardLine
-    out_res = await db.execute(
-        select(
-            OutwardLine,
-            Shop.name.label("shop_name"),
-            Product.name.label("product_name"),
-            Product.model.label("product_model"),
-            Product.brand.label("product_brand"),
-            Category.has_dual_serial.label("has_dual_serial"),
+    # Query OutwardLine ONLY if not found in SerialNumber (out_row is only used when row is None)
+    out_row = None
+    if not row:
+        out_res = await db.execute(
+            select(
+                OutwardLine,
+                Shop.name.label("shop_name"),
+                Product.name.label("product_name"),
+                Product.model.label("product_model"),
+                Product.brand.label("product_brand"),
+                Category.has_dual_serial.label("has_dual_serial"),
+            )
+            .join(Shop, OutwardLine.shop_id == Shop.id)
+            .outerjoin(Product, OutwardLine.product_id == Product.id)
+            .outerjoin(Category, Product.category_id == Category.id)
+            .where(
+                or_(
+                    OutwardLine.serial_text == clean_serial,
+                    OutwardLine.serial_text == clean_serial.upper(),
+                ),
+                OutwardLine.is_cancelled == False,
+            )
+            .order_by(OutwardLine.transaction_date.desc())
+            .limit(1)
         )
-        .join(Shop, OutwardLine.shop_id == Shop.id)
-        .outerjoin(Product, OutwardLine.product_id == Product.id)
-        .outerjoin(Category, Product.category_id == Category.id)
-        .where(OutwardLine.serial_text == clean_serial)
-    )
-    out_row = out_res.first()
+        out_row = out_res.first()
 
     if inward_type == "return":
         # Case 2: Returned product

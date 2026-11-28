@@ -3,7 +3,7 @@ from typing import Annotated, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.schemas.outward import (
     BillListItem,
     CancelBillRequest,
     CancelBillResponse,
+    PaginatedBillsResponse,
     OutwardBatchCreate,
     OutwardBatchResponse,
     OutwardCheckRefRequest,
@@ -39,6 +40,9 @@ from app.schemas.outward import (
     UpdateOutwardLineRequest,
     UpdateOutwardLineResponse,
     DeleteOutwardLineResponse,
+    UpdateBillRequest,
+    UpdateBillResponse,
+    DeleteBillResponse,
 )
 
 router = APIRouter(prefix="/outward", tags=["outward"])
@@ -59,7 +63,7 @@ async def check_serial(
     if not clean_serial:
         raise HTTPException(status_code=400, detail="Serial number cannot be blank.")
 
-    # 1. Query serial_numbers
+    # 1. Query serial_numbers (with index seek & limit 1)
     query = (
         select(
             SerialNumber,
@@ -69,28 +73,23 @@ async def check_serial(
         )
         .join(Product, SerialNumber.product_id == Product.id)
         .outerjoin(Shop, SerialNumber.last_shop_id == Shop.id)
-        .where(SerialNumber.serial_number == clean_serial)
+        .where(
+            or_(
+                SerialNumber.serial_number == clean_serial,
+                SerialNumber.serial_number == clean_serial.upper(),
+            )
+        )
+        .limit(1)
     )
     result = await db.execute(query)
     row = result.first()
-
-    # 2. Query previous outward dispatch lines (any batch, any shop) - excluding cancelled dispatches
-    prev_disp_res = await db.execute(
-        select(OutwardLine, Shop.name.label("shop_name"))
-        .join(Shop, OutwardLine.shop_id == Shop.id)
-        .where(
-            OutwardLine.serial_text == clean_serial,
-            OutwardLine.is_cancelled == False,
-        )
-        .order_by(OutwardLine.transaction_date.desc())
-    )
-    prev_disp = prev_disp_res.first()
 
     sn = None
     is_already_dispatched = False
     disp_shop_name = None
     disp_date = None
     registered_model_display = None
+    prev_disp = None
 
     if row:
         sn, prod_name, prod_model, last_shop_name = row
@@ -101,17 +100,47 @@ async def check_serial(
         if sn.status == SerialStatus.dispatched:
             is_already_dispatched = True
             disp_shop_name = last_shop_name
+            # Only query OutwardLine when currently marked dispatched to get last dispatch details
+            prev_disp_res = await db.execute(
+                select(OutwardLine, Shop.name.label("shop_name"))
+                .join(Shop, OutwardLine.shop_id == Shop.id)
+                .where(
+                    or_(
+                        OutwardLine.serial_text == clean_serial,
+                        OutwardLine.serial_text == clean_serial.upper(),
+                    ),
+                    OutwardLine.is_cancelled == False,
+                )
+                .order_by(OutwardLine.transaction_date.desc())
+                .limit(1)
+            )
+            prev_disp = prev_disp_res.first()
             if prev_disp:
                 disp_line, s_name = prev_disp
                 disp_shop_name = s_name or disp_shop_name
                 disp_date = disp_line.transaction_date
-    elif prev_disp:
+    else:
         # Untracked pre-go-live serial (never recorded in serial_numbers):
-        # Was previously dispatched and never returned through Inward Return
-        is_already_dispatched = True
-        disp_line, s_name = prev_disp
-        disp_shop_name = s_name
-        disp_date = disp_line.transaction_date
+        # Query OutwardLine with limit(1) using composite index to check if dispatched earlier
+        prev_disp_res = await db.execute(
+            select(OutwardLine, Shop.name.label("shop_name"))
+            .join(Shop, OutwardLine.shop_id == Shop.id)
+            .where(
+                or_(
+                    OutwardLine.serial_text == clean_serial,
+                    OutwardLine.serial_text == clean_serial.upper(),
+                ),
+                OutwardLine.is_cancelled == False,
+            )
+            .order_by(OutwardLine.transaction_date.desc())
+            .limit(1)
+        )
+        prev_disp = prev_disp_res.first()
+        if prev_disp:
+            is_already_dispatched = True
+            disp_line, s_name = prev_disp
+            disp_shop_name = s_name
+            disp_date = disp_line.transaction_date
 
     # --- STRICT RULE: ONCE DISPATCHED, NEVER SCANNED OR DISPATCHED AGAIN ---
     if is_already_dispatched:
@@ -388,6 +417,20 @@ async def create_outward_batch(
                 )
                 db.add(shop)
                 await db.flush()
+
+    if not shop and getattr(req, "shop_name", None):
+        p_clean = req.shop_name.strip()
+        s_res = await db.execute(select(Shop).where(func.lower(Shop.name) == func.lower(p_clean)))
+        shop = s_res.scalar_one_or_none()
+        if not shop:
+            shop = Shop(
+                name=p_clean,
+                city="Local",
+                source="TALLY",
+                is_active=True,
+            )
+            db.add(shop)
+            await db.flush()
 
     if not shop:
         raise HTTPException(status_code=404, detail="Selected shop not found.")
@@ -1703,7 +1746,13 @@ async def list_outward_bills(
     # Group batches by bill_number and status (separate active vs cancelled)
     bills_map: dict[str, dict] = {}
     for b, p_name, p_brand, p_model, shop, u_name, c_name in rows:
-        b_norm = (b.bill_number.strip() if b.bill_number else f"NO-BILL-{str(b.id)[:8]}").upper()
+        if b.bill_number and b.bill_number.strip():
+            b_norm = b.bill_number.strip().upper()
+        elif b.delivery_reference and b.delivery_reference.strip():
+            b_norm = f"REF-{b.delivery_reference.strip().upper()}"
+        else:
+            b_norm = f"NO-BILL-{str(b.id)[:8]}"
+
         if b.is_cancelled:
             # Differentiate cancelled bills from active ones, and if the same bill number was cancelled multiple times,
             # group by cancellation timestamp (or batch creation date if cancelled_at is null)
@@ -1765,6 +1814,146 @@ async def list_outward_bills(
     return bill_list[offset : offset + limit]
 
 
+@router.get("/bills/paginated", response_model=PaginatedBillsResponse)
+async def list_outward_bills_paginated(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    search: Optional[str] = Query(None, description="Search by bill number or shop name"),
+    shop_id: Optional[uuid.UUID] = Query(None, description="Filter by shop"),
+    date_from: Optional[date] = Query(None, description="Filter from date"),
+    date_to: Optional[date] = Query(None, description="Filter to date"),
+    status: Optional[str] = Query(None, description="Filter by status: all, active, cancelled"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> PaginatedBillsResponse:
+    """
+    Paginated outward dispatches aggregated by Bill Number with counts.
+    Supports both paginated clients and backwards compatibility.
+    """
+    Canceller = aliased(User)
+    query = (
+        select(
+            OutwardBatch,
+            Product.name.label("product_name"),
+            Product.brand.label("product_brand"),
+            Product.model.label("product_model"),
+            Shop,
+            User.full_name.label("dispatcher_name"),
+            Canceller.full_name.label("canceller_name"),
+        )
+        .join(Product, OutwardBatch.product_id == Product.id)
+        .join(Shop, OutwardBatch.shop_id == Shop.id)
+        .join(User, OutwardBatch.dispatched_by_user_id == User.id)
+        .outerjoin(Canceller, OutwardBatch.cancelled_by_user_id == Canceller.id)
+        .order_by(OutwardBatch.transaction_date.desc(), OutwardBatch.created_at.desc())
+    )
+
+    if search:
+        s = f"%{search.strip()}%"
+        query = query.where(
+            (OutwardBatch.bill_number.ilike(s))
+            | (Shop.name.ilike(s))
+            | (Shop.city.ilike(s))
+            | (Shop.gstin.ilike(s))
+            | (OutwardBatch.delivery_reference.ilike(s))
+        )
+    if shop_id:
+        query = query.where(OutwardBatch.shop_id == shop_id)
+    if date_from:
+        query = query.where(OutwardBatch.transaction_date >= date_from)
+    if date_to:
+        query = query.where(OutwardBatch.transaction_date <= date_to)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    bills_map: dict[str, dict] = {}
+    for b, p_name, p_brand, p_model, shop, u_name, c_name in rows:
+        if b.bill_number and b.bill_number.strip():
+            b_norm = b.bill_number.strip().upper()
+        elif b.delivery_reference and b.delivery_reference.strip():
+            b_norm = f"REF-{b.delivery_reference.strip().upper()}"
+        else:
+            b_norm = f"NO-BILL-{str(b.id)[:8]}"
+
+        if b.is_cancelled:
+            c_tag = b.cancelled_at.strftime("%Y%m%d%H%M%S") if b.cancelled_at else (b.created_at.strftime("%Y%m%d%H%M%S") if b.created_at else str(b.id)[:8])
+            b_key = f"{b_norm}::CANCELLED::{c_tag}"
+        else:
+            b_key = f"{b_norm}::ACTIVE"
+
+        if b_key not in bills_map:
+            raw_b_num = (b.bill_number or "").strip()
+            raw_del_ref = (b.delivery_reference or "").strip()
+            is_ref_bill_no = raw_del_ref.lower().startswith("tally:") or (raw_del_ref.lower() == raw_b_num.lower())
+            v_num_clean = raw_del_ref if raw_del_ref and not is_ref_bill_no else None
+            del_ref_clean = raw_del_ref if raw_del_ref and not is_ref_bill_no else None
+
+            bills_map[b_key] = {
+                "bill_number": b.bill_number or f"REF-{b.delivery_reference or str(b.id)[:8]}",
+                "shop_id": b.shop_id,
+                "shop_name": shop.name,
+                "shop_city": shop.city,
+                "shop_gstin": shop.gstin,
+                "shop_address": shop.address,
+                "shop_state": shop.state,
+                "shop_phone": shop.phone,
+                "vehicle_number": v_num_clean,
+                "transporter_name": None,
+                "delivery_note": None,
+                "destination": shop.city,
+                "transaction_date": b.transaction_date,
+                "created_at": b.created_at,
+                "dispatched_by_name": u_name,
+                "delivery_reference": del_ref_clean,
+                "remarks": b.remarks,
+                "total_units": 0,
+                "total_batches": 0,
+                "is_cancelled": b.is_cancelled,
+                "cancelled_at": b.cancelled_at,
+                "cancelled_by_name": c_name if b.is_cancelled else None,
+                "cancel_reason": b.cancel_reason,
+                "models_summary": [],
+            }
+        item = bills_map[b_key]
+        item["total_units"] += b.quantity
+        item["total_batches"] += 1
+        if b.is_cancelled:
+            item["is_cancelled"] = True
+            if b.cancelled_at and not item["cancelled_at"]:
+                item["cancelled_at"] = b.cancelled_at
+            if c_name and not item["cancelled_by_name"]:
+                item["cancelled_by_name"] = c_name
+            if b.cancel_reason and not item["cancel_reason"]:
+                item["cancel_reason"] = b.cancel_reason
+
+        summary_str = f"{p_brand} {p_model} ({b.quantity}u)"
+        if summary_str not in item["models_summary"]:
+            item["models_summary"].append(summary_str)
+
+    all_items = [BillListItem(**data) for data in bills_map.values()]
+    total_all = len(all_items)
+    total_active = len([b for b in all_items if not b.is_cancelled])
+    total_cancelled = len([b for b in all_items if b.is_cancelled])
+
+    filtered = all_items
+    if status == "active":
+        filtered = [b for b in all_items if not b.is_cancelled]
+    elif status == "cancelled":
+        filtered = [b for b in all_items if b.is_cancelled]
+
+    total = len(filtered)
+    paged = filtered[offset : offset + limit]
+
+    return PaginatedBillsResponse(
+        items=paged,
+        total=total,
+        total_all=total_all,
+        total_active=total_active,
+        total_cancelled=total_cancelled,
+    )
+
+
 @router.get("/bills/{bill_number}", response_model=BillDetailResponse)
 async def get_outward_bill_detail(
     bill_number: str,
@@ -1778,6 +1967,7 @@ async def get_outward_bill_detail(
     Supports filtering by active vs cancelled when a bill number was re-used.
     """
     clean_b_num = bill_number.strip()
+    clean_ref = clean_b_num[4:].strip() if clean_b_num.upper().startswith("REF-") else clean_b_num
     Canceller = aliased(User)
     query = (
         select(
@@ -1796,6 +1986,7 @@ async def get_outward_bill_detail(
         .where(
             (func.lower(OutwardBatch.bill_number) == clean_b_num.lower())
             | (func.lower(OutwardBatch.delivery_reference) == clean_b_num.lower())
+            | (func.lower(OutwardBatch.delivery_reference) == clean_ref.lower())
         )
         .order_by(OutwardBatch.created_at.asc())
     )
@@ -2140,6 +2331,200 @@ async def cancel_outward_bill(
         returned_serials=returned_serials,
         ignored_serials=ignored_serials,
         restored_models=restored_models,
+    )
+
+
+@router.patch("/bills/{bill_number}", response_model=UpdateBillResponse)
+async def update_outward_bill(
+    bill_number: str,
+    req: UpdateBillRequest,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UpdateBillResponse:
+    """
+    Admin only: Update bill metadata (vehicle number, transporter, delivery note, destination, remarks, date).
+    """
+    clean_b_num = bill_number.strip()
+    if not clean_b_num:
+        raise HTTPException(status_code=400, detail="Bill number cannot be blank.")
+
+    batches_res = await db.execute(
+        select(OutwardBatch)
+        .where(
+            (func.lower(OutwardBatch.bill_number) == clean_b_num.lower())
+            | (func.lower(OutwardBatch.delivery_reference) == clean_b_num.lower())
+        )
+        .with_for_update()
+    )
+    batches = batches_res.scalars().all()
+    if not batches:
+        raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
+
+    for b in batches:
+        if req.vehicle_number is not None:
+            b.delivery_reference = req.vehicle_number.strip() or None
+        if req.remarks is not None:
+            b.remarks = req.remarks.strip() or None
+        if req.transaction_date is not None:
+            b.transaction_date = req.transaction_date
+
+    # Also update corresponding local TallySalesVoucher if exists in local database
+    tally_v_res = await db.execute(
+        select(TallySalesVoucher)
+        .where(func.lower(TallySalesVoucher.voucher_number) == clean_b_num.lower())
+        .with_for_update()
+    )
+    tally_v = tally_v_res.scalars().first()
+    if tally_v:
+        if req.vehicle_number is not None:
+            tally_v.vehicle_number = req.vehicle_number.strip() or None
+        if req.transporter_name is not None:
+            tally_v.transporter_name = req.transporter_name.strip() or None
+        if req.delivery_note is not None:
+            tally_v.delivery_note = req.delivery_note.strip() or None
+        if req.destination is not None:
+            tally_v.destination = req.destination.strip() or None
+        if req.remarks is not None:
+            tally_v.narration = req.remarks.strip() or None
+        if req.transaction_date is not None:
+            tally_v.date = req.transaction_date
+
+    await db.commit()
+    await ws_manager.broadcast("stock_updated", {"type": "bill_updated", "bill_number": clean_b_num})
+
+    return UpdateBillResponse(
+        success=True,
+        bill_number=clean_b_num,
+        message=f"Bill '{clean_b_num}' details updated successfully.",
+        vehicle_number=req.vehicle_number if req.vehicle_number is not None else (batches[0].delivery_reference if batches else None),
+        transporter_name=tally_v.transporter_name if tally_v else None,
+        delivery_note=tally_v.delivery_note if tally_v else None,
+        destination=tally_v.destination if tally_v else None,
+        remarks=batches[0].remarks if batches else None,
+        transaction_date=batches[0].transaction_date if batches else None,
+    )
+
+
+@router.delete("/bills/{bill_number}", response_model=DeleteBillResponse)
+async def delete_outward_bill(
+    bill_number: str,
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DeleteBillResponse:
+    """
+    Admin only: Permanently delete an outward dispatch bill and all its batches and lines.
+    - If the bill was NOT already cancelled, automatically returns matched serials to available stock
+      and restores product stock quantities first.
+    - Removes all OutwardLine and OutwardBatch records for this bill.
+    - Cleans up SerialHistory records associated with these batches.
+    """
+    clean_b_num = bill_number.strip()
+    if not clean_b_num:
+        raise HTTPException(status_code=400, detail="Bill number cannot be blank.")
+
+    batches_res = await db.execute(
+        select(OutwardBatch)
+        .where(
+            (func.lower(OutwardBatch.bill_number) == clean_b_num.lower())
+            | (func.lower(OutwardBatch.delivery_reference) == clean_b_num.lower())
+        )
+        .with_for_update()
+    )
+    batches = batches_res.scalars().all()
+    if not batches:
+        raise HTTPException(status_code=404, detail=f"Bill '{bill_number}' not found.")
+
+    batch_ids = [b.id for b in batches]
+
+    lines_res = await db.execute(
+        select(OutwardLine).where(OutwardLine.batch_id.in_(batch_ids)).with_for_update()
+    )
+    lines = lines_res.scalars().all()
+
+    # If batches were not cancelled, restore stock for matched serials
+    restored_count = 0
+    restored_models = []
+    for b in batches:
+        if not b.is_cancelled:
+            b_lines = [l for l in lines if l.batch_id == b.id]
+            for l in b_lines:
+                if l.serial_number_id or l.is_matched:
+                    sn = None
+                    if l.serial_number_id:
+                        sn = await db.get(SerialNumber, l.serial_number_id, with_for_update=True)
+                    if not sn:
+                        sn_res = await db.execute(
+                            select(SerialNumber).where(
+                                SerialNumber.product_id == b.product_id,
+                                func.upper(SerialNumber.serial_number) == l.serial_text.strip().upper(),
+                            ).with_for_update()
+                        )
+                        sn = sn_res.scalars().first()
+                    if sn:
+                        if sn.status == SerialStatus.dispatched:
+                            sn.status = SerialStatus.available
+                            sn.last_shop_id = None
+                            restored_count += 1
+
+            prod = await db.get(Product, b.product_id)
+            if prod:
+                cat = await db.get(Category, prod.category_id) if prod.category_id else None
+                is_dual = cat and cat.has_dual_serial
+                units_to_restore = (b.matched_count // 2) if is_dual else b.matched_count
+                prod.current_stock_qty += units_to_restore
+                restored_models.append({
+                    "product_id": str(prod.id),
+                    "model": prod.model,
+                    "brand": prod.brand,
+                    "restored_units": units_to_restore,
+                    "new_stock_qty": prod.current_stock_qty,
+                })
+
+    # Delete serial histories linked to these batches
+    await db.execute(
+        delete(SerialHistory).where(SerialHistory.outward_batch_id.in_(batch_ids))
+    )
+
+    # Delete lines
+    await db.execute(
+        delete(OutwardLine).where(OutwardLine.batch_id.in_(batch_ids))
+    )
+
+    # Delete batches
+    await db.execute(
+        delete(OutwardBatch).where(OutwardBatch.id.in_(batch_ids))
+    )
+
+    # Audit log
+    audit = AuditLog(
+        user_id=admin.id,
+        action="BILL_DELETED",
+        entity_type="bill",
+        entity_id=clean_b_num,
+        details={
+            "bill_number": clean_b_num,
+            "deleted_batches": len(batches),
+            "deleted_lines": len(lines),
+            "restored_serials_count": restored_count,
+            "restored_models": restored_models,
+        },
+    )
+    db.add(audit)
+
+    await db.commit()
+    await ws_manager.broadcast("stock_updated", {
+        "type": "bill_deleted",
+        "bill_number": clean_b_num,
+        "restored_models": restored_models,
+    })
+
+    return DeleteBillResponse(
+        success=True,
+        bill_number=clean_b_num,
+        message=f"Bill '{clean_b_num}' and all associated dispatch records permanently deleted.",
+        deleted_batches_count=len(batches),
+        deleted_lines_count=len(lines),
+        restored_serials_count=restored_count,
     )
 
 

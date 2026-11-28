@@ -1,3 +1,4 @@
+import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -41,7 +42,7 @@ async def test_auth_and_device_flow():
         assert "access_token" in res.json()
 
         # 5. Device registration (phone sends hardware UID)
-        test_device_uid = "android-hw-uid-test-001"
+        test_device_uid = f"android-hw-uid-{uuid.uuid4().hex[:8]}"
         res = await client.post("/api/v1/devices/register", json={
             "device_uid": test_device_uid,
             "label": "Warehouse Scanner 1"
@@ -93,3 +94,7 @@ async def test_auth_and_device_flow():
             headers=phone_headers,
         )
         assert res.status_code == 403
+
+        # 11. Clean up test device from registry
+        res = await client.delete(f"/api/v1/devices/{device_id}", headers=headers)
+        assert res.status_code in (200, 204)
