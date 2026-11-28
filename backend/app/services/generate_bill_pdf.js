@@ -84,7 +84,7 @@ function buildBillPdf(bill) {
   let textStartX = margin + 2.5;
   if (LOGO_BASE64) {
     try {
-      doc.addImage(LOGO_BASE64, 'PNG', margin + 2.5, startY + 17, 14, 14);
+      doc.addImage(LOGO_BASE64, 'PNG', margin + 2.5, startY + 17, 14, 14, undefined, 'FAST');
       textStartX = margin + 19;
     } catch (err) {}
   }

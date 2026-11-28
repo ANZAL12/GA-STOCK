@@ -63,7 +63,7 @@ export function buildBillPdf(bill: BillDetail): jsPDF {
 
   let textStartX = margin + 2.5;
   try {
-    doc.addImage(LOGO_BASE64, "PNG", margin + 2.5, startY + 17, 14, 14);
+    doc.addImage(LOGO_BASE64, "PNG", margin + 2.5, startY + 17, 14, 14, undefined, "FAST");
     textStartX = margin + 19;
   } catch (err) {
     console.warn("Could not load logo for PDF", err);

@@ -65,7 +65,7 @@ export function generateSerialListPdf(options: {
   // Logo
   let textStartX = 14;
   try {
-    doc.addImage(LOGO_BASE64, "PNG", 14, 3.5, 21, 21);
+    doc.addImage(LOGO_BASE64, "PNG", 14, 3.5, 21, 21, undefined, "FAST");
     textStartX = 39;
   } catch (err) {
     console.warn("Could not load logo for PDF", err);
@@ -313,7 +313,7 @@ export function generateSerialTracePdf(options: {
   // Logo
   let textStartX = 14;
   try {
-    doc.addImage(LOGO_BASE64, "PNG", 14, 3.5, 21, 21);
+    doc.addImage(LOGO_BASE64, "PNG", 14, 3.5, 21, 21, undefined, "FAST");
     textStartX = 39;
   } catch (err) {
     console.warn("Could not load logo for PDF", err);
